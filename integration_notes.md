@@ -535,7 +535,8 @@ These match the server (decisions 13, 18, 23, 24 and 58):
   1. seq: an integer; the first is 1 and each later one is the previous plus 1.
   2. prev_hash: equal to the previous entry's hash (64 zeros for the first).
   3. hash: the hash recomputed from the six content fields and the **stored** prev_hash equals
-     the stored hash.
+     the stored hash. In the script this is `hash_check(row)`, which receives only the row, so
+     it cannot use any other row's hash (decision 70).
 - It stops at the first failure.
 - An entry that cannot be canonicalized fails check 3 as `uncanonicalizable`. That covers a
   missing content field, a non-integer number, NaN or Infinity, a string with U+0000 or a lone
@@ -617,7 +618,7 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 484 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 504 tests.
 
 ### Part 1
 
