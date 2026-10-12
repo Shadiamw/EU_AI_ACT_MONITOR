@@ -35,3 +35,21 @@ applied.
 Decisions 1, 5, 6 and 7 are also stated in the `app/ledger/canonical.py` docstring, and
 decision 2 is noted there because it concerns how `LedgerError` from canonicalization is
 handled.
+
+## M2: append, ensure_seed and record_view
+
+8. **append takes an ORM Session.** `ledger.append`, `ledger.ensure_seed` and
+   `audit.record_view` take a SQLAlchemy 2.x ORM `Session`. Other parts must pass an ORM
+   Session when they integrate.
+
+9. **ensure_seed and record_view return None.** Only `append` returns the entry.
+
+10. **No lock timeout in the ledger code.** append waits for the advisory lock without a
+    timeout. The M6 README must tell Part 4 to set `lock_timeout` or `statement_timeout` at
+    connection level, because one stuck transaction would block every append.
+
+11. **No per-entry-type payload shape check.** The spec only requires a JSON object with the
+    allowed value types, so for example a SEED payload without `systems` is accepted.
+
+12. **Sandbox Docker daemon.** The sandbox's Docker daemon sometimes stops between sessions.
+    This is not a code issue. The M6 README must say how to restart it.
