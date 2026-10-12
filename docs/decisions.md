@@ -436,11 +436,45 @@ handled.
     - A higher-order mutant was added to show that the property is still guarded. It removes
       the prev_hash link check AND recomputes from the previous row's hash, and it makes 4
       tests fail.
-    - How to treat the equivalent mutant is left to the user (open; not decided here).
+    - How the equivalent mutant is handled is settled by decision 70.
 
 69. **ruff formats Python inside Markdown.** ruff 0.17 checks Python code blocks in `.md`
     files, so `ruff format --check .` covers `integration_notes.md`. Its example was formatted
     in a separate commit. Reason: pass criterion 4 (ruff clean) covers the whole repository.
+
+70. **Mutant 6 is equivalent; the hash check now receives only the row.**
+    - **Proof of equivalence.** In the pipeline as first written, the mutant "recompute the
+      hash from the previous row's hash instead of the stored prev_hash" is equivalent. Check 2
+      returns prev_hash unless the row's stored prev_hash equals the previous row's hash, so
+      whenever check 3 runs, the two are the same string. No input can tell the mutant from the
+      original.
+    - **Higher-order mutant.** Removing the link check AND recomputing from the previous row's
+      hash made 4 tests fail. This shows the stored-prev_hash rule matters as soon as the link
+      check is gone.
+    - **The refactor.** By your choice, the recompute moved into its own function,
+      `hash_check(row)` in `tools/verify_ledger.py`.
+      - It receives only the row and uses the row's own stored prev_hash. The check order seq,
+        then prev_hash, then hash is unchanged (decision 58).
+      - Every output, exit code and stderr line is byte-identical to the previous version. A
+        throwaway comparison of the old and new scripts on 425 inputs found 0 differences.
+      - The mutant is now structurally inexpressible: `previous_hash` is not in scope inside
+        `hash_check`. Written as before, it fails ruff (F821, undefined name) and crashes with
+        a NameError (61 tests fail).
+    - **The new direct tests.** These tests in `tests/test_verify_script.py` call `hash_check`
+      on single rows and guard the stored-prev_hash rule:
+      - (a) A row consistent with its own stored prev_hash passes, even when that prev_hash is
+        not the real predecessor's hash.
+      - (b) Changing only the stored prev_hash flips the result.
+      - (c) A missing content field, an uncanonicalizable value, or an unusable prev_hash is a
+        mismatch.
+      - A signature test pins the single `row` parameter.
+      - The closest expressible form of the mutant passes the previous row's hash into
+        `hash_check`. It is caught by these new tests only (6 failed). Recomputing from the
+        genesis value or from the stored hash is caught too.
+    - **Pass criterion 3 (M5 STEP 6) now reads:** "every non-equivalent mutant is caught;
+      equivalent mutants are documented with proof".
+
+    Reason: the user chose to restructure, and to keep the equivalence proof on record.
 
 ### M5 notes
 
