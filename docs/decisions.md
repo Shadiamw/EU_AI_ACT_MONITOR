@@ -169,6 +169,77 @@ handled.
     Existing M0 to M3 code and tests are not modified. Reason: keeps the verified M1 to M3 code
     unchanged.
 
+### Decided during M4 implementation
+
+36. **How errors are produced.** ApiError has its own handler. Starlette's 404 and 405 both
+    map to 404 NOT_FOUND. Any other HTTP exception maps to 500 INTERNAL_ERROR; Part 2 raises
+    none, and no code is invented for one. Every other exception, LedgerError included, is
+    caught by a small ASGI middleware inside Starlette's ServerErrorMiddleware. It returns the
+    500 body and logs only the exception's type name at ERROR on the `api` logger: never its
+    message and never a traceback. Reason: one place for the 500 body, and nothing is
+    re-raised to a server log with a traceback.
+
+37. **Fixed error messages.** NOT_FOUND "resource not found", MISSING_OR_INVALID_KEY "missing
+    or invalid API key", FORBIDDEN_ROLE "this role may not call this endpoint", MALFORMED_BODY
+    "the request is malformed", INTERNAL_ERROR "an internal error occurred". Reason: tests
+    compare exact bodies, and no message carries request or ledger data.
+
+38. **Engine pool.** The application engine uses `pool_size=10`, `max_overflow=40` and
+    `pool_pre_ping=True`. Reason: up to 40 requests run at once in FastAPI's default thread
+    pool, and each holds one connection for its transaction. Part 4 sizes this against
+    PostgreSQL's `max_connections`.
+
+39. **Plain JSON responses.** The three endpoints return a `JSONResponse` built from plain
+    dicts and lists, with no response model. Reason: no coercion of first_mismatch or of
+    payload values. The stub app also turns off `/docs`, `/redoc` and `/openapi.json`, so the
+    only routes are the three Part 2 endpoints.
+
+40. **Read-only handlers also commit.** Export and verify end their (read-only) transaction
+    with a commit before returning, the same as audit (decision 25). Reason: one rule for every
+    handler.
+
+41. **auth.py was extended, not rewritten.** The M4 scope adds `resolve_principal` and
+    `require(*roles)` to the `app/auth.py` stub. `Principal` is unchanged. This is the one
+    existing file M4 changes. Reason: scope item 2.
+
+42. **Test client.** The endpoint tests call the app through httpx's ASGI transport, from a
+    small synchronous wrapper around an anyio blocking portal. Reason: the installed Starlette
+    deprecates its TestClient with httpx. Sync handlers still run in the thread pool, as under
+    a real server. Tests pick the caller with an `X-Test-Actor` header, read by a test-only
+    override of `resolve_principal`.
+
+43. **Commit-before-return is tested at the ASGI layer.** A wrapper counts committed
+    AUDIT_VIEWED rows on a separate owner connection when each audit response starts. Both a
+    commit moved into the session dependency's teardown and a commit in a background task fail
+    that test. Reason: an in-process client returns only after the whole app call, so the
+    response body alone could not show a late commit.
+
+44. **A view-only subject is not an event.** For the events stub, a subject_id with only
+    EVENT_VIEWED or AUDIT_VIEWED entries, and no EVENT_FLAGGED or GAP_OPENED entry, gets 404.
+    Reason: decision 30.
+
+45. **Commit boundary.** Commit 1440749 (stubs) adds `app/main.py`, which imports
+    `app.api.ledger_routes`; that module arrives in the next commit (968a603). Only 1440749 on
+    its own cannot import `app.main`. No earlier commit was rewritten to fix this.
+
+### M4 notes
+
+- For the M6 README: the global append lock serializes every view (EVENT_VIEWED) and every
+  audit call (AUDIT_VIEWED) with all other appends. Export shows every ledger entry to any
+  VIEWER, including WEBHOOK_REGISTERED URLs, so webhook URLs must not carry secrets.
+- For M5, the export format the script reads: a JSON array (empty ledger: `[]`) of every entry
+  in ascending seq, each with exactly eight fields: `seq` (integer), `entry_type` (string),
+  `actor_id` (string), `subject_id` (string or null), `payload` (object), `recorded_at`
+  (string, `YYYY-MM-DDTHH:MM:SS.mmmZ`), `prev_hash` and `hash` (64 lowercase hex characters).
+- Fix iteration 1 (a test bug). The mutation "verify writes a ledger entry" hung the run
+  instead of failing. `test_export_and_verify_do_not_wait_for_a_held_append_lock` waited for
+  the requests with `asyncio.wait_for` inside `asyncio.run`. On a timeout, `asyncio.run` still
+  waited for the blocked worker thread, so the `finally` that rolls back the lock holder never
+  ran. The test now runs the requests in a separate thread, waits up to 10 s, then always
+  rolls back the holder and asserts that both requests finished while the lock was held. With
+  the fix, that mutant fails 5 tests, and a new mutant (export takes the append lock) fails
+  the test as well. No implementation change was needed.
+
 ### Stubs to replace when Part 1 lands
 
 - `app/errors.py`: ApiError and the global error handlers.
@@ -192,8 +263,13 @@ M5 (standalone verifier):
       subject_id; a missing content field reports as uncanonicalizable (decision 24).
 - [ ] An explicit `"subject_id": null` is valid (decision 24).
 - [ ] An unknown extra key in a row is ignored (decision 24).
+- [ ] The script reads the M4 export format (M4 notes): an array of 8-field entries in seq
+      order.
 
 M6 README:
+- [ ] The global append lock serializes every view and audit call (M4 notes).
+- [ ] Export shows every entry to any VIEWER, so webhook URLs must not carry secrets.
+- [ ] Size the application engine pool against PostgreSQL's max_connections (decision 38).
 - [ ] Part 4 sets `lock_timeout` or `statement_timeout` at connection level.
 - [ ] How to restart the Docker daemon.
 - [ ] The 2**53 JavaScript precision note.
