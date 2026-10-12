@@ -10,6 +10,8 @@ Entries are read in ascending seq. For each entry, the checks run in this order:
 3. hash: recomputing the hash from the stored fields (re-canonicalizing the payload) gives the
    stored hash. A stored row that cannot be canonicalized, for example a jsonb float, fails this
    check as a mismatch at that seq; verify never raises for it (docs/decisions.md, decision 2).
+   A row missing any content field fails it the same way (decision 24); unknown extra keys
+   are ignored.
 
 On the first failure verify stops: valid is false, first_mismatch is that seq as a string and
 entries_checked counts the entries examined including the bad one. If every entry passes:
@@ -93,9 +95,12 @@ def _failed_check(
     if row.get("prev_hash") != previous_hash:
         return "prev_hash"
 
-    # Recompute from the stored fields, including the stored prev_hash, so this check is
-    # independent of the prev_hash link check above.
-    content: dict[str, Any] = {field: row.get(field) for field in _CONTENT_FIELDS}
+    # A row missing a content field is a mismatch, even where a missing value would read as
+    # null (decision 24). Recompute from the stored fields, including the stored prev_hash,
+    # so this check is independent of the prev_hash link check above.
+    if any(field not in row for field in _CONTENT_FIELDS):
+        return "uncanonicalizable"
+    content: dict[str, Any] = {field: row[field] for field in _CONTENT_FIELDS}
     try:
         recomputed = compute_hash(row["prev_hash"], canonical_json(**content))
     except LedgerError:

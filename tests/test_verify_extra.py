@@ -144,7 +144,7 @@ def test_changing_seq_is_caught_at_that_row_and_reports_the_stored_seq(
     assert verify_with_check(rows, caplog) == (invalid(k, str(k + 100)), "seq")
 
 
-@pytest.mark.parametrize("field", [f for f in FIELDS if f not in ("seq", "subject_id")])
+@pytest.mark.parametrize("field", [f for f in FIELDS if f != "seq"])
 @pytest.mark.parametrize("k", range(1, 9))
 def test_removing_a_field_is_caught_at_that_row(
     k: int, field: str, caplog: pytest.LogCaptureFixture
@@ -152,21 +152,10 @@ def test_removing_a_field_is_caught_at_that_row(
     rows = build_pure_chain()
     del rows[k - 1][field]
     # prev_hash missing: the link check fails at k. hash missing: the recompute cannot equal
-    # a missing hash. entry_type, actor_id, payload or recorded_at missing: the row cannot be
-    # canonicalized, a mismatch at k (decision 2).
+    # a missing hash. entry_type, actor_id, subject_id, payload or recorded_at missing: a row
+    # missing a content field is uncanonicalizable, a mismatch at k (decision 24), whether
+    # its subject_id was null or not.
     assert verify_with_check(rows, caplog) == (invalid(k, str(k)), expected_removal_check(field))
-
-
-@pytest.mark.parametrize("k", range(2, 9))
-def test_removing_a_non_null_subject_id_is_caught_at_that_row(
-    k: int, caplog: pytest.LogCaptureFixture
-) -> None:
-    rows = build_pure_chain()
-    assert rows[k - 1]["subject_id"] is not None
-    del rows[k - 1]["subject_id"]
-    # A missing subject_id is read as null, which changes the canonical form of a row whose
-    # subject was not null: hash check fails at k.
-    assert verify_with_check(rows, caplog) == (invalid(k, str(k)), "hash")
 
 
 @pytest.mark.parametrize("k", range(1, 9))
@@ -177,6 +166,37 @@ def test_removing_seq_is_caught_at_that_row(k: int) -> None:
     # "None" (decision 19); the point here is that it is invalid after k entries.
     result = verify_entries(rows)
     assert (result["valid"], result["entries_checked"]) == (False, k)
+
+
+# Decision 24: missing fields, explicit null subject_id and unknown extra keys (pure)
+
+
+def test_removing_the_null_subject_id_from_the_seed_row_is_caught(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rows = build_pure_chain()
+    assert rows[0]["entry_type"] == "SEED" and rows[0]["subject_id"] is None
+    del rows[0]["subject_id"]
+    # Reading the missing key as null would give the same canonical form and a valid chain.
+    # A row missing a content field is a mismatch at that seq instead (decision 24): row 1
+    # passes seq and prev_hash, then fails as uncanonicalizable after 1 entry.
+    assert verify_with_check(rows, caplog) == (invalid(1, "1"), "uncanonicalizable")
+
+
+def test_an_explicit_null_subject_id_is_valid(caplog: pytest.LogCaptureFixture) -> None:
+    rows = build_pure_chain()
+    # Row 1 has the subject_id key with the value null: that is "no subject", not missing.
+    assert "subject_id" in rows[0] and rows[0]["subject_id"] is None
+    assert verify_with_check(rows, caplog) == (valid(8), None)
+
+
+@pytest.mark.parametrize("k", range(1, 9))
+def test_an_unknown_extra_key_is_ignored(k: int, caplog: pytest.LogCaptureFixture) -> None:
+    rows = build_pure_chain()
+    rows[k - 1]["unexpected"] = "ignored"
+    # The hash covers only the six content fields (and the stored prev_hash), so an extra key
+    # changes nothing that is checked: the chain stays valid (decision 24).
+    assert verify_with_check(rows, caplog) == (valid(8), None)
 
 
 # 2. Exhaustive deletion matrix (pure)
