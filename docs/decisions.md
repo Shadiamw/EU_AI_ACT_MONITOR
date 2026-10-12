@@ -78,3 +78,47 @@ handled.
 17. **Verify takes no lock.** Verify reads with one ordinary SELECT in seq order as the
     application role. It writes nothing, takes no advisory lock and never waits for appends;
     an uncommitted append is simply not visible to it.
+
+## M3 refinements
+
+18. **Check 3 uses the stored prev_hash.** The hash recompute uses the row's stored prev_hash
+    (with the other stored fields), so it is independent of the prev_hash link check. The M5
+    standalone script must do the same.
+
+19. **Degenerate rows.** For a non-integer or missing seq in a hand-edited export, the
+    server's pure function reports the string form of what is in the file (for example
+    `"True"` or `"None"`). The M5 script is not required to match that string exactly; it must
+    never crash and must report the export invalid. Exact strings for degenerate rows are not
+    part of the M5 cross-check.
+
+20. **Verify memory.** Verify reads all rows into memory in one SELECT. This is fine for
+    Phase 3; the M6 README gets a one-line scale note.
+
+21. **The mismatch log format is relied on by tests.** M3 tests read which check failed from
+    the WARNING text `ledger verify mismatch: seq=N check=...`. Later milestones must not
+    change that format.
+
+22. **jsonb 1e3.** jsonb stores 1e3 as the integer 1000, so that edit is caught by the hash
+    check rather than as uncanonicalizable. Both give a mismatch at the same seq.
+
+## Carry-forward checklist
+
+M5 (standalone verifier):
+- [ ] The script recomputes the hash from the stored prev_hash.
+- [ ] The script never crashes on malformed rows.
+- [ ] The jsonb float edit and the 1e3 edit give the same mismatch seq on the script and the
+      server.
+- [ ] The script and the server agree on every M3 tamper case.
+
+M6 README:
+- [ ] Part 4 sets `lock_timeout` or `statement_timeout` at connection level.
+- [ ] How to restart the Docker daemon.
+- [ ] The 2**53 JavaScript precision note.
+- [ ] The verify memory scale note.
+- [ ] The end-of-ledger truncation limit and the forged-last-row limit.
+- [ ] The ORM Session handle type.
+- [ ] No per-entry-type payload shape check.
+- [ ] The verify check order.
+
+M6 also owns:
+- [ ] `docs/ac06_storage_evidence.md`.
