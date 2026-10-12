@@ -161,6 +161,12 @@ class CommitProbe:
         await self.app(scope, receive, probing_send)
 
 
+# GUARD TEST: do not delete or weaken this test or CommitProbe. It is the only test that
+# catches a commit made after the response has started (decision 25), for example a commit
+# moved into the session dependency's teardown or into a background task. An in-process client
+# returns only after the whole app call has finished, so a late commit still lands before the
+# next request and every other test passes. Only this check, which counts committed rows at
+# the moment each response starts, sees the late commit (docs/decisions.md 43).
 def test_each_audit_view_is_committed_before_the_response(
     api_app: FastAPI, app_engine: Engine, owner_engine: Engine
 ) -> None:
