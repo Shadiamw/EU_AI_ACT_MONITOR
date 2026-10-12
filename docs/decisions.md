@@ -320,6 +320,62 @@ handled.
 - Index finding (decision 51): `(subject_id, seq)` is indexed, and the audit lookup takes about
   0.5 ms at 20,000 rows.
 
+## M5 decisions
+
+52. **Output.** The script prints exactly one JSON object on stdout, with exactly the keys
+    `valid` (bool), `entries_checked` (int) and `first_mismatch` (string or null). Nothing else
+    goes to stdout. Diagnostics go to stderr only. Reason: the output must match the server's
+    three fields (addendum rule 6) and be machine-readable.
+
+53. **Exit codes.** 0 for valid, 1 for invalid, 2 for a command-line usage error (a missing or
+    extra argument; a design choice, not from the spec). The one argument is the path to an
+    export file. Reason: the spec fixes 0 and 1; 2 keeps usage errors apart from results.
+
+54. **Unusable input.** If the file is missing, unreadable, not valid UTF-8, not valid JSON,
+    not a JSON array, or an array with an element that is not an object, the script prints
+    `{"valid": false, "entries_checked": 0, "first_mismatch": null}`, writes the reason to
+    stderr and exits 1. An empty array is a valid empty ledger:
+    `{"valid": true, "entries_checked": 0, "first_mismatch": null}`, exit 0. Reason: an
+    export that cannot be read must never pass, and an empty ledger is valid (addendum
+    rule 11).
+
+55. **Independence.** The script imports nothing from app/ and shares no code with verify.py
+    or canonical.py. It is written from the spec, the addendum and this file. If the
+    cross-implementation tests disagree with the server, the disagreement is settled by
+    reasoning from the spec and the addendum; if that does not settle it, work stops and the
+    question goes to the user. Reason: two implementations that share code would share bugs.
+
+56. **Number parsing.** Any JSON number that is not an integer (including 1.0, 1e3 and 1.5),
+    and NaN, Infinity and -Infinity, anywhere in a row, makes that row uncanonicalizable.
+    Through the database, jsonb turns 1e3 into the integer 1000, so there it is caught by the
+    hash check instead. Both report the same seq (decision 22). Reason: addendum rule 2 allows
+    integers only.
+
+57. **Strings.** A string containing U+0000 or a lone surrogate, anywhere in a row, makes the
+    row uncanonicalizable, the same as the server (decision 1). It must never crash the
+    script. Reason: such a string has no canonical UTF-8 form.
+
+58. **Stored-field rules.** The script recomputes each hash from the stored prev_hash. It sorts
+    rows by stored seq before checking. A row missing any of the six content fields is
+    uncanonicalizable. An unknown extra key is ignored. An explicit `"subject_id": null` is
+    valid. The check order is seq, then prev_hash, then hash (decisions 18, 23 and 24).
+    Reason: the script must match the server's checks exactly.
+
+59. **Degenerate rows.** For rows with a missing, boolean or non-integer seq, the script must
+    report invalid and never crash. The exact first_mismatch string for these rows is not part
+    of the cross-check (decision 19). Reason: the database cannot hold such rows, so there is
+    no server value to match.
+
+60. **stderr format.** For a mismatch the script writes the line
+    `ledger verify mismatch: seq=N check=NAME` to stderr, where NAME is one of seq, prev_hash,
+    hash or uncanonicalizable, the same names the server logs (decision 21). It never writes a
+    payload value or a stored hash. Reason: tests compare the script's check names with the
+    server's.
+
+61. **Standard library only.** The script runs on the Python standard library only. It is
+    written to run on Python 3.9 or newer where this costs nothing, but it is tested on 3.12
+    only, and reports must say so. Reason: the other team must be able to run it anywhere.
+
 ## Carry-forward checklist
 
 M5 (standalone verifier):
