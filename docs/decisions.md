@@ -376,21 +376,115 @@ handled.
     written to run on Python 3.9 or newer where this costs nothing, but it is tested on 3.12
     only, and reports must say so. Reason: the other team must be able to run it anywhere.
 
+## M5
+
+### Decided during M5 implementation
+
+62. **Where "anywhere in a row" applies.** A non-integer number, NaN, Infinity, U+0000 or a
+    lone surrogate makes a row uncanonicalizable when it is inside one of the six content
+    fields. In prev_hash or hash, such a value fails that field's own check (check=prev_hash or
+    check=hash). In an unknown extra key it is ignored. Reason: decisions 56 and 57 say
+    "anywhere in a row", but decisions 24 and 58 say unknown extra keys are ignored, and the
+    server only canonicalizes the six content fields. Settled by reasoning from the spec (the
+    hash covers only the six content fields), as decision 55 directs. The cross-implementation
+    and differential tests agree with the server on it.
+
+63. **A usage error prints nothing on stdout.** With no argument or more than one, the script
+    writes the usage line to stderr and exits 2, with an empty stdout. Reason: decision 53 keeps
+    usage errors apart from results, and a result line would report a check that never ran.
+
+64. **Rows without a usable seq sort first.** Before checking, rows are sorted by stored seq.
+    A row whose seq is missing, a boolean, a string, a non-integer number or null sorts before
+    every integer seq, in file order, so verification stops at it with check=seq and
+    entries_checked 1. Reason: sorting must never crash on such rows, and decision 59 requires
+    only that they are reported invalid.
+
+65. **JSON parsing limits.** The script parses with Python's `json` module.
+    - For a duplicated key, the last value wins.
+    - These count as unusable input (decision 54), with the reason on stderr:
+      - a UTF-8 byte order mark;
+      - an integer literal longer than Python's 4300-digit conversion limit;
+      - nesting too deep to parse.
+    - A row nested too deep to canonicalize is uncanonicalizable.
+    - `--help` and `-h` are treated as file paths. The script has no options.
+
+    Reason: unusable input must never pass or crash (decision 54). The script must stay on the
+    standard library (decision 61).
+
+66. **tools/__init__.py.** An empty `tools/__init__.py` lets the tests import the script as
+    `tools.verify_ledger`. The script itself needs no package, and runs as a file under
+    `python -I -S` from any directory. Reason: the in-process tests call `main()` directly, and
+    the subprocess tests run the file in isolated mode.
+
+67. **Differential test inputs.** `tests/test_verify_differential.py` uses seed 20261012 and
+    300 random chains.
+    - The server's `verify_entries` gets the rows sorted by stored seq, mirroring the database's
+      `ORDER BY seq` (decision 23). The script gets them shuffled.
+    - The test compares the full result and the failed check's name.
+    - For cases with a degenerate seq, it compares only `valid` (decision 59).
+
+    Reason: the server's pure function expects rows in seq order, while the script must sort
+    them itself (decision 58).
+
+68. **Mutation checks.** All 17 mutations listed for STEP 4 were run against the three M5 test
+    files, with the script restored byte for byte after each (sha256 prefix 06e89a9b32cec1eb).
+    - 16 made at least one new test fail.
+    - "Recompute the hash from the previous row's hash instead of the stored prev_hash" made no
+      test fail. It is an equivalent mutant. Check 2 returns prev_hash unless the stored
+      prev_hash equals the previous row's hash, so by the time check 3 runs, the two values are
+      the same string. No input can tell the mutant from the original.
+    - A higher-order mutant was added to show that the property is still guarded. It removes
+      the prev_hash link check AND recomputes from the previous row's hash, and it makes 4
+      tests fail.
+    - How to treat the equivalent mutant is left to the user (open; not decided here).
+
+69. **ruff formats Python inside Markdown.** ruff 0.17 checks Python code blocks in `.md`
+    files, so `ruff format --check .` covers `integration_notes.md`. Its example was formatted
+    in a separate commit. Reason: pass criterion 4 (ruff clean) covers the whole repository.
+
+### M5 notes
+
+- `integration_notes.md` (repository root) is the hand-off for the Part 1, 3 and 4 owners. Its
+  citations were checked with a throwaway script: every cited path, test, decision number,
+  spec section and addendum rule exists.
+- `lock_timeout` applies to the ledger's advisory lock. In the sandbox, a transaction with
+  `lock_timeout = '500ms'` failed after 0.5 s with SQLSTATE 55P03 while another held key
+  1279607879. This was a one-off check; there is no test for it.
+- The script was checked by hand under Python 3.12 (the supported test version, decision 61).
+  It was also run once under the system Python 3.13 with the same results. That run is not a
+  support claim.
+
+### Open items for integration (M5)
+
+These are also section 9 of `integration_notes.md`.
+
+- The actor_id for GAP_CLOSED, NOTIFICATION_REQUESTED and WEBHOOK_REGISTERED is not pinned by
+  the spec. Owners: Parts 1 and 3.
+- GAP_CLOSED is appended at ingest step 6, so the ledger lock is held for the rest of the
+  ingest transaction. Owners: Parts 1 and 3.
+- Who creates the database roles, given that migrations run as a role without CREATEROLE.
+  Owner: Part 4.
+- Whether the real `clock.now()` opens a second connection inside `append`, which holds the
+  ledger lock. Owner: Part 4.
+- The Part 2 endpoint tests depend on the auth override, the ledger-based event stub and the
+  exact error messages, so they need small updates when Part 1 lands. Owner: Part 1.
+
 ## Carry-forward checklist
 
 M5 (standalone verifier):
-- [ ] The script recomputes the hash from the stored prev_hash.
-- [ ] The script never crashes on malformed rows.
-- [ ] The jsonb float edit and the 1e3 edit give the same mismatch seq on the script and the
-      server.
-- [ ] The script and the server agree on every M3 tamper case.
-- [ ] The script sorts rows by stored seq before checking, so it matches the server's
+- [x] The script recomputes the hash from the stored prev_hash (decision 18; mutation 5 in
+      decision 68).
+- [x] The script never crashes on malformed rows (`tests/test_verify_script.py`).
+- [x] The jsonb float edit and the 1e3 edit give the same mismatch seq on the script and the
+      server (`tests/api/test_cross_verify.py`).
+- [x] The script and the server agree on every M3 tamper case (`tests/api/test_cross_verify.py`).
+- [x] The script sorts rows by stored seq before checking, so it matches the server's
       `ORDER BY seq` (decision 23).
-- [ ] A row missing any of the 8 fields is a mismatch at that seq, including a missing
+- [x] A row missing any of the 8 fields is a mismatch at that seq, including a missing
       subject_id; a missing content field reports as uncanonicalizable (decision 24).
-- [ ] An explicit `"subject_id": null` is valid (decision 24).
-- [ ] An unknown extra key in a row is ignored (decision 24).
-- [ ] The script reads the M4 export format (M4 notes): an array of 8-field entries in seq
+- [x] An explicit `"subject_id": null` is valid (decision 24).
+- [x] An unknown extra key in a row is ignored (decision 24).
+- [x] The script reads the M4 export format (M4 notes): an array of 8-field entries in seq
       order.
 
 M6 README:
@@ -408,3 +502,38 @@ M6 README:
 
 M6 also owns:
 - [ ] `docs/ac06_storage_evidence.md`.
+
+## Carry-forward for M6
+
+Branch: all M6 work, including the final push and the draft PR, goes on `development-ledger`
+(decision 46).
+
+README items added in M5:
+- [ ] The standalone verifier: usage, the output line, exit codes 0, 1 and 2, and the stderr
+      formats (decisions 52 to 54 and 60).
+- [ ] The hash definition and the three-entry worked example (addendum rule 7), as in
+      `integration_notes.md` section 6.
+- [ ] How another team re-verifies an export (`integration_notes.md` section 6).
+- [ ] The script is standard library only, written for Python 3.9 or newer, and tested on 3.12
+      only (decision 61).
+- [ ] The script will not detect end-of-ledger removal, and will not give exact strings for
+      degenerate seq rows (decisions 16 and 59).
+- [ ] A link to `integration_notes.md` for the Part 1, 3 and 4 owners.
+
+Consolidated README checklist (every README item so far):
+- [ ] The global append lock serializes every view and audit call (M4 notes).
+- [ ] Export shows every entry to any VIEWER, so webhook URLs must not carry secrets.
+- [ ] Size the application engine pool against PostgreSQL's max_connections (decision 38).
+- [ ] Part 4 sets `lock_timeout` or `statement_timeout` at connection level (decision 10).
+- [ ] How to restart the Docker daemon (decision 12).
+- [ ] The 2**53 JavaScript precision note (decision 6).
+- [ ] The verify memory scale note (decision 20).
+- [ ] The end-of-ledger truncation limit and the forged-last-row limit (decision 16).
+- [ ] The ORM Session handle type (decision 8).
+- [ ] No per-entry-type payload shape check (decision 11).
+- [ ] The verify check order (decision 13).
+- [ ] The M5 README items above.
+
+Other M6 work:
+- [ ] `docs/ac06_storage_evidence.md`: the table grants and the trigger definition, for the
+      manual half of AC-06 (addendum rule 1).
