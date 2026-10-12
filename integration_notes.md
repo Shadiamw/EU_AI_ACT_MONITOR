@@ -200,11 +200,11 @@ below is the one the test route uses (`tests/api/g2_routes.py`):
 ```python
 @router.get("/v1/events/{event_id}")
 def get_event(event_id: str, principal: Reader, session: DbSession) -> ...:
-    if not events.exists(session, event_id):      # unknown id: 404, nothing written
+    if not events.exists(session, event_id):  # unknown id: 404, nothing written
         raise not_found()
-    body = ...                                    # build the event response
-    audit.record_view(session, principal, event_id)   # last write: takes the ledger lock
-    session.commit()                              # commit BEFORE returning
+    body = ...  # build the event response
+    audit.record_view(session, principal, event_id)  # last write: takes the ledger lock
+    session.commit()  # commit BEFORE returning
     return body
 ```
 
