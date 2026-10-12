@@ -101,6 +101,27 @@ handled.
 22. **jsonb 1e3.** jsonb stores 1e3 as the integer 1000, so that edit is caught by the hash
     check rather than as uncanonicalizable. Both give a mismatch at the same seq.
 
+## M3 decisions A and B
+
+23. **first_mismatch is the stored seq (decision A).** first_mismatch is the failing entry's
+    stored seq as a string, as the spec says ("that entry's seq"). Removing the seq field from
+    a row reports `"None"` (the degenerate case, decision 19). In the database, verify reads
+    rows `ORDER BY` the stored seq. If row k's seq is edited to k+100, that row sorts to the
+    end, so the first failure is the row after it: for a middle row k verify reports `"k+1"`
+    (check=seq), and for the last row N edited to N+100 it reports `"N+100"` (check=seq).
+    Both are detected. The in-memory matrix in `tests/test_verify_extra.py` keeps the rows in
+    their original order and asserts the stored seq (`"k+100"`).
+
+24. **A row missing any of the 8 fields is a mismatch (decision B).** A row missing any of
+    seq, entry_type, actor_id, subject_id, payload, recorded_at, prev_hash or hash is a
+    mismatch at that seq. This includes a missing subject_id. The check order still applies,
+    so the reported check is the first one that fails: a missing seq gives check=seq, a
+    missing prev_hash gives check=prev_hash, a missing hash gives check=hash, and a missing
+    content field (entry_type, actor_id, subject_id, payload or recorded_at) gives
+    check=uncanonicalizable. A row with an explicit `"subject_id": null` stays valid. An
+    unknown extra key in a row is ignored, because the hash covers only the six content
+    fields.
+
 ## Carry-forward checklist
 
 M5 (standalone verifier):
@@ -109,6 +130,12 @@ M5 (standalone verifier):
 - [ ] The jsonb float edit and the 1e3 edit give the same mismatch seq on the script and the
       server.
 - [ ] The script and the server agree on every M3 tamper case.
+- [ ] The script sorts rows by stored seq before checking, so it matches the server's
+      `ORDER BY seq` (decision 23).
+- [ ] A row missing any of the 8 fields is a mismatch at that seq, including a missing
+      subject_id; a missing content field reports as uncanonicalizable (decision 24).
+- [ ] An explicit `"subject_id": null` is valid (decision 24).
+- [ ] An unknown extra key in a row is ignored (decision 24).
 
 M6 README:
 - [ ] Part 4 sets `lock_timeout` or `statement_timeout` at connection level.
