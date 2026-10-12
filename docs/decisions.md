@@ -53,3 +53,28 @@ handled.
 
 12. **Sandbox Docker daemon.** The sandbox's Docker daemon sometimes stops between sessions.
     This is not a code issue. The M6 README must say how to restart it.
+
+## M3: verify core and tamper detection
+
+13. **Check order.** Entries are read in ascending seq. For each entry: (1) seq: the first
+    entry must be seq 1 and every later entry the previous seq + 1; (2) prev_hash equals the
+    previous entry's hash (64 zeros for the first); (3) the hash recomputed from the stored
+    fields, including the stored prev_hash, equals the stored hash. Verify stops at the first
+    failure; entries_checked counts the entries examined including the bad one.
+
+14. **first_mismatch is a string.** The result has exactly `valid`, `entries_checked` and
+    `first_mismatch`, where first_mismatch is the seq as a string, or None when valid. The
+    failed check is logged (WARNING on the `ledger` logger) but never part of the result.
+
+15. **Uncanonicalizable rows.** A stored row that cannot be canonicalized (for example a jsonb
+    float such as 1.5 or 1.0) fails check 3 as a mismatch at that seq and never raises
+    (decision 2). jsonb stores 1e3 as the integer 1000, so that edit canonicalizes and is caught
+    by the ordinary hash recompute instead.
+
+16. **Known limits are tests.** `test_known_limit_deleting_the_last_row_is_not_detected` and
+    `test_known_limit_forged_last_row_with_consistent_hash_is_not_detected` document addendum
+    rule 12: both report valid by design until Phase 5.
+
+17. **Verify takes no lock.** Verify reads with one ordinary SELECT in seq order as the
+    application role. It writes nothing, takes no advisory lock and never waits for appends;
+    an uncommitted append is simply not visible to it.
