@@ -172,6 +172,27 @@ def canonical_content(row: Mapping[str, Any]) -> str | None:
     return json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def hash_check(row: Mapping[str, Any]) -> str | None:
+    """Check 3 on its own: recompute this row's hash and compare it with its stored hash.
+
+    It receives only the row, so it uses the row's own stored prev_hash and cannot see any
+    other row (docs/decisions.md 18 and 70). Returns None if the hashes match,
+    "uncanonicalizable" if the content fields or the stored prev_hash cannot be used, and
+    "hash" if the recomputed hash differs from the stored one.
+    """
+    canonical = canonical_content(row)
+    stored_prev_hash = row.get("prev_hash")
+    if (
+        canonical is None
+        or not isinstance(stored_prev_hash, str)
+        or _LOWER_HEX_64.fullmatch(stored_prev_hash) is None
+    ):
+        return "uncanonicalizable"
+    if entry_hash(stored_prev_hash, canonical) != row.get("hash"):
+        return "hash"
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print(USAGE, file=sys.stderr)
@@ -209,18 +230,7 @@ def _failed_check(
     if row.get("prev_hash") != previous_hash:
         return "prev_hash"
 
-    canonical = canonical_content(row)
-    stored_prev_hash = row["prev_hash"]
-    if (
-        canonical is None
-        or not isinstance(stored_prev_hash, str)
-        or _LOWER_HEX_64.fullmatch(stored_prev_hash) is None
-    ):
-        return "uncanonicalizable"
-    # The stored prev_hash, not the previous entry's hash: this check stands on its own.
-    if entry_hash(stored_prev_hash, canonical) != row.get("hash"):
-        return "hash"
-    return None
+    return hash_check(row)
 
 
 def _order_key(row: Mapping[str, Any]) -> tuple[int, int]:
