@@ -122,6 +122,62 @@ handled.
     unknown extra key in a row is ignored, because the hash covers only the six content
     fields.
 
+## M4 decisions
+
+25. **Commit inside the handler.** Each request handler commits explicitly before it returns,
+    and rolls back on any exception. Commit is never done in a dependency's teardown code.
+    Reason: teardown can run after the response is sent, so the next request could run before
+    the previous AUDIT_VIEWED is committed.
+
+26. **One transaction per request.** Each request uses one transaction at READ COMMITTED
+    (isolation_level set on the engine), as monitor_app. Reason: append requires READ
+    COMMITTED (addendum rule 5), and the endpoints must run with the application role's grants.
+
+27. **Wrong method is 404.** A wrong HTTP method on a known route returns 404 NOT_FOUND with the
+    contract error body. Reason: the spec has no code for 405 and no code is invented. Part 1
+    should confirm this when it lands.
+
+28. **Error mapping.** Unknown routes return 404 NOT_FOUND. FastAPI's default 422 is replaced
+    by 400 MALFORMED_BODY. LedgerError and any unexpected exception return 500 INTERNAL_ERROR
+    with a generic message. No stack trace, payload value or hash appears in a body or a log.
+    Reason: shared rules (every error uses the contract body) and the ledger's no-leak rule.
+
+29. **Auth stub.** The principal comes from one overridable resolver function whose default
+    returns REVIEWER rev-1 (plan G3). No principal gives 401 MISSING_OR_INVALID_KEY. A role
+    outside the allowed list gives 403 FORBIDDEN_ROLE. Check order is 401, then 403, then the
+    404 lookup. Reason: the spec's check order, and tests need several actors.
+
+30. **Event lookup stub (plan G1).** `events.exists` is true when the ledger holds an
+    EVENT_FLAGGED or GAP_OPENED entry whose subject_id is that id. An unknown event gives 404
+    and nothing is written. Reason: addendum rule 1 ("until Part 1 exists, use an entry created
+    by append").
+
+31. **Audit reads before it appends.** Audit builds its response before it appends
+    AUDIT_VIEWED, so the response never contains its own view. The append and the commit
+    happen before the response is returned. Reason: spec ("the next call does").
+
+32. **Export and verify are read-only.** They write no ledger entry, take no advisory lock and
+    never block appends. Reason: spec (no entry for an export) and decision 17.
+
+33. **Verify response.** Verify returns exactly {valid, entries_checked, first_mismatch}, with
+    first_mismatch a string or null. No head_seq or head_hash. Reason: addendum rule 6.
+
+34. **The G2 route stays in tests.** The G2 test-only route lives only in tests/ and is never
+    mounted by app/main.py. Reason: GET /v1/events/{id} belongs to Part 1.
+
+35. **New read helpers in a new file.** New read helpers live in `app/ledger/read.py`.
+    Existing M0 to M3 code and tests are not modified. Reason: keeps the verified M1 to M3 code
+    unchanged.
+
+### Stubs to replace when Part 1 lands
+
+- `app/errors.py`: ApiError and the global error handlers.
+- `app/auth.py`: the principal resolver and `require(*roles)`.
+- `app/events.py`: `exists(session, event_id)`.
+- `app/db.py`: engine and per-request session handling.
+- `app/main.py`: the app factory, which mounts only the Part 2 router.
+- The G2 test-only route in tests/.
+
 ## Carry-forward checklist
 
 M5 (standalone verifier):
