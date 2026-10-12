@@ -10,7 +10,10 @@ Payload values may be str, int, bool, None, and nested objects (str keys) or arr
 Anything else, including any float (1.0, inf, NaN), Decimal, datetime, bytes, set and tuple,
 raises LedgerError. Messages name the type and its location in the payload, never the value.
 
-Implementation choices (not fixed by the artifacts):
+Integers of any size are accepted, including above 2**53; a JavaScript re-verifier would lose
+precision on those (docs/decisions.md, decision 6).
+
+Settled decisions (docs/decisions.md):
 
 - recorded_at truncates microseconds to milliseconds; it never rounds, so .999999 gives .999
   and the second never rolls over.
@@ -19,7 +22,10 @@ Implementation choices (not fixed by the artifacts):
 - Strings containing U+0000 or a lone surrogate are rejected. U+0000 cannot be stored in a
   PostgreSQL jsonb or text column, and a lone surrogate has no UTF-8 encoding, so neither
   could be stored and hashed as defined.
+- actor_id and subject_id must be non-empty strings; subject_id is None for "no subject",
+  never "".
 - canonical_json validates its input, so a canonical form never exists for an invalid entry.
+  Verify (M3) treats a stored row that raises LedgerError here as a mismatch at that seq.
 """
 
 import hashlib
