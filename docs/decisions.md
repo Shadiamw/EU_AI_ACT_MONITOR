@@ -249,6 +249,77 @@ handled.
 - `app/main.py`: the app factory, which mounts only the Part 2 router.
 - The G2 test-only route in tests/.
 
+## M4 close-out
+
+46. **One branch for all work.** All Part 2 work, including M6's final push and its draft PR,
+    uses the branch `development-ledger`. The plan's earlier branch name
+    `claude/project-thread-3jnz6o` is superseded.
+
+47. **M4 had 18 mutation checks.** The M4 prompt listed 16 mutations. The "audit commits after
+    returning" mutation was run as two variants, and one extra mutation was added, for 18 in
+    total. Every one made at least one new test fail, and each file was restored byte for
+    byte. (The M4 report's phrase "the 17 you listed" counted the split commit mutation as two
+    and should read "the 16 listed, with the commit mutation split in two".)
+    1. Audit appends AUDIT_VIEWED before reading.
+    2. Audit skips the AUDIT_VIEWED append.
+    3. Audit does not filter by subject_id.
+    4. Audit orders by seq descending.
+    5. The 404 path still appends (and commits) AUDIT_VIEWED.
+    6. Audit commits after returning: the commit moved into the session dependency's teardown.
+    7. Audit commits after returning: the commit run as a background task.
+    8. Export drops the hash field.
+    9. Export orders by something other than seq (hash).
+    10. Verify writes a ledger entry.
+    11. Verify returns first_mismatch as an int.
+    12. Verify adds an extra key (head_seq).
+    13. The role check allows SYSTEM.
+    14. 403 and 404 swapped: the event lookup runs before the role check.
+    15. 401 and 403 swapped: a missing principal is treated as a wrong role.
+    16. The unknown-route (404/405) handler is removed.
+    17. The LedgerError mapping is removed (LedgerError is re-raised).
+    18. Extra: export takes the append lock.
+
+48. **Commit 1440749 does not import on its own.** It adds `app/main.py`, which imports
+    `app.api`; that package only arrives in the next commit, 968a603. It was not rewritten. A
+    squash merge of the final PR would remove the issue.
+
+49. **The commit-before-return guard.** `test_each_audit_view_is_committed_before_the_response`
+    in `tests/api/test_audit.py` is the only test that catches a commit made after the
+    response has started (decisions 25 and 43). It carries a comment saying it must not be
+    deleted or weakened. In the close-out, mutations 6 and 7 were each run 5 times, and the
+    guard failed all 10 times. The check is deterministic: the row count runs inside the ASGI
+    send call for the response start, before the response can proceed, so it does not depend
+    on timing.
+
+50. **Real-server check (close-out, not a test).** A throwaway script outside the repo started
+    uvicorn 0.30.6 with `app.main:app` against the test database as monitor_app (default stub
+    principal rev-1). Over real HTTP: 50 sequential audit calls each returned exactly n-1
+    AUDIT_VIEWED items. 20 concurrent audit calls from threads all returned 200.
+    `GET /v1/ledger/verify` returned `{"valid":true,"entries_checked":71,"first_mismatch":null}`
+    (1 + 50 + 20 entries). `GET /v1/ledger/export` returned 71 entries with contiguous seqs,
+    and every hash recomputed and linked. uvicorn was installed outside the project for this
+    check only; it is not a project dependency yet.
+
+51. **Index on subject_id.** Migration 0002 already creates `ix_ledger_entry_subject_seq` on
+    `(subject_id, seq)`, so the audit lookup uses an index scan. With 20,000 rows (1,000 events
+    of 20 entries each), `events.exists` took a median of 0.42 ms and `read.audit_trail` a
+    median of 0.50 ms over 50 runs, measured once in the sandbox. This is report-only, with no
+    timing assertion in any test. No scale note is needed for the audit lookup. The event
+    lookup stub (decision 30) also filters on subject_id, so it uses the same index.
+
+### Open items for integration
+
+- A wrong HTTP method on a known route returns 404 NOT_FOUND (decision 27, item 3 of the M4
+  decisions). Part 1 must confirm this.
+- The stubs to replace when Part 1 lands are listed under "Stubs to replace when Part 1
+  lands" above.
+- Part 4 sets `lock_timeout` or `statement_timeout` at connection level (decision 10, the M2
+  item on lock timeouts).
+- Real-server result (decision 50): over real HTTP under uvicorn, the commit-before-return
+  behavior, concurrency, verify and export all held.
+- Index finding (decision 51): `(subject_id, seq)` is indexed, and the audit lookup takes about
+  0.5 ms at 20,000 rows.
+
 ## Carry-forward checklist
 
 M5 (standalone verifier):
