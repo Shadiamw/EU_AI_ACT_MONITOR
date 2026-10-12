@@ -386,3 +386,84 @@ def test_verify_runs_as_application_role_with_select_only(
         "DELETE": False,
         "TRUNCATE": False,
     }
+
+
+# 6. Editing a stored seq in the database (decision 23)
+
+
+def trigger_enabled(owner_engine: Engine) -> bool:
+    with owner_engine.connect() as conn:
+        state = conn.execute(
+            text(
+                "SELECT tgenabled FROM pg_trigger WHERE tgname = 'ledger_entry_block_update_delete'"
+            )
+        ).scalar_one()
+    return bool(state == "O")
+
+
+def edit_seq_and_verify(
+    app_engine: Engine,
+    owner_engine: Engine,
+    caplog: pytest.LogCaptureFixture,
+    old_seq: int,
+    new_seq: int,
+) -> tuple[VerifyResult, str | None]:
+    """Edit one stored seq as the owner, then verify the database; return result and check.
+
+    Also checks that the trigger is enabled again afterwards, and that the pure function on
+    the rows read back in database order gives the same result as verify_ledger.
+    """
+    # owner_edit disables the trigger, edits and re-enables it in one transaction; if the edit
+    # fails, the rollback also undoes the disable, so the trigger is never left off.
+    owner_edit(owner_engine, f"UPDATE ledger_entry SET seq = {new_seq} WHERE seq = {old_seq}")
+    assert trigger_enabled(owner_engine)
+    caplog.clear()
+    caplog.set_level(logging.INFO, logger="ledger")
+    with Session(app_engine) as session:
+        from_database = verify_ledger(session)
+        session.rollback()
+    checks = [
+        r.getMessage().rsplit("check=", 1)[1]
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    ]
+    rows_in_database_order = read_rows_as_dicts(app_engine)
+    assert [row["seq"] for row in rows_in_database_order] == sorted(
+        row["seq"] for row in rows_in_database_order
+    )
+    assert verify_entries(rows_in_database_order) == from_database
+    return from_database, (checks[0] if checks else None)
+
+
+@pytest.mark.parametrize("k", range(1, 6))
+def test_editing_a_non_last_seq_in_the_database_is_caught_at_the_next_row(
+    app_engine: Engine,
+    owner_engine: Engine,
+    cleanup_after: None,
+    caplog: pytest.LogCaptureFixture,
+    k: int,
+) -> None:
+    build_flagged_chain(app_engine, 6)
+    # Verify reads ORDER BY the stored seq, so row k (now k + 100) sorts to the end. The rows
+    # are read as 1..k-1, k+1, ..., 6, k+100. Rows 1..k-1 pass. The k-th row read is the old
+    # row k+1: for k > 1 its seq is not previous + 1 (k-1 + 1 = k), and for k = 1 it is the
+    # first row but not seq 1. Either way the seq check fails there, after k entries, and
+    # first_mismatch is that row's stored seq, k + 1 (decision 23). The edited row itself is
+    # never reached.
+    assert edit_seq_and_verify(app_engine, owner_engine, caplog, k, k + 100) == (
+        invalid(k, str(k + 1)),
+        "seq",
+    )
+
+
+def test_editing_the_last_seq_in_the_database_is_caught_at_that_row(
+    app_engine: Engine, owner_engine: Engine, cleanup_after: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    n = 6
+    build_flagged_chain(app_engine, n)
+    # Row N keeps its place at the end. Rows 1..N-1 pass, then row N's stored seq is N + 100,
+    # not N: the seq check fails at the N-th entry and first_mismatch is "N+100".
+    assert edit_seq_and_verify(app_engine, owner_engine, caplog, n, n + 100) == (
+        invalid(n, str(n + 100)),
+        "seq",
+    )
