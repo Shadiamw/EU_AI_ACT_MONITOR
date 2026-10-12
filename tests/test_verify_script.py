@@ -6,6 +6,8 @@ comments next to each assertion; they are not copied from output.
 
 import ast
 import copy
+import hashlib
+import inspect
 import re
 import shutil
 import sys
@@ -145,6 +147,104 @@ def test_script_runs_isolated_from_another_directory(tmp_path: Path) -> None:
         {"valid": False, "entries_checked": 2, "first_mismatch": "2"},
         "hash",
     )
+
+
+# A2. The hash check on its own (decision 70)
+
+OTHER_PREV_HASH = "ab" * 32  # well-formed, and not the hash of any fixture entry
+
+
+def own_hash(prev_hash: str, canonical: str) -> str:
+    """The addendum hash, computed here with hashlib, so these tests do not trust the script."""
+    return hashlib.sha256((prev_hash + canonical).encode("utf-8")).hexdigest()
+
+
+def entry_2_with_prev_hash(prev_hash: str) -> dict[str, Any]:
+    """Fixture entry 2 with this stored prev_hash, and a stored hash computed from it."""
+    row = fixture_rows()[1]
+    row["prev_hash"] = prev_hash
+    row["hash"] = own_hash(prev_hash, CANONICAL_2)
+    return row
+
+
+def test_hash_check_takes_only_the_row() -> None:
+    # One parameter, the row: the function cannot see the previous row or its hash.
+    assert list(inspect.signature(script.hash_check).parameters) == ["row"]
+
+
+@pytest.mark.parametrize(
+    "prev_hash",
+    [OTHER_PREV_HASH, GENESIS_PREV_HASH, HASH_2, HASH_3],
+    ids=["other", "genesis", "own-hash", "successor-hash"],
+)
+def test_a_row_consistent_with_its_own_prev_hash_passes(prev_hash: str) -> None:
+    # (a) Entry 2's real predecessor hash is HASH_1, and none of these is HASH_1. The stored
+    # hash was computed from the row's own stored prev_hash, so the row is consistent with
+    # itself and the hash check passes (decision 18).
+    assert prev_hash != HASH_1
+    assert script.hash_check(entry_2_with_prev_hash(prev_hash)) is None
+
+
+def test_each_fixture_row_passes_on_its_own() -> None:
+    # (a) Each published entry, checked alone with no predecessor in sight, is consistent.
+    assert [script.hash_check(row) for row in fixture_rows()] == [None, None, None]
+
+
+def test_changing_only_the_stored_prev_hash_flips_the_result() -> None:
+    # (b) Consistent with OTHER_PREV_HASH; the same row with only its stored prev_hash
+    # changed (to the real predecessor's hash, HASH_1) no longer matches its stored hash.
+    row = entry_2_with_prev_hash(OTHER_PREV_HASH)
+    assert script.hash_check(row) is None
+    row["prev_hash"] = HASH_1
+    assert script.hash_check(row) == "hash"
+    # The other direction: the real entry 2 is consistent with HASH_1 and fails once only
+    # its stored prev_hash changes.
+    real = fixture_rows()[1]
+    assert script.hash_check(real) is None
+    real["prev_hash"] = OTHER_PREV_HASH
+    assert script.hash_check(real) == "hash"
+
+
+def uncanonicalizable_cases() -> dict[str, dict[str, Any]]:
+    cases: dict[str, dict[str, Any]] = {}
+    for field in CONTENT_FIELDS:
+        row = fixture_rows()[1]
+        del row[field]
+        cases[f"missing-{field}"] = row
+    float_text = FIXTURE.read_text(encoding="utf-8").replace('"0.34"', "0.34")
+    cases["float-in-payload"] = script.load_export(float_text.encode("utf-8"))[1]
+    nan_text = FIXTURE.read_text(encoding="utf-8").replace('"0.34"', "NaN")
+    cases["nan-in-payload"] = script.load_export(nan_text.encode("utf-8"))[1]
+    nul = fixture_rows()[1]
+    nul["payload"]["observed_value"] = "0.3\x004"
+    cases["nul-in-payload"] = nul
+    wrong_type = fixture_rows()[1]
+    wrong_type["subject_id"] = ""
+    cases["empty-subject_id"] = wrong_type
+    no_prev = fixture_rows()[1]
+    del no_prev["prev_hash"]
+    cases["missing-prev_hash"] = no_prev
+    upper = fixture_rows()[1]
+    upper["prev_hash"] = HASH_1.upper()
+    cases["uppercase-prev_hash"] = upper
+    return cases
+
+
+@pytest.mark.parametrize("case", list(uncanonicalizable_cases()))
+def test_missing_or_uncanonicalizable_content_is_a_mismatch(case: str) -> None:
+    # (c) A missing content field or a value with no canonical form is a mismatch, reported
+    # as uncanonicalizable (decisions 24, 56 and 57). So is a prev_hash that is missing or not
+    # 64 lowercase hex characters, because no hash can be recomputed from it.
+    assert script.hash_check(uncanonicalizable_cases()[case]) == "uncanonicalizable"
+
+
+def test_a_missing_or_wrong_stored_hash_is_a_hash_mismatch() -> None:
+    # (c) The content canonicalizes, but the stored hash is missing or different.
+    no_hash = fixture_rows()[1]
+    del no_hash["hash"]
+    wrong = fixture_rows()[1]
+    wrong["hash"] = HASH_1
+    assert [script.hash_check(no_hash), script.hash_check(wrong)] == ["hash", "hash"]
 
 
 # B. Import check
