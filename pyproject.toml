@@ -39,4 +39,4 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "DTZ"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["app", "migrations", "tests"]
+files = ["app", "migrations", "tests", "tools"]
