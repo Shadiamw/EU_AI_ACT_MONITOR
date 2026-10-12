@@ -80,6 +80,18 @@ def validate_payload(payload: object) -> Payload:
     return payload
 
 
+def validate_actor_id(actor_id: object) -> str:
+    """actor_id must be a non-empty str (decision 5)."""
+    value = _validate_text(actor_id, "actor_id", allow_none=False)
+    assert value is not None
+    return value
+
+
+def validate_subject_id(subject_id: object) -> str | None:
+    """subject_id is a non-empty str, or None for "no subject" (decision 5)."""
+    return _validate_text(subject_id, "subject_id", allow_none=True)
+
+
 def format_recorded_at(moment: datetime) -> str:
     """Format an aware datetime as YYYY-MM-DDTHH:MM:SS.mmmZ in UTC, truncating to milliseconds."""
     if not isinstance(moment, datetime):
@@ -109,8 +121,8 @@ def canonical_json(
     content = {
         "seq": seq,
         "entry_type": validate_entry_type(entry_type),
-        "actor_id": _validate_text(actor_id, "actor_id", allow_none=False),
-        "subject_id": _validate_text(subject_id, "subject_id", allow_none=True),
+        "actor_id": validate_actor_id(actor_id),
+        "subject_id": validate_subject_id(subject_id),
         "payload": validate_payload(payload),
         "recorded_at": _validate_recorded_at(recorded_at),
     }
