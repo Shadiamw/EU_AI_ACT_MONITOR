@@ -179,3 +179,22 @@ def test_append_failure_is_a_generic_500_and_commits_nothing(
         assert record.exc_info is None
         assert record.exc_text is None
     assert any(r.name == "api" and "unhandled exception" in r.getMessage() for r in caplog.records)
+
+
+def test_the_real_app_does_not_mount_the_test_only_routes(
+    app_engine: Engine, owner_engine: Engine
+) -> None:
+    from app.main import create_app
+
+    flag_event(app_engine, "evt-a")
+    before = owner_rows(owner_engine)
+    with ApiClient(create_app()) as client:
+        # The event exists, but GET /v1/events/{id} belongs to Part 1 and is mounted only in
+        # the tests (decision 34): the real app treats it as an unknown route and logs nothing.
+        for path in ("/v1/events/evt-a", "/_test/typed", "/_test/session-info"):
+            response = client.get(path)
+            assert (response.status_code, response.json()) == (404, NOT_FOUND)
+        # The three Part 2 endpoints are mounted.
+        for path in ENDPOINTS:
+            assert client.get(path).status_code == 200
+    assert [r["entry_type"] for r in owner_rows(owner_engine)][len(before) :] == ["AUDIT_VIEWED"]
