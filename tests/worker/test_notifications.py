@@ -180,20 +180,23 @@ def test_within_bound_compares_latency_with_the_configured_bound(
     assert (payload["latency_seconds"], payload["within_bound"]) == (delay, within)
 
 
-def test_the_bound_is_configurable(
+@pytest.mark.parametrize(("delay", "within"), [(300, True), (301, False)])
+def test_ac04_the_bound_is_configurable_to_five_minutes(
     app_engine: Engine,
     owner_engine: Engine,
     fake_clock: FakeClock,
     receiver: Receiver,
     monkeypatch: pytest.MonkeyPatch,
+    delay: int,
+    within: bool,
 ) -> None:
-    monkeypatch.setenv("NOTIFY_MAX_DELAY_SECONDS", "60")
+    monkeypatch.setenv("NOTIFY_MAX_DELAY_SECONDS", "300")
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
     request_notification(app_engine)
-    fake_clock.advance(61)
+    fake_clock.advance(delay)
     notifications.deliver_due(app_engine)
     [payload] = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
-    assert payload["within_bound"] is False
+    assert (payload["latency_seconds"], payload["within_bound"]) == (delay, within)
 
 
 def test_each_subscribed_webhook_gets_its_own_delivery(

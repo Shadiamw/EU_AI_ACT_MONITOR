@@ -7,6 +7,7 @@ re-verify the exported ledger with the standalone script.
 
 import json
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,13 +40,14 @@ def test_gap_to_delivery_to_close_and_reverify(
         assert response.status_code == 201
         webhook_id = response.json()["webhook_id"]
 
-        # Ten minutes of silence: below the timeout, the worker does nothing.
+        # AC-02 boundary: 2 intervals withheld (10 minutes), the worker does nothing.
         fake_clock.advance(600)
         worker.run_iteration(app_engine, sweep=True)
         assert entry_types(owner_engine) == ["SEED", "WEBHOOK_REGISTERED"]
 
-        # Past 900 s: one iteration opens the gap and delivers its notification.
-        fake_clock.advance(301)
+        # AC-02: exactly 3 intervals (15 minutes) withheld. One iteration opens the gap and
+        # delivers its notification.
+        fake_clock.advance(300)
         worker.run_iteration(app_engine, sweep=True)
         assert entry_types(owner_engine) == [
             "SEED",
@@ -65,6 +67,15 @@ def test_gap_to_delivery_to_close_and_reverify(
         )
         assert delivered["payload"]["latency_seconds"] == 0
         assert delivered["payload"]["within_bound"] is True
+        # AC-02's expected result: the reviewer is notified within 15 minutes of the third
+        # missed interval (T0 + 900 s), read from the ledger as a grader would.
+        [delivered_at] = rows(
+            owner_engine,
+            "SELECT recorded_at FROM ledger_entry WHERE entry_type = 'NOTIFICATION_DELIVERED'",
+        )
+        third_missed = T0 + timedelta(seconds=900)
+        delivered_moment = datetime.fromisoformat(delivered_at["recorded_at"])
+        assert timedelta(0) <= delivered_moment - third_missed <= timedelta(minutes=15)
 
         audit = client.get(f"/v1/events/{event_id}/audit", headers=as_actor("viewer-1"))
         assert [(e["actor_id"], e["action"]) for e in audit.json()] == [
@@ -74,7 +85,7 @@ def test_gap_to_delivery_to_close_and_reverify(
         ]
 
         # Data resumes 1000 s after the last sample: Part 1's ingest closes the gap.
-        fake_clock.advance(99)
+        fake_clock.advance(100)
         with Session(app_engine) as session:
             assert gaps.close_if_open(session, "sys-42") == event_id
             session.execute(

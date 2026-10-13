@@ -703,8 +703,8 @@ settle is an **ASSUMPTION** to check against them.
 83. **When a gap opens.** A system is silent since `last_received_at`, or since
     `monitoring_started_at` if it has never sent a sample, so a seeded system gets a gap with no
     ingest at all (API contract: `GET /v1/events?type=monitoring_gap` without any ingest). A gap
-    opens when the silence is strictly longer than the timeout ("longer than", REQ-02): at 900
-    seconds nothing happens, at 901 it opens. The detection time is the sweep that notices.
+    opens when the silence reaches the timeout (amended by decision 92; first written as
+    strictly longer). The detection time is the sweep that notices.
     Each gap is opened in its own transaction, which locks the system row, then re-checks the
     silence and the open gap under the lock. A partial unique index allows one open gap per
     system, as a backstop. A failure for one system is rolled back, logged by type name and
@@ -783,6 +783,17 @@ settle is an **ASSUMPTION** to check against them.
       duplicates, and the test fails on the logged sweep failure);
     - making the webhook call while a transaction is open.
 
-91. **Test count.** 614: the 532 Part 2 tests plus 82 in `tests/worker/`. All pass on the Docker
+91. **Test count.** 615 (614 when first written): the 532 Part 2 tests plus 83 in
+    `tests/worker/`. All pass on the Docker
     setup. The worker process was also run for a few seconds against the container. It opened a
     gap for a system silent for 16 minutes and none for a fresh one.
+
+92. **A gap opens at exactly the timeout (AC-02).** REQ-02 says "longer than a configurable
+    timeout", but AC-02 sets up "withhold for exactly 3 intervals (15 min)" and expects a gap
+    event, with "withholding 2 intervals must NOT trigger" as the boundary. The sweeper now
+    opens a gap when the silence is 900 seconds or more: at 600 s and 899 s nothing happens, and
+    at 900 s the gap opens (`tests/worker/test_gaps.py`, `tests/worker/test_worker_system.py`).
+    At 900 s the third expected sample is due and has not arrived, so the third interval has
+    been missed. Reason: AC-02 is what the system is accepted against, and the one-second
+    difference cannot make a live system with samples every 300 s open a gap any earlier than
+    the third missed sample.

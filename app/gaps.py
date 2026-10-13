@@ -2,10 +2,11 @@
 
 A system is silent since its last sample (monitored_system.last_received_at, set by Part 1's
 ingest) or, if it has never sent one, since monitoring started (monitoring_started_at). When it
-has been silent for longer than the gap timeout (3 sampling intervals by default, so more than
-900 seconds), the sweeper opens one gap for it: a FLAGGED monitoring_gap event, GAP_OPENED and a
-flag_notification for the reviewer. The system has at most one open gap; its next sample closes
-it (close_if_open, called inside Part 1's ingest), and a new silence can then open a new one.
+has been silent for the gap timeout or longer (3 sampling intervals by default, so 900 seconds:
+the third missed sample; AC-02, decision 92), the sweeper opens one gap for it: a FLAGGED
+monitoring_gap event, GAP_OPENED and a flag_notification for the reviewer. The system has at
+most one open gap; its next sample closes it (close_if_open, called inside Part 1's ingest), and
+a new silence can then open a new one.
 
 Gap events skip review, deadlines and reports (steps 6 to 10): an outage is not a reportable
 incident. All times come from clock.now(), the simulated clock in the test environment.
@@ -33,7 +34,7 @@ WORKER_ACTOR = "system"  # background work (spec, 'Ledger entry format')
 
 
 def sweep(engine: Engine) -> list[str]:
-    """Open a gap for every system silent for longer than the timeout. Returns the new gap
+    """Open a gap for every system silent for at least the timeout. Returns the new gap
     event ids. Errors are logged by type name and rolled back; that system is retried on the
     next sweep."""
     timeout = timedelta(seconds=config.gap_timeout_seconds())
@@ -42,7 +43,7 @@ def sweep(engine: Engine) -> list[str]:
             session.execute(
                 text(
                     "SELECT s.system_id FROM monitored_system s"
-                    " WHERE COALESCE(s.last_received_at, s.monitoring_started_at) < :cutoff"
+                    " WHERE COALESCE(s.last_received_at, s.monitoring_started_at) <= :cutoff"
                     " AND NOT EXISTS (SELECT 1 FROM monitoring_gap g"
                     " WHERE g.system_id = s.system_id AND g.closed_at IS NULL)"
                     " ORDER BY s.system_id"
@@ -77,7 +78,7 @@ def _open_gap(session: Session, system_id: str, timeout: timedelta) -> str | Non
     # Re-check under the row lock: a sample or another sweeper may have got here first.
     now = clock.now()
     silent_since: datetime = system.last_received_at or system.monitoring_started_at
-    if now - silent_since <= timeout or _open_gap_id(session, system_id) is not None:
+    if now - silent_since < timeout or _open_gap_id(session, system_id) is not None:
         return None
 
     event_id = new_id("evt")

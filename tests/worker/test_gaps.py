@@ -1,7 +1,8 @@
 """Part 3: the gap sweeper (REQ-02) and closing a gap on the next sample.
 
 Times are on the fake clock, which starts at T0 = 2026-10-01T09:00:00Z. With the default
-configuration the gap timeout is 3 x 300 = 900 seconds, and a gap needs strictly more.
+configuration the gap timeout is 3 x 300 = 900 seconds: the third missed sample opens a gap
+(AC-02; decision 92).
 """
 
 import threading
@@ -53,14 +54,16 @@ def ingest_sample(app_engine: Engine, system_id: str, fake_clock: FakeClock) -> 
 # Timing
 
 
-def test_no_gap_at_exactly_the_timeout_and_one_a_second_later(
+def test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
     add_system(owner_engine, "sys-42", last_received_at=T0)
-    fake_clock.advance(900)  # silent for exactly 900 s: not longer than the timeout
+    fake_clock.advance(600)  # 2 intervals withheld: AC-02 says no gap
+    assert gaps.sweep(app_engine) == []
+    fake_clock.advance(299)  # 899 s: one second short of the third missed sample
     assert gaps.sweep(app_engine) == []
     assert entry_types(owner_engine) == []
-    fake_clock.advance(1)
+    fake_clock.advance(1)  # exactly 3 intervals (15 min) withheld: AC-02 says a gap
     opened = gaps.sweep(app_engine)
     assert len(opened) == 1
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
@@ -75,7 +78,7 @@ def test_timeout_follows_the_sampling_interval_and_interval_count(
     monkeypatch.setenv("SAMPLING_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("GAP_TIMEOUT_INTERVALS", "2")
     add_system(owner_engine, "sys-42", last_received_at=T0)
-    fake_clock.advance(120)
+    fake_clock.advance(119)
     assert gaps.sweep(app_engine) == []
     fake_clock.advance(1)
     assert len(gaps.sweep(app_engine)) == 1
@@ -355,7 +358,7 @@ def test_after_closing_a_new_silence_opens_a_new_gap(
     [first] = gaps.sweep(app_engine)
     fake_clock.advance(100)
     ingest_sample(app_engine, "sys-42", fake_clock)
-    fake_clock.advance(900)
+    fake_clock.advance(899)
     assert gaps.sweep(app_engine) == []  # measured from the new sample
     fake_clock.advance(1)
     [second] = gaps.sweep(app_engine)

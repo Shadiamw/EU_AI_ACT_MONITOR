@@ -271,8 +271,8 @@ if that user is the role running the migration. Migration 0003 creates the worke
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 614 tests. All pass on the Docker setup. The 532
-Part 2 tests also passed on the native setup; the 82 Part 3 tests have not been run there.
+At the time of writing the suite collects 615 tests. All pass on the Docker setup. The 532
+Part 2 tests also passed on the native setup; the 83 Part 3 tests have not been run there.
 
 ## 6. Known limits and operating notes
 
@@ -337,7 +337,7 @@ environment advancing the simulated clock takes effect at the next sweep or pass
 ### 8.1 Behaviour
 
 - **Gap.** A system is silent since its last sample, or since monitoring started if it has never
-  sent one. Silence longer than the timeout (3 × 300 = 900 seconds by default) opens one gap:
+  sent one. Silence of at least the timeout (3 × 300 = 900 seconds by default) opens one gap:
   a FLAGGED `monitoring_gap` event, GAP_OPENED, and a `flag_notification`. A system has at most
   one open gap. Its next sample closes the gap (GAP_CLOSED, with `gap_seconds` the whole silent
   time) and moves the event to CLOSED. Gap events skip review, deadlines and reports.
@@ -351,7 +351,15 @@ environment advancing the simulated clock takes effect at the next sweep or pass
   otherwise, and 400 `MALFORMED_BODY` for a bad body or a URL with credentials, a query string
   or a fragment (webhook URLs are visible in the export).
 
-### 8.2 Configuration
+### 8.2 Acceptance criteria
+
+| Id | Requirement | Where it is exercised | Method |
+|---|---|---|---|
+| AC-02 | REQ-02 | `tests/worker/test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do` (600 s and 899 s: no gap; 900 s: gap); `tests/worker/test_worker_system.py::test_gap_to_delivery_to_close_and_reverify` (exactly 15 minutes withheld, then the worker delivers to a real HTTP receiver within 15 minutes of the third missed interval) | Automated. The manual check of delivery reads NOTIFICATION_DELIVERED in `GET /v1/ledger/export`, or a registered webhook receiver |
+| AC-04 | REQ-04 | `tests/worker/test_notifications.py`: `test_delivery_appends_delivered_with_integer_latency_and_boolean_bound`, `test_within_bound_compares_latency_with_the_configured_bound` (900 s in bound, 901 s not), `test_ac04_the_bound_is_configurable_to_five_minutes` (300 s in bound, 301 s not) | Automated: `latency_seconds` and `within_bound` in NOTIFICATION_DELIVERED |
+| AC-12 | REQ-11 | Not in Phase 3: reminders need the deadlines of REQ-10. `reminder` is already a valid webhook type. | — |
+
+### 8.3 Configuration
 
 All are optional environment variables, in whole seconds or counts (decision 81).
 
@@ -365,7 +373,7 @@ All are optional environment variables, in whole seconds or counts (decision 81)
 | `WEBHOOK_TIMEOUT_SECONDS` | 5 | Timeout for a delivery or a verification ping |
 | `DELIVERY_MAX_ATTEMPTS` | 5 | Attempts before NOTIFICATION_FAILED |
 
-### 8.3 Known limits
+### 8.4 Known limits
 
 | Item | Decision |
 |---|---|

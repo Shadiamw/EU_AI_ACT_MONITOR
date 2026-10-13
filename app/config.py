@@ -44,7 +44,7 @@ def sampling_interval_seconds() -> int:
 
 
 def gap_timeout_seconds() -> int:
-    """REQ-02: silence longer than this opens a gap; 3 missed sampling intervals by default."""
+    """REQ-02: silence this long opens a gap; 3 missed sampling intervals by default."""
     return _positive_int("GAP_TIMEOUT_INTERVALS", 3) * sampling_interval_seconds()
 
 
