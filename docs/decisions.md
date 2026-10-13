@@ -451,7 +451,7 @@ handled.
     - **Higher-order mutant.** Removing the link check AND recomputing from the previous row's
       hash made 4 tests fail. This shows the stored-prev_hash rule matters as soon as the link
       check is gone.
-    - **The refactor.** By your choice, the recompute moved into its own function,
+    - **The refactor.** Chosen during M5 review: the recompute moved into its own function,
       `hash_check(row)` in `tools/verify_ledger.py`.
       - It receives only the row and uses the row's own stored prev_hash. The check order seq,
         then prev_hash, then hash is unchanged (decision 58).
@@ -474,7 +474,7 @@ handled.
     - **Pass criterion 3 (M5 STEP 6) now reads:** "every non-equivalent mutant is caught;
       equivalent mutants are documented with proof".
 
-    Reason: the user chose to restructure, and to keep the equivalence proof on record.
+    Reason: chosen during M5 review, to restructure and to keep the equivalence proof on record.
 
 ### M5 notes
 
