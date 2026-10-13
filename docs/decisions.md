@@ -571,3 +571,54 @@ Consolidated README checklist (every README item so far):
 Other M6 work:
 - [ ] `docs/ac06_storage_evidence.md`: the table grants and the trigger definition, for the
       manual half of AC-06 (addendum rule 1).
+
+## M6 decisions
+
+71. **README structure.** The existing README keeps its development setup, and gains a
+    "Ledger" part with, in order:
+    - what the ledger is and where it lives;
+    - the hash definition;
+    - the three-entry worked example;
+    - the standalone verifier;
+    - setup, migrations, tests and static checks;
+    - known limits and operating notes, each with its decision number;
+    - the REQ and AC ids the spec names for Part 2.
+
+    Per-caller rules (what Parts 1, 3 and 4 must do) stay in `integration_notes.md`, and the
+    reasons stay in this file. The README links to both instead of copying them. Reason: one
+    source for each fact, so the documents cannot drift apart.
+
+72. **How the AC-06 storage evidence is produced.** `docs/ac06_storage_evidence.md` holds raw,
+    unedited psql output from both setups (the postgres:16 container and the native PostgreSQL
+    16.15 server), each after `alembic downgrade base` and `alembic upgrade head`. It shows:
+    - the server version;
+    - `\dp ledger_entry`;
+    - every non-internal trigger definition;
+    - the attributes of the two roles.
+
+    A labelled demonstration runs in a scratch database that is dropped afterwards. It proves
+    three things: the application role can only insert and read; the trigger blocks UPDATE and
+    DELETE for every role, the owner included; and neither role is a superuser. It does not
+    prove that removal from the end of the ledger is detected (decision 16), and it shows that
+    the owner can TRUNCATE. Reason: addendum rule 1 asks for the grants and the trigger
+    definition as the manual half of AC-06, and real output cannot drift from the database.
+
+73. **Python versions in the README.** The project requires Python 3.12 (`pyproject.toml`).
+    The README says the standalone verifier is written for Python 3.9 or newer but tested on
+    3.12 only. Reason: decision 61. No other version was tested.
+
+74. **Two new committed tests.**
+    - `tests/test_readme_example.py` parses the hash definition's worked example, the genesis
+      value and the verifier usage line out of the README, and checks them against hashlib, the
+      fixture and the script, so the README cannot drift from the code.
+    - `tests/api/test_ledger_system.py` follows one scenario through migrations, append, seed,
+      concurrency, rollback, audit, export, the script, tampering, roles, errors and a restart,
+      to show the parts work together.
+
+    Reason: the README's example is pinned and re-verified by another team (spec, 'Ledger entry
+    format'), and the earlier tests check each part on its own.
+
+75. **M5 pushed first; M6 held locally.** At the start of M6, the 10 M5 commits were pushed to
+    `origin/development-ledger`, a fast-forward from e5b6973 to 0c87aa3. All M6 commits stay
+    local, with no pull request, until the M6 report is reviewed and approved. Reason: the M6
+    instructions make the M5 push the only push.
