@@ -642,10 +642,11 @@ Other M6 work:
     Reason: the scenario must be checkable against values derived from the spec, not against
     the output it checks.
 
-77. **The test count in the README and integration_notes.md.** Both now say 531, the count
-    after M6's two new files (13 and 14 tests). integration_notes.md said 504, which became
-    wrong when M6 added tests, so it was corrected under the rule that allows fixing a wrong
-    fact there. Reason: the stated count must match the latest run.
+77. **The test count in the README and integration_notes.md.** Both now say 532, the count
+    after M6's two new files (13 tests, and 15 including decision 79's case).
+    integration_notes.md said 504, which became wrong when M6 added tests, so it was corrected
+    under the rule that allows fixing a wrong fact there. Reason: the stated count must match
+    the latest run.
 
 78. **README fixes from the fresh-clone walkthrough.** Following the README in a fresh clone
     showed one failing step: right after `docker run`, `psql` failed with "server closed the
@@ -654,3 +655,11 @@ Other M6 work:
     `docker start`. It also says that a second run of the role bootstrap prints harmless
     "already exists" errors. Reason: every README command must work as written on a new
     machine; the code did not change.
+
+79. **A sixth tamper case in the system test.** Before running the M6 mutation checks, each
+    mutant's first failing test was predicted. For "remove the first-must-be-1 check in
+    `app/ledger/verify.py`", none of the five tamper cases in step g would fail: none touches
+    entry 1, and the earlier tests that catch it are pre-M6 tests. Step g now has a sixth case:
+    entry 1 deleted and entry 2 re-linked to the 64 zeros with a consistent hash. Expected
+    `{false, 1, "2"}` with check `seq`; without the rule, verify passes entry 2 and fails at
+    entry 3 instead. Reason: every M6 mutant must make at least one new test fail.

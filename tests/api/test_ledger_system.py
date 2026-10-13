@@ -198,6 +198,9 @@ TAMPER_EXPECTED = {
     "swap_20_and_21": (invalid(20, 20), "prev_hash"),
     "forge_40_consistent_hash": (invalid(41, 41), "prev_hash"),
     "seq_50_becomes_150": (invalid(50, 51), "seq"),
+    # Entry 1 removed and entry 2 re-linked to genesis with a consistent hash: only the
+    # first-must-be-1 rule catches it at entry 2 (decision 79).
+    "first_row_removed_and_relinked": (invalid(1, 2), "seq"),
 }
 
 
@@ -494,6 +497,17 @@ def forged_40(owner_engine: Engine) -> list[str]:
     return [f"UPDATE ledger_entry SET actor_id = 'rev-1', hash = '{forged_hash}' WHERE seq = 40"]
 
 
+def first_row_removed_and_relinked(owner_engine: Engine) -> list[str]:
+    with owner_engine.connect() as conn:
+        row = dict(conn.execute(text("SELECT * FROM ledger_entry WHERE seq = 2")).one()._mapping)
+    row["prev_hash"] = GENESIS
+    relinked_hash = sha256_hex(GENESIS, canonical(row))
+    return [
+        "DELETE FROM ledger_entry WHERE seq = 1",
+        f"UPDATE ledger_entry SET prev_hash = '{GENESIS}', hash = '{relinked_hash}' WHERE seq = 2",
+    ]
+
+
 TAMPERS: dict[str, Callable[[Engine], list[str]]] = {
     "payload_change_at_5": lambda _: [
         "UPDATE ledger_entry SET payload = jsonb_set(payload, '{system_id}', '\"sys-99\"')"
@@ -507,6 +521,7 @@ TAMPERS: dict[str, Callable[[Engine], list[str]]] = {
     ],
     "forge_40_consistent_hash": forged_40,
     "seq_50_becomes_150": lambda _: ["UPDATE ledger_entry SET seq = 150 WHERE seq = 50"],
+    "first_row_removed_and_relinked": first_row_removed_and_relinked,
 }
 
 
