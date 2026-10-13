@@ -663,3 +663,13 @@ Other M6 work:
     entry 1 deleted and entry 2 re-linked to the 64 zeros with a consistent hash. Expected
     `{false, 1, "2"}` with check `seq`; without the rule, verify passes entry 2 and fails at
     entry 3 instead. Reason: every M6 mutant must make at least one new test fail.
+
+80. **The concurrent steps hold the append lock until every caller waits.** In the first M6
+    mutation run, "ensure_seed skips the lock" was caught, but a repeat run let it pass once in
+    four: with thread timing alone, the first caller sometimes committed its SEED before the
+    others checked for an empty ledger. Steps a and c of the system test now take the append
+    lock as the owner first, start the callers, wait until `pg_locks` shows every caller
+    waiting for an advisory lock, and only then release it. That mutant now appends 20 SEEDs
+    in every run (5 of 5). Without the lock in append, no caller waits, so step c fails at
+    "0 of 50 callers reached the append lock" (5 of 5). Reason: a concurrency test must not
+    depend on thread timing to catch a missing lock.

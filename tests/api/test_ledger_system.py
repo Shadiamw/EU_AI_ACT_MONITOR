@@ -18,6 +18,7 @@ json.dumps only, never with app code.
 import hashlib
 import json
 import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ from typing import Any
 import psycopg.errors
 import pytest
 from alembic import command
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -234,8 +235,14 @@ def entry_count(owner_engine: Engine) -> int:
         return int(conn.execute(text("SELECT count(*) FROM ledger_entry")).scalar_one())
 
 
-def run_together(count: int, work: Callable[[], Any]) -> list[Any]:
-    """Start `count` threads at once (a barrier) and return their results or raise."""
+def run_together(
+    count: int, work: Callable[[], Any], while_running: Callable[[], None] | None = None
+) -> list[Any]:
+    """Start `count` threads at once (a barrier) and return their results or raise.
+
+    `while_running`, if given, runs in the main thread after the threads start and before
+    they are joined.
+    """
     barrier = threading.Barrier(count)
     results: list[Any] = [None] * count
     errors: list[BaseException] = []
@@ -250,12 +257,35 @@ def run_together(count: int, work: Callable[[], Any]) -> list[Any]:
     threads = [threading.Thread(target=run, args=(i,)) for i in range(count)]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join(timeout=120)
+    try:
+        if while_running is not None:
+            while_running()
+    finally:
+        for thread in threads:
+            thread.join(timeout=120)
     assert not any(thread.is_alive() for thread in threads), "a worker thread hung"
     if errors:
         raise errors[0]
     return results
+
+
+def wait_for_lock_waiters(holder: Connection, count: int) -> None:
+    """Wait until `count` sessions wait for an advisory lock, then end the holder's transaction.
+
+    pg_locks shows every session's locks to every role.
+    """
+    deadline = time.monotonic() + 30
+    with holder.engine.connect() as watcher:
+        while True:
+            waiting = watcher.execute(
+                text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")
+            ).scalar_one()
+            watcher.rollback()
+            if waiting >= count or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+    holder.rollback()
+    assert waiting == count, f"{waiting} of {count} callers reached the append lock"
 
 
 # Module setup: a fresh database, and this module's own ledger shared by steps a to j.
@@ -326,7 +356,15 @@ def test_a_empty_ledger_then_one_seed_from_20_concurrent_callers(
             ledger.ensure_seed(session, SEED_PAYLOAD)
             session.commit()
 
-    run_together(20, seed_once)
+    # Hold the append lock while the 20 callers start, and release it only once all 20 wait
+    # for it. Every caller then reaches the lock before any SEED exists, so the result does
+    # not depend on thread timing: a seed that checked for emptiness before taking the lock
+    # would append 20 SEEDs here (decision 80).
+    with owner_engine.connect() as holder:
+        holder.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": ledger.ADVISORY_LOCK_KEY}
+        )
+        run_together(20, seed_once, while_running=lambda: wait_for_lock_waiters(holder, 20))
 
     expected_seed = {
         "seq": 1,
@@ -384,9 +422,16 @@ def test_b_every_entry_type_appends_with_the_expected_hash(
 def test_c_50_concurrent_appends_stay_contiguous_and_linked(
     client: ApiClient, app_engine: Engine, owner_engine: Engine
 ) -> None:
-    entries = run_together(
-        CONCURRENT, lambda: append(app_engine, "EVENT_VIEWED", "viewer-1", "evt-load", {})
-    )
+    # As in step a: all 50 must be waiting for the append lock before any of them appends.
+    with owner_engine.connect() as holder:
+        holder.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": ledger.ADVISORY_LOCK_KEY}
+        )
+        entries = run_together(
+            CONCURRENT,
+            lambda: append(app_engine, "EVENT_VIEWED", "viewer-1", "evt-load", {}),
+            while_running=lambda: wait_for_lock_waiters(holder, CONCURRENT),
+        )
 
     assert sorted(entry.seq for entry in entries) == list(range(12, AFTER_CONCURRENT + 1))
     rows = owner_rows(owner_engine)
