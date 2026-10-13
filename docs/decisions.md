@@ -646,3 +646,11 @@ Other M6 work:
     after M6's two new files (13 and 14 tests). integration_notes.md said 504, which became
     wrong when M6 added tests, so it was corrected under the rule that allows fixing a wrong
     fact there. Reason: the stated count must match the latest run.
+
+78. **README fixes from the fresh-clone walkthrough.** Following the README in a fresh clone
+    showed one failing step: right after `docker run`, `psql` failed with "server closed the
+    connection unexpectedly", because the container was still initializing. The README now
+    waits with `pg_isready -h localhost` inside the container after `docker run` and after
+    `docker start`. It also says that a second run of the role bootstrap prints harmless
+    "already exists" errors. Reason: every README command must work as written on a new
+    machine; the code did not change.

@@ -179,7 +179,12 @@ Use either option. The test suite has been run on both.
 
 ```sh
 docker run -d --name ledger-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
+until docker exec ledger-pg pg_isready -h localhost -U postgres >/dev/null 2>&1; do sleep 1; done
 ```
+
+On first start the container initializes its data directory before it accepts TCP connections.
+The second line waits for that. Without it, the next step can fail with "server closed the
+connection unexpectedly".
 
 **Restarting the Docker daemon (decision 12).** In some sandboxes the Docker daemon stops between
 sessions. Tests then fail with `OperationalError` (connection refused). Start the daemon again,
@@ -189,6 +194,7 @@ then the existing container:
 pgrep dockerd >/dev/null || (sudo nohup dockerd > /tmp/dockerd.log 2>&1 &)
 sleep 4
 docker start ledger-pg
+until docker exec ledger-pg pg_isready -h localhost -U postgres >/dev/null 2>&1; do sleep 1; done
 ```
 
 **Option B: native PostgreSQL 16 server**
@@ -230,6 +236,10 @@ If `psql` is not installed on the host, run the client inside the container inst
 ```sh
 docker exec -i ledger-pg psql -U postgres -d postgres -f - < tests/sql/bootstrap_roles.sql
 ```
+
+On a server where the script has already run, a second run prints `role "monitor_owner" already
+exists` and similar errors for the other role and the database, and still exits 0. Those errors
+are harmless.
 
 ### 5.4 Environment
 
