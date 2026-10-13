@@ -618,7 +618,7 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 504 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 531 tests.
 
 ### Part 1
 

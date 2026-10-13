@@ -260,7 +260,7 @@ if that user is the role running the migration.
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 504 tests, and all pass on both setups.
+At the time of writing the suite collects 531 tests, and all pass on both setups.
 
 ## 6. Known limits and operating notes
 

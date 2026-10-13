@@ -622,3 +622,27 @@ Other M6 work:
     `origin/development-ledger`, a fast-forward from e5b6973 to 0c87aa3. All M6 commits stay
     local, with no pull request, until the M6 report is reviewed and approved. Reason: the M6
     instructions make the M5 push the only push.
+
+76. **System-test choices.** `tests/api/test_ledger_system.py` makes these choices where the
+    M6 instructions leave a detail open:
+    - The clock is patched to fixed instants for the seed, the typed entries and the audit
+      and view calls, so every recorded_at and hash is written down before the run. Each
+      instant has sub-millisecond digits (for example 09:31:00.999999), so truncation is
+      checked too (decision 7).
+    - No entry type in the spec's table other than SEED has a null subject. The null
+      subject_id case through `ledger.append` is a tenth appended entry, a GAP_CLOSED with no
+      subject, which append accepts (decision 11). It also shows that an entry without a
+      subject is in no audit trail. It is not a usage pattern for Part 3.
+    - Steps a to j share one ledger and run in file order. The module overrides the shared
+      pre-test truncate, rebuilds the schema with `alembic downgrade base` and
+      `alembic upgrade head` before step a, and truncates after step j.
+    - The restart in step j clears the cached application engine (`get_engine.cache_clear()`)
+      and builds a new app, as a new process would.
+
+    Reason: the scenario must be checkable against values derived from the spec, not against
+    the output it checks.
+
+77. **The test count in the README and integration_notes.md.** Both now say 531, the count
+    after M6's two new files (13 and 14 tests). integration_notes.md said 504, which became
+    wrong when M6 added tests, so it was corrected under the rule that allows fixing a wrong
+    fact there. Reason: the stated count must match the latest run.
