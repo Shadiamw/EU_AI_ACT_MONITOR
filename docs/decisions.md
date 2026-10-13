@@ -673,3 +673,116 @@ Other M6 work:
     in every run (5 of 5). Without the lock in append, no caller waits, so step c fails at
     "0 of 50 callers reached the append lock" (5 of 5). Reason: a concurrency test must not
     depend on thread timing to catch a missing lock.
+
+## Part 3 decisions (worker: gap sweeper and notifications)
+
+Part 3 is built from the requirements (REQ-01, REQ-02, REQ-04, REQ-11), the Pod H API contract
+of 5 October 2026, and what `integration_notes.md` sections 2, 4 and 8 already pin. The spec's
+sections '3.4 Gap sweeper (REQ-02)', '3.5 Notifications (REQ-04)' and 'Configuration
+(environment variables)' are not in this repository, so every choice below that they might
+settle is an **ASSUMPTION** to check against them.
+
+81. **Configuration.** Seven optional environment variables, read on every call so tests can
+    change them: `SAMPLING_INTERVAL_SECONDS` (300), `GAP_TIMEOUT_INTERVALS` (3),
+    `NOTIFY_MAX_DELAY_SECONDS` (900), `SWEEP_INTERVAL_SECONDS` (60), `DELIVERY_POLL_SECONDS`
+    (5), `WEBHOOK_TIMEOUT_SECONDS` (5) and `DELIVERY_MAX_ATTEMPTS` (5) (`app/config.py`). Each
+    must be a whole number of at least 1. The gap timeout is a count of intervals because REQ-02
+    defines its default that way. Reason: the defaults come from REQ-01, REQ-02 and REQ-04 and
+    the "runs every minute" sweeper; only `NOTIFY_MAX_DELAY_SECONDS` is a name the notes cite.
+
+82. **Stubs for Parts 1 and 4.** The 0001 stub now creates `monitored_system` (system_id,
+    monitoring_started_at, last_received_at) and a minimal `event` table, and grants the
+    application role SELECT, INSERT and UPDATE on both. `app/events.py` gains
+    `create_gap_event` and `close_gap_event`, which write that table and which Part 1 replaces,
+    keeping the signatures. `events.exists` is unchanged (decision 30). The 0001 downgrade uses
+    `DROP TABLE IF EXISTS`, because databases upgraded by the earlier, empty 0001 have neither
+    table. The system test's head check moves from "0002" to "0003". Reason: the sweeper must
+    lock the system row and create the gap event (integration_notes.md 4.3), and neither table
+    exists yet.
+
+83. **When a gap opens.** A system is silent since `last_received_at`, or since
+    `monitoring_started_at` if it has never sent a sample, so a seeded system gets a gap with no
+    ingest at all (API contract: `GET /v1/events?type=monitoring_gap` without any ingest). A gap
+    opens when the silence is strictly longer than the timeout ("longer than", REQ-02): at 900
+    seconds nothing happens, at 901 it opens. The detection time is the sweep that notices.
+    Each gap is opened in its own transaction, which locks the system row, then re-checks the
+    silence and the open gap under the lock. A partial unique index allows one open gap per
+    system, as a backstop. A failure for one system is rolled back, logged by type name and
+    retried on the next sweep, and the other systems carry on.
+
+84. **What a gap writes.** The event is type `monitoring_gap`, state FLAGGED, with null metric
+    fields and all four harm fields present and null: an outage carries no harm evidence, and
+    gap events never reach review (API contract; REQ-07). GAP_OPENED's `last_received_at` is
+    the API time format (`YYYY-MM-DDTHH:MM:SSZ`, fraction only when present), or null for a
+    system that has never sent a sample. Then `notifications.enqueue` appends
+    NOTIFICATION_REQUESTED of type `flag_notification` (integration_notes.md 4.1). Actor
+    `system` for both.
+
+85. **Closing a gap.** `gaps.close_if_open(session, system_id)` runs in Part 1's ingest
+    transaction at step 6. It locks the system row (a no-op when the ingest already holds it),
+    then the open gap row. It sets closed_at and gap_seconds, moves the event to CLOSED, and
+    appends GAP_CLOSED with actor `system` (open item 6). `gap_seconds` is the whole silent time,
+    from the last sample (or monitoring start) to the new sample, rounded down to an integer. It
+    returns the gap's event id, or None without writing anything. It never commits. Reason:
+    CLOSED is one of the contract's four states, and a gap event has no review to go through.
+
+86. **Notifications.** `notifications.enqueue(session, event_id, actor_id,
+    notification_type="flag_notification")` records the notification, creates one PENDING
+    delivery for each webhook whose `event_types` include the type, and appends
+    NOTIFICATION_REQUESTED last, with the caller's actor (`sys-42` in ingest, `system` in the
+    sweeper). It never commits. Deliveries are created at that moment, so a webhook registered
+    later does not get earlier notifications, and with no webhook nothing is sent. The body a
+    webhook receives is `{type, notification_id, webhook_id, event_id, requested_at, attempt}`;
+    the receiver fetches the event if it needs more. Reason: the contract leaves the payload to
+    Part 3, and a minimal body keeps event data out of a third-party request.
+
+87. **Webhook registration.** `POST /v1/webhooks` accepts REVIEWER or VIEWER (integration_notes.md
+    2.5); SYSTEM gets 403. The body is exactly `{url, event_types}`, where `event_types` is 1 to
+    10 of `flag_notification` and `reminder`, and repeats are stored once in first-seen order.
+    The URL must be absolute http or https, at most 2048 characters, with no user name or
+    password, no query string and no fragment: export shows every URL to any VIEWER and can
+    never remove it (decision 32). A bad body or URL is 400 MALFORMED_BODY, with no ping. The
+    ping `{type: "webhook_verification", webhook_id}` runs before any write, and only a 2xx
+    answer (no redirects followed) stores the webhook. Otherwise the result is 422
+    WEBHOOK_VERIFICATION_FAILED and nothing is written. The webhook row and WEBHOOK_REGISTERED
+    (actor: the registering principal) share one transaction, committed before return (decision
+    25). Destinations are not restricted, so a private address can be registered. That is
+    acceptable for Phase 3 test use; production would need an allow-list.
+
+88. **The delivery pass.** As in integration_notes.md 4.3:
+    1. Claim due rows with `FOR UPDATE SKIP LOCKED`, mark them IN_FLIGHT with a lease
+       (`WEBHOOK_TIMEOUT_SECONDS` + 60), and commit.
+    2. Call each webhook with no transaction open.
+    3. In a new transaction, lock the row, record the result and append last.
+
+    Delivered means a 2xx answer within the timeout, with redirects not followed.
+    NOTIFICATION_DELIVERED's `latency_seconds` is the whole seconds from `requested_at` (the
+    detection moment) to the answer, and `within_bound` is
+    `latency_seconds <= NOTIFY_MAX_DELAY_SECONDS`. A failed attempt n is retried after
+    `min(30 × 2^(n-1), 240)` seconds, so with five attempts every try starts by 450 s, inside
+    the 900 s bound. Only the last failure appends NOTIFICATION_FAILED (`last_status` is the
+    HTTP status, or null for no response); earlier ones append nothing. If recording fails (for
+    example a 55P03 lock timeout) it is rolled back and logged by type name; the row stays
+    IN_FLIGHT and is claimed again when the lease runs out. A late result from an expired claim
+    is ignored. Delivery is therefore at least once. Leases and retries use `clock.now()`, like
+    everything else.
+
+89. **Out of Phase 3, or left to other parts.** Reminders (REQ-11) are a valid webhook type but
+    are not generated, because they need the deadlines of REQ-10. The worker does not write
+    `sweeper_heartbeat` (a Part 4 table not yet defined). It does not call `ledger.ensure_seed`
+    at start-up, because the SEED payload is Part 4's configuration (integration_notes.md 5.4).
+    Part 4 adds that call when it wires the worker process.
+
+90. **How the Part 3 tests observe the database.** As the owner role, `pg_stat_activity` hides
+    other roles' `xact_start` and `wait_event_type` (checked in the container), so the tests use
+    `pg_locks`. An open transaction holds a granted `virtualxid` lock, and a waiter holds an
+    ungranted lock. The concurrent-sweep test holds the system row as the owner until every
+    sweeper waits on it, then releases it, as in decision 80. Two mutants were run by hand and
+    each was caught:
+    - removing the open-gap re-check under the row lock (the unique index then rejects the
+      duplicates, and the test fails on the logged sweep failure);
+    - making the webhook call while a transaction is open.
+
+91. **Test count.** 614: the 532 Part 2 tests plus 82 in `tests/worker/`. All pass on the Docker
+    setup. The worker process was also run for a few seconds against the container. It opened a
+    gap for a system silent for 16 minutes and none for a fresh one.

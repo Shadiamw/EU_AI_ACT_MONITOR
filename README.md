@@ -1,13 +1,13 @@
 # EU_AI_ACT_MONITOR
 
 Compliance monitoring system. This repository currently implements **Part 2: ledger and audit**
-(the append-only, SHA-256 hash-chained ledger). Parts 1, 3 and 4 are stubbed where Part 2 depends
-on them.
+(the append-only, SHA-256 hash-chained ledger) and **Part 3: the worker** (the gap sweeper and
+notifications, section 8). Parts 1 and 4 are stubbed where Parts 2 and 3 depend on them.
 
 Where to look:
 
 - **This README:** what the ledger is, how to check it, how to run everything, and its known
-  limits.
+  limits; section 8 covers the worker.
 - **[integration_notes.md](integration_notes.md):** what Parts 1, 3 and 4 must do when they call
   the ledger or replace a stub.
 - **[docs/decisions.md](docs/decisions.md):** every settled decision, with its reason. "Decision
@@ -256,11 +256,12 @@ export ENVIRONMENT=test
 
 ```sh
 .venv/bin/alembic upgrade head      # runs as DATABASE_ADMIN_URL
-.venv/bin/alembic current           # expect: 0002 (head)
+.venv/bin/alembic current           # expect: 0003 (head)
 ```
 
 Migration 0002 grants ledger privileges to the user named in `DATABASE_URL`. It refuses to run
-if that user is the role running the migration.
+if that user is the role running the migration. Migration 0003 creates the worker's tables
+(section 8), and the 0001 stub creates the two Part 1 and Part 4 tables the worker uses.
 
 ### 5.6 Tests and static checks
 
@@ -270,7 +271,8 @@ if that user is the role running the migration.
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 532 tests, and all pass on both setups.
+At the time of writing the suite collects 614 tests. All pass on the Docker setup. The 532
+Part 2 tests also passed on the native setup; the 82 Part 3 tests have not been run there.
 
 ## 6. Known limits and operating notes
 
@@ -306,3 +308,70 @@ Only the ids that the spec or the addendum names for Part 2 are listed here.
 | REQ-14 | Spec, Part 2 'Mission and scope'; spec, 'GET /v1/events/{event_id}' | `audit.record_view` and the audit endpoint |
 | AC-06 | Spec, Part 2 'Mission and scope'; addendum rules 1 and 12 | Tamper tests in `tests/test_verify.py` and `tests/api/test_export_verify.py`; the storage-layer half in `docs/ac06_storage_evidence.md` |
 | AC-15 | Spec, Part 2 'Mission and scope'; addendum rule 12 | `tests/api/test_audit.py`. The spec notes: "in Phase 3 only the “view” and system-written entries can be exercised; a user “edit” path arrives with disposition in Phase 4". |
+
+## 8. Worker (Part 3): gap sweeper and notifications
+
+The worker covers REQ-02 (a monitoring-gap event, and the reviewer notified, when a monitored
+system stops sending data) and REQ-04 (the reviewer notified within 15 minutes of detection).
+Run it as its own process, as the application role:
+
+```sh
+.venv/bin/python -m app.worker
+```
+
+Each loop runs the gap sweeper once a minute (wall clock), then a delivery pass every 5
+seconds. Every decision about gaps, retries and latency reads `clock.now()`, so in the test
+environment advancing the simulated clock takes effect at the next sweep or pass.
+
+| What | Where |
+|---|---|
+| Gap sweeper, and `gaps.close_if_open` for Part 1's ingest | `app/gaps.py` |
+| `notifications.enqueue` and the delivery pass | `app/notifications.py` |
+| Webhook URL rules, the HTTP call and registration | `app/webhooks.py` |
+| `POST /v1/webhooks` | `app/api/webhook_routes.py` |
+| The worker loop | `app/worker.py` |
+| Tables: monitoring_gap, webhook, notification, notification_delivery | `migrations/versions/0003_worker.py` |
+| Stubs: the `event` table (Part 1) and `monitored_system` (Part 4) | `migrations/versions/0001_platform_stub.py`, `app/events.py` |
+| Tests | `tests/worker/` |
+
+### 8.1 Behaviour
+
+- **Gap.** A system is silent since its last sample, or since monitoring started if it has never
+  sent one. Silence longer than the timeout (3 × 300 = 900 seconds by default) opens one gap:
+  a FLAGGED `monitoring_gap` event, GAP_OPENED, and a `flag_notification`. A system has at most
+  one open gap. Its next sample closes the gap (GAP_CLOSED, with `gap_seconds` the whole silent
+  time) and moves the event to CLOSED. Gap events skip review, deadlines and reports.
+- **Notification.** One delivery per webhook subscribed to the type. A 2xx answer within the
+  timeout is a delivery: NOTIFICATION_DELIVERED with an integer `latency_seconds` from detection
+  and a boolean `within_bound`. A failed attempt is retried after 30, 60, 120 and 240 seconds;
+  the fifth failure appends NOTIFICATION_FAILED. No webhook is called while a transaction is
+  open. Delivery is at least once, so a receiver can see the same `notification_id` twice.
+- **Webhook registration.** `POST /v1/webhooks {url, event_types}`, REVIEWER or VIEWER. The
+  URL is pinged first; 201 `{webhook_id}` on a 2xx answer, 422 `WEBHOOK_VERIFICATION_FAILED`
+  otherwise, and 400 `MALFORMED_BODY` for a bad body or a URL with credentials, a query string
+  or a fragment (webhook URLs are visible in the export).
+
+### 8.2 Configuration
+
+All are optional environment variables, in whole seconds or counts (decision 81).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SAMPLING_INTERVAL_SECONDS` | 300 | REQ-01 sampling interval |
+| `GAP_TIMEOUT_INTERVALS` | 3 | Missed intervals before a gap (REQ-02) |
+| `NOTIFY_MAX_DELAY_SECONDS` | 900 | REQ-04 bound, used for `within_bound` |
+| `SWEEP_INTERVAL_SECONDS` | 60 | How often the sweeper runs (wall clock) |
+| `DELIVERY_POLL_SECONDS` | 5 | How often the delivery pass runs (wall clock) |
+| `WEBHOOK_TIMEOUT_SECONDS` | 5 | Timeout for a delivery or a verification ping |
+| `DELIVERY_MAX_ATTEMPTS` | 5 | Attempts before NOTIFICATION_FAILED |
+
+### 8.3 Known limits
+
+| Item | Decision |
+|---|---|
+| **Not yet wired to Part 1.** The ingest must call `gaps.close_if_open` (step 6) and `notifications.enqueue` (step 11); `GET /v1/events?type=monitoring_gap` is Part 1's endpoint over its event table. | 82, 85 |
+| **Webhooks registered later miss earlier notifications.** Deliveries are created when the notification is requested. | 86 |
+| **No webhook, no delivery.** A notification requested while no webhook is subscribed is recorded, but nothing is sent. | 86 |
+| **At-least-once delivery.** A result that could not be recorded is retried when its lease runs out. | 88 |
+| **Reminders (REQ-11)** are accepted as a webhook type but not generated: they depend on Phase 4 deadlines. | 89 |
+| **Webhook calls are not restricted by destination.** Any http(s) host can be registered, private addresses included. | 87 |

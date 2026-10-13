@@ -332,6 +332,49 @@ that append short. Once Part 4 sets `lock_timeout`, a wait that runs out raises
 against the ledger's lock key. **ASSUMPTION:** the worker rolls back and retries on its next
 pass.
 
+### 4.6 What Part 3 provides (implemented)
+
+Part 3 is now in this repository (README section 8; decisions 81 to 91). It settles the Part 3
+**ASSUMPTION**s above as written: GAP_CLOSED and the worker entries use actor `system`;
+NOTIFICATION_REQUESTED uses the caller's actor; WEBHOOK_REGISTERED uses the registering
+principal; `gap_seconds` and `latency_seconds` are integers; `within_bound` is
+`latency_seconds <= NOTIFY_MAX_DELAY_SECONDS`; `last_status` is an integer or null; and a
+lock timeout while recording a delivery is rolled back and retried.
+
+For Part 1 (ingest), both run inside the ingest transaction and never commit:
+
+```python
+from app import gaps, notifications
+
+gaps.close_if_open(session, system_id) -> str | None        # step 6: GAP_CLOSED if a gap was open
+notifications.enqueue(session, event_id, actor_id) -> str   # step 11, after EVENT_FLAGGED
+```
+
+- Lock the `monitored_system` row before step 6. `close_if_open` locks it again, which is a
+  no-op, so the lock order holds either way.
+- Ingest sets `monitored_system.last_received_at` to `clock.now()` for every accepted sample.
+  The sweeper measures silence from it.
+- Replace `events.create_gap_event` and `events.close_gap_event` in `app/events.py` with writes
+  to the real event table, keeping the signatures. Gap events are `type = "monitoring_gap"`,
+  state FLAGGED, null metric fields, and all four harm fields present and null (decision 84);
+  closing moves them to CLOSED.
+- `GET /v1/events?type=monitoring_gap` reads that table. Gaps appear without any ingest.
+
+For Part 4 (platform):
+
+- Migration 0001 must provide `monitored_system(system_id, monitoring_started_at,
+  last_received_at)`, both as timestamptz, with SELECT, INSERT and UPDATE for the application
+  role. UPDATE is needed for `SELECT ... FOR UPDATE`. Seed or reset must set
+  `monitoring_started_at` from `clock.now()`.
+- Migration 0003 (Part 3's tables) revises 0002, and its grants follow the user in
+  DATABASE_URL, as in 0002.
+- Test reset must truncate `notification_delivery`, `notification`, `webhook` and
+  `monitoring_gap` too.
+- Run `python -m app.worker` as its own process, as the application role. Add the
+  `ensure_seed` call at its start-up (decision 89).
+- The worker only ever reads `clock.now()` for its decisions, so `POST /v1/test/clock/advance`
+  takes effect at the next sweep (within `SWEEP_INTERVAL_SECONDS` of wall time) or delivery pass.
+
 ## 5. Part 4 (platform owner)
 
 ### 5.1 Roles
@@ -618,7 +661,7 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 532 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 614 tests.
 
 ### Part 1
 
@@ -671,7 +714,7 @@ means `.venv/bin/pytest`, which must pass with no failures or errors. Today it r
 ### Part 4
 
 1. Create the roles and migration 0001. Run `.venv/bin/alembic downgrade base` then
-   `.venv/bin/alembic upgrade head` as the owner. Expect it to end at `0002 (head)`.
+   `.venv/bin/alembic upgrade head` as the owner. Expect it to end at `0003 (head)`.
 2. Run `.venv/bin/pytest tests/test_schema_permissions.py`. Expect all pass: the application
    role has INSERT and SELECT only, the trigger is enabled, and the owner can TRUNCATE.
 3. Implement `POST /v1/test/reset`. Then call `GET /v1/ledger/verify`. Expect
