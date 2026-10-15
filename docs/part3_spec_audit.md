@@ -6,10 +6,11 @@ Precedence: contract > Part 2 addendum > spec > Models 4 and 5.
 
 This audit was written on branch `developed-part23merged`, starting from the tip of
 `development-gap-sweeper` (`8fc874a`), **before any fix**. The "Before" column describes that
-commit. Plan items A1 to D4 refer to `plans/part2-part3-integration-plan.md` in the project
-library. A finding the plan does not list is a **NEW FINDING** (N1, N2, ...). Every finding is
+commit. Plan items A1 to D4 refer to the integration plan in the project library
+(plans/part2-part3-integration-plan.md, not in this repository). A finding the plan does not list is a **NEW FINDING** (N1, N2, ...). Every finding is
 fixed in the stage named in the "Stage" column. The "Proof" column names the test that shows the
-fixed behaviour, in `tests/worker/` unless another path is given.
+fixed behaviour, in `tests/worker/` unless another path is given. The Proof column was
+updated in stage 5 to the final test names; the Before and Status columns are unchanged.
 
 Statuses:
 
@@ -44,7 +45,7 @@ Statuses:
 | SWEEP_INTERVAL_SECONDS | Default 60 (real time) | As specified | MATCHES | 4 | `test_worker_system.py::test_the_loop_sweeps_every_minute_and_survives_a_failed_iteration` |
 | DELIVERY_POLL_SECONDS | Default 5 (real time) | As specified | MATCHES | 4 | same as above |
 | SAMPLING_INTERVAL_SECONDS, GAP_TIMEOUT_INTERVALS | Seeded into sys-42 only | The sweeper uses them for every system | FIXED BY PLAN ITEM D1 | 2 | `test_gaps.py::test_env_sampling_settings_do_not_change_the_sweeper` |
-| LOG_LEVEL | Default INFO | The worker ignores it | NEW FINDING N2 | 2 | `test_worker_system.py::test_the_worker_uses_log_level` |
+| LOG_LEVEL | Default INFO | The worker ignores it | NEW FINDING N2 | 2 | `test_config.py::test_the_worker_uses_log_level` |
 | No other variables | The table lists all variables | `WEBHOOK_TIMEOUT_SECONDS`, `DELIVERY_MAX_ATTEMPTS` | FIXED BY PLAN ITEM D3 | 2 | `test_config.py::test_part3_settings_and_defaults` |
 
 ## 3. Shared interfaces (spec section 6, Pinned)
@@ -180,24 +181,26 @@ Statuses:
 | 4.5 Clock | `now()` timezone-aware UTC; no direct system-time use outside the clock module | Part 2 stub; `wall_now()` needed for the heartbeat | FIXED BY PLAN ITEM C7 | 2 | `test_clock_rule.py::test_no_direct_system_time_calls_outside_the_clock_module` |
 | 4.6 Clock advance | Calls `gaps.sweep` and `notifications.deliver_due` once | Part 4 | OUT OF SCOPE | n/a | n/a |
 
-## 15. Spec 3.9 test table (current coverage)
+## 15. Spec 3.9 test table
 
-| Row | Before | Stage |
+"Before" names the tests at `8fc874a`; "After" names the tests that now prove the row.
+
+| Row | Before (at 8fc874a) | After |
 |---|---|---|
-| AC-02 three missed intervals | `test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do`, system test | 4 (update) |
-| AC-02 boundary 600 s | same | 4 |
-| Exact threshold 899/900 | same | 4 |
-| One event per outage (+1,000 s) | Close (`test_no_second_gap_while_one_is_open` uses +3,600 s steps) | 4 (add the exact row) |
-| Recovery | `test_the_next_sample_closes_the_gap`, `test_after_closing_a_new_silence_opens_a_new_gap` | 4 (update for A7) |
-| Duplicate resets silence | Needs Part 1's ingest | Deferred |
-| Wrong sender clock | Needs Part 1's ingest | Deferred |
-| AC-04 bound honored | Bound tests; no slow-receiver case | 4 (add) |
-| Retries 500, 500, 200 | Missing | 4 (add) |
-| Permanent failure (six) | Five-attempt version | 4 (update) |
-| No webhook registered | Missing (behaviour was the opposite) | 4 (add) |
-| Registration | Present; codes change | 4 (update) |
-| Atomicity | Missing | 4 (add) |
-| Worker resilience | Lease-expiry test present | 4 (rename and keep) |
+| AC-02 three missed intervals | test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do, system test | `test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do`, `test_worker_system.py::test_gap_to_delivery_to_close_and_reverify` |
+| AC-02 boundary 600 s | same | `test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do` |
+| Exact threshold 899/900 | same | `test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do` |
+| One event per outage (+1,000 s) | Close (test_no_second_gap_while_one_is_open uses +3,600 s steps) | `test_gaps.py::test_one_event_per_outage_after_another_1000_seconds` |
+| Recovery | test_the_next_sample_closes_the_gap, test_after_closing_a_new_silence_opens_a_new_gap | `test_gaps.py::test_recovery_closes_the_gap_and_counts_from_detection`, `test_gaps.py::test_after_closing_a_new_silence_opens_a_new_gap` |
+| Duplicate resets silence | Needs Part 1's ingest | Deferred (Part 1) |
+| Wrong sender clock | Needs Part 1's ingest | Deferred (Part 1) |
+| AC-04 bound honored | Bound tests; no slow-receiver case | `test_notifications.py::test_delivery_appends_delivered_with_integer_latency_and_boolean_bound`, `test_notifications.py::test_ac04_a_slow_receiver_with_a_low_bound_is_not_within_bound` |
+| Retries 500, 500, 200 | Missing | `test_notifications.py::test_retries_500_500_200_make_exactly_three_attempts` |
+| Permanent failure (six) | Five-attempt version | `test_notifications.py::test_permanent_failure_stops_after_six_attempts` |
+| No webhook registered | Missing (behaviour was the opposite) | `test_notifications.py::test_no_webhook_leaves_the_notification_unrouted_until_one_is_registered` |
+| Registration | Present; codes change | `test_webhooks.py::test_register_pings_then_stores_and_appends`, `test_webhooks.py::test_an_unreachable_url_is_422_webhook_unverified_and_writes_nothing`, `test_webhooks.py::test_a_non_2xx_ping_is_422_webhook_unverified_and_writes_nothing`, `test_webhooks.py::test_a_malformed_body_is_400_and_nothing_is_pinged` |
+| Atomicity | Missing | `test_gaps.py::test_atomicity_a_failure_after_enqueue_leaves_no_event_and_no_notification`, `test_gaps.py::test_atomicity_in_a_caller_transaction` |
+| Worker resilience | Lease-expiry test present | `test_notifications.py::test_worker_resilience_a_crash_between_claim_and_send_is_retried_after_the_lease` |
 
 ## 16. New findings, summarised
 
@@ -213,3 +216,14 @@ Statuses:
 | N8 | Sweep and attempt log lines lack the fields spec 3.8 names | Add the log lines |
 | N9 | No way for Part 4's health endpoint to read the three worker values | One read-only function |
 | N10 | No DELETE for the application role on non-ledger tables | Grant SELECT, INSERT, UPDATE, DELETE, as spec 4.4 says |
+
+## 17. Where each fix landed
+
+| Stage | Commit subject | Fixes |
+|---|---|---|
+| 1 | Stage 1: schema and migrations to the spec | C1 to C7, N7, N10; A6, A7 and D4 where the new schema forced them |
+| 2 | Stage 2: Part 3 interfaces and worker behaviour to the spec | B1 (B2 needed no change), D1, D2, D3, A4, A5, A8, C7 (the heartbeat writer), N2, N3, N5, N8, N9 |
+| 3 | Stage 3: observable webhook behaviour to the spec | A1, A2, A3, A9, A10, N6 |
+| 4 | Stage 4: spec 3.9 tests, exact payload keys, reset tolerance, clock rule | N1, N4 and the tests in section 15 |
+| 5 | Stage 5: docs | Decisions 93 to 105; this table's Proof column |
+

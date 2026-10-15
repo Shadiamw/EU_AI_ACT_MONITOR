@@ -797,3 +797,219 @@ settle is an **ASSUMPTION** to check against them.
     been missed. Reason: AC-02 is what the system is accepted against, and the one-second
     difference cannot make a live system with samples every 300 s open a gap any earlier than
     the third missed sample.
+
+## Part 3 integration decisions (aligned with the spec)
+
+Branch `developed-part23merged` integrates Part 2 (`development-ledger`) and Part 3
+(`development-gap-sweeper`) and brings Part 3 in line with `Phase3_Implementation_Spec.docx`
+("the spec"), whose Part 3 sections were not available when decisions 81 to 92 were written.
+Precedence: API contract, then the Part 2 addendum, then the spec. The clause-by-clause check
+that drove these changes is `docs/part3_spec_audit.md`. Decisions 81 to 92 are kept as written,
+as the record of what was built first; where an entry below supersedes one of them, it says so,
+and the newer entry wins.
+
+| Earlier decision | Now |
+|---|---|
+| 81 (configuration) | Superseded by decision 100 |
+| 82 (stubs) | Superseded by decision 95 |
+| 83 (when a gap opens) | Superseded in part by decision 101 (silence source, row skipping); the ≥ comparison of decision 92 stands |
+| 84 (what a gap writes) | Superseded in part by decisions 101 and 102 (harm fields, `received_at`, `retain_until`) |
+| 85 (closing a gap) | Superseded in part by decision 101 (`gap_seconds` from the gap's `received_at`; no `closed_at`) |
+| 86 (notifications) | Superseded by decisions 93 and 94 |
+| 87 (webhook registration) | Superseded by decisions 98, 99 and 103 |
+| 88 (the delivery pass) | Superseded by decision 94 |
+| 89 (out of Phase 3) | Stands, except that the worker now writes `sweeper_heartbeat` (decision 101) |
+| 90, 91, 92 | Stand (the test count in 91 is historical) |
+
+93. **NOTIFICATION_REQUESTED actor is `system`.** `notifications.enqueue(session, event_id,
+    notification_type="flag_notification") -> str` is the spec's pinned signature (spec 3.5 and
+    'Shared interfaces between parts (Pinned)'), with no actor argument. Its entry uses actor
+    `system`, for breaches requested by Part 1's ingest as well as for gaps, because spec 3.2
+    says the actor id "for everything the worker does is system" and the notification module is
+    Part 3's (plan item B1). An unknown `notification_type` raises ValueError before anything
+    is written. enqueue never commits. Reason: the signature is pinned, and a caller-supplied
+    actor would need an argument the spec does not have.
+
+94. **The delivery pass follows spec 3.5.** `notifications.deliver_due(engine) -> int` (the
+    number of attempts made):
+    1. Route: each notification with no delivery rows gets one PENDING row per webhook whose
+       `event_types` include its type, `next_attempt_at` = now. With no such webhook it stays
+       unrouted and is retried every pass, so the first webhook registered later receives it.
+       Routing is in the pass, not in enqueue (plan item A5).
+    2. Claim: PENDING rows with `next_attempt_at <= now` and no live lease, `FOR UPDATE OF d
+       SKIP LOCKED`, at most 50 per pass. A claim sets `lease_until` = now + 65 s (the 5 s
+       timeout plus 60 s) and adds one to `attempt_count`, then commits before any network call.
+       There is no IN_FLIGHT status: a lease is `lease_until` on a PENDING row (plan item C5).
+       The pair (`attempt_count`, `lease_until`) identifies a claim; a result recorded for a
+       claim that is no longer current is dropped.
+    3. Send the spec body `{notification_type, notification_id, event_id, system_id, type,
+       detected_at, sent_at}` with a 5-second timeout and no transaction open. `type` is the
+       event type; both times use the API format (plan item A2). Redirects are not followed.
+    4. Any 2xx: DELIVERED, `delivered_at`, NOTIFICATION_DELIVERED, in a new transaction.
+    5. Anything else: retry after 10, 30, 60, 120 and 300 seconds; the sixth failed attempt
+       marks FAILED and appends NOTIFICATION_FAILED (plan item A4). Earlier failures append
+       nothing.
+
+    `latency_seconds` is the delivery time minus the event's `received_at`, in whole seconds
+    on `clock.now()` (plan item A8). `within_bound` is `latency_seconds <=
+    NOTIFY_MAX_DELAY_SECONDS`. A late delivery is logged as a warning and counted in
+    `notifications.late_delivery_count()` (audit N5). Every attempt is logged with the
+    notification id, webhook id, attempt, status and duration (audit N8). An exception while
+    recording one result is rolled back and logged by type name, and the pass goes on to the
+    next claim (audit N3); that row is claimed again when its lease runs out. Leases are on the
+    simulated clock, like everything else the worker decides. Reason: spec 3.5 pins the steps,
+    the body, the delays and the six attempts, and leaves the lease representation open.
+
+95. **Migration layout (spec 4.4).** The chain is 0001 Platform (Part 4), 0002 Ledger (Part 2),
+    0003 Detection (Part 1), 0004 Notifications (Part 3), head `0004` (plan item C1).
+    - `0001_platform_stub.py` is a STUB for Part 4 holding only `monitored_system`
+      (`system_id`, `sampling_interval_s`, `gap_timeout_intervals`, `last_received_at`, all
+      NOT NULL) and `sweeper_heartbeat`. The spec names only `last_ran_at` for the heartbeat;
+      a boolean primary key `singleton` (default true, check `singleton`) keeps it to one row.
+    - `0003_detection_stub.py` is a STUB for Part 1 holding only `event` and `harm_field`, with
+      the spec 1.7 names: index `ix_event_detected_at_event_id` on `(detected_at DESC,
+      event_id)`, check `ck_event_state`, harm_field primary key `(event_id, field_key)` with
+      check `ck_harm_field_status`, and the partial unique index
+      `uq_event_one_open_gap_per_system` on `event(system_id)` where `type = 'monitoring_gap'`
+      and `state = 'FLAGGED'`. No `metric_sample` or `breach_series`, which nothing here uses.
+      `harm_field` has no foreign key, because spec 1.7 does not name one; Part 1 decides.
+    - `0004_notifications.py` (Part 3) creates `webhook`, `notification` (one row per event,
+      foreign key to `event`) and `notification_delivery` (index `(status, next_attempt_at)`),
+      each with exactly the spec 3.7 columns. `webhook.registered_by` is dropped: the
+      registering principal is the actor of WEBHOOK_REGISTERED.
+      The separate `monitoring_gap` table is gone: the open gap is the FLAGGED gap event (plan
+      item C4).
+    - Every non-ledger table grants SELECT, INSERT, UPDATE and DELETE to the application role
+      and nothing to PUBLIC, because spec 4.4 gives it "normal read/write on all tables except
+      the ledger" (audit N10).
+    - The only Part 2 test change is the head assertion in `tests/api/test_ledger_system.py`
+      (`"0003"` to `"0004"`).
+
+    Editing 0001 and 0003 in place is allowed because nothing has been deployed. A database
+    built from `development-gap-sweeper` is at the old revision `0003` (`0003_worker.py`) and
+    must be dropped and rebuilt (README section 5.5). Reason: spec 4.4 fixes the order and the
+    owners, and the real Part 1 and Part 4 migrations must be able to replace the stubs file
+    for file.
+
+96. **`notification_delivery.last_status` is text.** Spec 3.7 types the column as text, so it
+    stores the HTTP status as a string, or NULL when there was no response. The
+    NOTIFICATION_FAILED payload keeps `last_status` as an integer or null, as decided before
+    (integration_notes.md 4.1), because ledger payloads keep integers as integers (addendum
+    rule 2). Reason: the column type is the spec's; the payload type was already settled.
+
+97. **Health values.** `app.worker.health_values(engine) -> HealthValues` is one read-only
+    function for Part 4's `/healthz`, with the three field names of spec 4.6:
+    - `sweeper_last_ran_seconds_ago`: whole seconds from `sweeper_heartbeat.last_ran_at` to
+      `clock.wall_now()` (real time, as spec 3.3 and 4.6 say), or None before the first sweep;
+    - `pending_deliveries`: the number of PENDING `notification_delivery` rows;
+    - `oldest_pending_delivery_seconds`: whole seconds from the oldest PENDING row's
+      notification `created_at` to `clock.now()`, or None when nothing is pending. Delivery rows
+      have no creation time in spec 3.7, so the age is the notification's.
+
+    Unrouted notifications (no webhook yet) have no delivery rows and are not counted. Part 4
+    decides the 503 rule and the response body. Reason: spec 3.8 asks for these values and
+    spec 4.6 names them; the clocks follow the heartbeat rule.
+
+98. **Webhook URLs follow spec 3.6 only (supersedes the URL rules of decision 87).**
+    - The URL must be an http or https URL with a host. Anything else, such as
+      `ftp://example.com`, a URL with no host, or text that is not a URL, is 400
+      MALFORMED_BODY, and nothing is pinged or stored.
+    - When ENVIRONMENT is not `test`: https only, and private and loopback addresses are
+      refused (decision 99), also with 400 MALFORMED_BODY. The spec names no code for this;
+      MALFORMED_BODY is the code spec 3.6 gives for a URL it does not accept.
+    - Otherwise any URL is accepted, including one with a query string, a user name and
+      password, or a fragment. It is stored exactly as received, WEBHOOK_REGISTERED carries it
+      exactly as received, and deliveries go to it.
+    - The 2048-character cap and the 10-entry cap on `event_types` are removed, because the
+      spec has neither (audit N6).
+
+    Because `GET /v1/ledger/export` shows every URL to any REVIEWER or VIEWER (decision 32), it
+    is recommended, not enforced, that webhook URLs carry no secrets (integration_notes.md
+    4.4; README section 6). Reason: spec 3.6 states the URL rules, and SS decided to follow it
+    only (decision 1 of the integration request, 15 October 2026).
+
+99. **Private-address detection outside the test environment.** A host is refused when:
+    - it is `localhost` or ends in `.localhost` (a trailing dot is ignored);
+    - it is an IP literal that is not a public address;
+    - it resolves (`socket.getaddrinfo`) to any address that is not public.
+
+    "Public" means Python's `ipaddress` `is_global` and not multicast, after unwrapping an
+    IPv4-mapped IPv6 address and dropping an IPv6 zone id. That refuses loopback (127.0.0.0/8,
+    ::1), RFC 1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16, including
+    169.254.169.254, and fe80::/10), unique-local fc00::/7, shared 100.64/10, unspecified and
+    reserved ranges. A host that does not resolve is not refused here; its ping fails and
+    registration is 422 WEBHOOK_UNVERIFIED. The check runs at registration only: the address is
+    not re-checked at delivery time, so DNS that changes after registration (rebinding) is not
+    caught. Reason: spec 3.6 asks to "refuse private or loopback addresses" without listing
+    them; these are the standard non-public ranges.
+
+100. **Configuration (supersedes decision 81).** Part 3 reads, on every call:
+     - `ENVIRONMENT` (required): `test` allows any webhook address (decision 98);
+     - `NOTIFY_MAX_DELAY_SECONDS` (900), `SWEEP_INTERVAL_SECONDS` (60) and
+       `DELIVERY_POLL_SECONDS` (5), each a whole number of at least 1;
+     - `LOG_LEVEL` (INFO), used by `python -m app.worker` (audit N2).
+
+     `SAMPLING_INTERVAL_SECONDS` (300) and `GAP_TIMEOUT_INTERVALS` (3) only seed sys-42's
+     `monitored_system` row (spec 5). `app/config.py` keeps readers for them so Part 4's seed
+     can use them, but the sweeper never reads them (plan item D1). `WEBHOOK_TIMEOUT_SECONDS`
+     and `DELIVERY_MAX_ATTEMPTS` are removed: the timeout is the constant 5 seconds
+     (`webhooks.TIMEOUT_SECONDS`) and the attempts the constant 6
+     (`notifications.MAX_ATTEMPTS`) (plan item D3). Reason: spec 5 lists every variable.
+
+101. **The gap sweeper follows spec 3.4.** `gaps.sweep(engine) -> list[str]` (the new gap
+     event ids):
+     - Each system is handled in its own transaction. Its `monitored_system` row is locked
+       with `FOR UPDATE SKIP LOCKED`, so a row another process holds is skipped until the next
+       sweep (plan item D2).
+     - The threshold is the row's `gap_timeout_intervals × sampling_interval_s`, and silence is
+       `clock.now() − last_received_at` (plan items D1 and C3). A gap opens when silence ≥
+       threshold (decision 92) and the system has no FLAGGED gap event.
+     - The gap event has `received_at` = `detected_at` = now, `retain_until` (decision 102),
+       null metric and evidence fields, and four `harm_field` rows with status NOT_APPLICABLE
+       and null evidence, confirmer and confirmation time (plan item A6). Then GAP_OPENED, then
+       `notifications.enqueue`, then commit.
+     - Any exception for one system is rolled back and logged by type name, and the sweep goes
+       on (audit N3). Each sweep logs `systems_examined` and `gaps_opened` (audit N8).
+     - After every sweep it upserts `sweeper_heartbeat.last_ran_at` with `clock.wall_now()`,
+       the real time (spec 3.3; plan item C7). `wall_now()` is a second function in the clock
+       stub, and the only real-time read outside `clock.now()`.
+
+     `gaps.close_if_open(session, system_id) -> str | None` locks the system row, then the
+     open gap event, sets state CLOSED, and appends GAP_CLOSED whose `gap_seconds` runs from the
+     gap's `received_at` to now in whole seconds (spec 3.4; plan item A7). It never commits.
+     Reason: spec 3.4 pins the steps and the gap event fields.
+
+102. **`retain_until`.** Spec 1.5 says "detected time plus six calendar months (at least 183
+     days)". `app.formats.retain_until(detected_at)` returns the later of detected_at plus six
+     calendar months (the day clamped to the end of a shorter month) and detected_at plus 183
+     days. So 1 September gives 3 March (six months is 1 March, 181 days later), and 1 October
+     gives 1 April (182 days, so the 183-day floor gives 2 April). Part 1 can reuse it for
+     breach events (plan item D4). Reason: this is the only reading under which both parts of
+     the sentence always hold.
+
+103. **Webhook registration (supersedes the rest of decision 87).** `POST /v1/webhooks`:
+     - checks 401, then 403 (REVIEWER or VIEWER), then the body (400), then the URL rules
+       (400), then pings (audit N1);
+     - the body is exactly `{url, event_types}`; extra keys or wrong types are 400
+       MALFORMED_BODY; repeated `event_types` are stored once, in first-seen order;
+     - the ping body is exactly `{"notification_type": "verification_ping", "sent_at": ...}`,
+       5-second timeout, no redirects followed, sent before any write (plan item A3);
+     - any non-2xx answer, timeout or connection error is 422 WEBHOOK_UNVERIFIED (the contract
+       and spec code; plan item A1), and nothing is stored;
+     - on success the webhook row and WEBHOOK_REGISTERED (actor: the registering principal,
+       subject: the webhook id) commit together before the 201 `{webhook_id}`.
+
+     Reason: spec 3.6 and the contract's error codes.
+
+104. **Worker loop and test reset.** One loop runs the sweeper every `SWEEP_INTERVAL_SECONDS`
+     and the delivery pass every `DELIVERY_POLL_SECONDS`, both on `time.monotonic` (the spec
+     leaves the structure open). Every iteration catches every exception and logs its type
+     name. A test reset that empties the tables mid-run is tolerated: a sweep finds no systems,
+     a pass finds no rows, and a result whose delivery row has vanished is dropped
+     (`tests/worker/test_worker_system.py::test_the_loop_survives_a_reset_that_empties_the_tables`;
+     audit N4). Reason: spec 3.3.
+
+105. **Contract and spec agree for Part 3.** No conflict was found between the API contract and
+     the spec on Part 3: the contract's `POST /v1/webhooks` (201 `{webhook_id}`, 422 when the
+     ping fails) and its error code WEBHOOK_UNVERIFIED match spec 3.6. "Duplicate resets
+     silence" and "Wrong sender clock" (spec 3.9) need Part 1's ingest and stay deferred.
