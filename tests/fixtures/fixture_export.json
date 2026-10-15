@@ -1,0 +1,44 @@
+[
+ {
+  "seq": 1,
+  "entry_type": "SEED",
+  "actor_id": "system",
+  "subject_id": null,
+  "payload": {
+   "systems": [
+    "sys-42"
+   ],
+   "threshold_count": "2"
+  },
+  "recorded_at": "2026-09-27T10:00:00.000Z",
+  "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hash": "3e17607bd7884dfbaff84c7a4a5a4762d56f329c1f63a91420831a1078db080c"
+ },
+ {
+  "seq": 2,
+  "entry_type": "EVENT_FLAGGED",
+  "actor_id": "sys-42",
+  "subject_id": "evt-7f3a",
+  "payload": {
+   "event_id": "evt-7f3a",
+   "system_id": "sys-42",
+   "metric_name": "accuracy_drift",
+   "observed_value": "0.34",
+   "threshold_value": "0.30",
+   "threshold_version_id": "thr-1"
+  },
+  "recorded_at": "2026-09-27T10:05:00.250Z",
+  "prev_hash": "3e17607bd7884dfbaff84c7a4a5a4762d56f329c1f63a91420831a1078db080c",
+  "hash": "e6ba0c725b25a5aa1c3f40d9c26e1823c01798d77f7ad5ed63be90894d0ad92c"
+ },
+ {
+  "seq": 3,
+  "entry_type": "EVENT_VIEWED",
+  "actor_id": "viewer-1",
+  "subject_id": "evt-7f3a",
+  "payload": {},
+  "recorded_at": "2026-09-27T10:06:00.000Z",
+  "prev_hash": "e6ba0c725b25a5aa1c3f40d9c26e1823c01798d77f7ad5ed63be90894d0ad92c",
+  "hash": "d557f21d771adea81d93c2aab306f00d61898207c26d1f8bc767a828efa6a5b2"
+ }
+]
