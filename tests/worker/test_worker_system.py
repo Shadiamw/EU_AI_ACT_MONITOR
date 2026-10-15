@@ -84,7 +84,8 @@ def test_gap_to_delivery_to_close_and_reverify(
             ("system", "NOTIFICATION_DELIVERED"),
         ]
 
-        # Data resumes 1000 s after the last sample: Part 1's ingest closes the gap.
+        # Data resumes 1000 s after the last sample, 100 s after the gap was detected: Part 1's
+        # ingest closes the gap.
         fake_clock.advance(100)
         with Session(app_engine) as session:
             assert gaps.close_if_open(session, "sys-42") == event_id
@@ -96,7 +97,7 @@ def test_gap_to_delivery_to_close_and_reverify(
         [closed] = rows(
             owner_engine, "SELECT payload FROM ledger_entry WHERE entry_type = 'GAP_CLOSED'"
         )
-        assert closed["payload"]["gap_seconds"] == 1000
+        assert closed["payload"]["gap_seconds"] == 100  # from detection (spec 3.4)
 
         export = client.get("/v1/ledger/export", headers=as_actor("rev-1"))
         verify = client.get("/v1/ledger/verify", headers=as_actor("rev-1"))

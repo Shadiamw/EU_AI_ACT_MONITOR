@@ -7,7 +7,7 @@ configuration the gap timeout is 3 x 300 = 900 seconds: the third missed sample 
 
 import threading
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -15,7 +15,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from app import events, gaps, ledger
+from app import gaps, ledger
 from tests.api.conftest import ApiClient, append_lock_is_free, as_actor, build_app
 from tests.worker.conftest import (
     T0,
@@ -26,12 +26,12 @@ from tests.worker.conftest import (
     rows,
 )
 
-HARM_NULLS = {
-    "health_safety_harm": None,
-    "critical_infrastructure_disruption": None,
-    "fundamental_rights_infringement": None,
-    "property_environmental_damage": None,
-}
+HARM_FIELD_KEYS = [
+    "critical_infrastructure_disruption",
+    "fundamental_rights_infringement",
+    "health_safety_harm",
+    "property_environmental_damage",
+]
 
 
 def ingest_sample(app_engine: Engine, system_id: str, fake_clock: FakeClock) -> str | None:
@@ -84,11 +84,12 @@ def test_timeout_follows_the_sampling_interval_and_interval_count(
     assert len(gaps.sweep(app_engine)) == 1
 
 
-def test_a_system_that_never_sent_data_is_measured_from_monitoring_start(
+def test_a_seeded_system_with_no_samples_is_measured_from_seed_time(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
-    # No ingest at all: the gap still appears (API contract, GET /v1/events?type=monitoring_gap).
-    add_system(owner_engine, "sys-42", started_at=T0)
+    # No ingest at all: last_received_at is the seed time (spec 3.4 step 2), and the gap still
+    # appears (API contract, GET /v1/events?type=monitoring_gap).
+    add_system(owner_engine, "sys-42", last_received_at=T0)
     fake_clock.advance(901)
     [event_id] = gaps.sweep(app_engine)
     [opened] = rows(
@@ -97,10 +98,8 @@ def test_a_system_that_never_sent_data_is_measured_from_monitoring_start(
     assert opened["payload"] == {
         "event_id": event_id,
         "system_id": "sys-42",
-        "last_received_at": None,
+        "last_received_at": "2026-10-01T09:00:00Z",
     }
-    [gap] = rows(owner_engine, "SELECT last_received_at, silent_since FROM monitoring_gap")
-    assert gap == {"last_received_at": None, "silent_since": T0}
 
 
 def test_only_silent_systems_get_gaps(
@@ -110,15 +109,13 @@ def test_only_silent_systems_get_gaps(
     add_system(owner_engine, "sys-b", last_received_at=T0 + timedelta(seconds=600))
     fake_clock.advance(1000)  # sys-a silent 1000 s, sys-b 400 s
     gaps.sweep(app_engine)
-    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM monitoring_gap")] == [
-        "sys-a"
-    ]
+    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM event")] == ["sys-a"]
 
 
 # What a gap writes
 
 
-def test_a_gap_writes_the_event_the_gap_row_and_two_ledger_entries(
+def test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
     last = T0 + timedelta(seconds=10, microseconds=250000)
@@ -127,33 +124,41 @@ def test_a_gap_writes_the_event_the_gap_row_and_two_ledger_entries(
     [event_id] = gaps.sweep(app_engine)
     assert event_id.startswith("evt-")
 
+    # Spec 3.4 table: detected 2026-10-01T09:15:11.25Z. Six calendar months is 2027-04-01, only
+    # 182 days later, so the 183-day floor applies: 2027-04-02T09:15:11.25Z.
     [event] = rows(owner_engine, "SELECT * FROM event")
     assert event == {
         "event_id": event_id,
-        "type": "monitoring_gap",
         "system_id": "sys-42",
-        "state": "FLAGGED",
-        "detected_at": detected,
+        "type": "monitoring_gap",
         "metric_name": None,
         "observed_value": None,
         "threshold_value": None,
-        "harm_fields": HARM_NULLS,
-        "closed_at": None,
+        "threshold_version_id": None,
+        "detected_at": detected,
+        "received_at": detected,
+        "state": "FLAGGED",
+        "deadline_utc": None,
+        "evidence_bundle": None,
+        "evidence_sha256": None,
+        "retain_until": datetime(2027, 4, 2, 9, 15, 11, 250000, tzinfo=UTC),
     }
-    [gap] = rows(owner_engine, "SELECT * FROM monitoring_gap")
-    assert gap == {
-        "event_id": event_id,
-        "system_id": "sys-42",
-        "last_received_at": last,
-        "silent_since": last,
-        "opened_at": detected,
-        "closed_at": None,
-        "gap_seconds": None,
-    }
+    harm = rows(owner_engine, "SELECT * FROM harm_field ORDER BY field_key")
+    assert harm == [
+        {
+            "event_id": event_id,
+            "field_key": key,
+            "status": "NOT_APPLICABLE",
+            "evidence": None,
+            "confirmed_by": None,
+            "confirmed_at": None,
+        }
+        for key in HARM_FIELD_KEYS
+    ]
     [notification] = rows(owner_engine, "SELECT * FROM notification")
     assert notification["event_id"] == event_id
     assert notification["notification_type"] == "flag_notification"
-    assert notification["requested_at"] == detected
+    assert notification["created_at"] == detected
 
     entries = rows(
         owner_engine,
@@ -218,17 +223,19 @@ def test_no_second_gap_while_one_is_open(
 
 
 def test_the_database_refuses_a_second_open_gap(owner_engine: Engine) -> None:
+    """Spec 1.7: a partial unique index allows one FLAGGED monitoring_gap event per system."""
     insert = (
-        "INSERT INTO monitoring_gap (event_id, system_id, silent_since, opened_at)"
-        " VALUES (:id, 'sys-42', :t, :t)"
+        "INSERT INTO event (event_id, system_id, type, detected_at, received_at, state,"
+        " retain_until) VALUES (:id, 'sys-42', 'monitoring_gap', :t, :t, :state, :t)"
     )
     with owner_engine.begin() as conn:
-        conn.execute(text(insert), {"id": "evt-1", "t": T0})
+        conn.execute(text(insert), {"id": "evt-1", "t": T0, "state": "FLAGGED"})
+        conn.execute(text(insert), {"id": "evt-0", "t": T0, "state": "CLOSED"})
     with (
-        pytest.raises(IntegrityError, match="uq_monitoring_gap_one_open_per_system"),
+        pytest.raises(IntegrityError, match="uq_event_one_open_gap_per_system"),
         owner_engine.begin() as conn,
     ):
-        conn.execute(text(insert), {"id": "evt-2", "t": T0})
+        conn.execute(text(insert), {"id": "evt-2", "t": T0, "state": "FLAGGED"})
 
 
 def test_concurrent_sweeps_open_exactly_one_gap(
@@ -288,27 +295,25 @@ def test_a_failure_for_one_system_does_not_stop_the_others(
     add_system(owner_engine, "sys-a", last_received_at=T0)
     add_system(owner_engine, "sys-b", last_received_at=T0)
     fake_clock.advance(901)
-    real_create = events.create_gap_event
+    real_insert = gaps._insert_gap_event
 
     def failing_for_a(session: Session, event_id: str, system_id: str, *args: Any) -> None:
         if system_id == "sys-a":
             raise OperationalError("INSERT", {}, Exception("simulated"))
-        real_create(session, event_id, system_id, *args)
+        real_insert(session, event_id, system_id, *args)
 
-    monkeypatch.setattr(events, "create_gap_event", failing_for_a)
+    monkeypatch.setattr(gaps, "_insert_gap_event", failing_for_a)
     opened = gaps.sweep(app_engine)
     assert len(opened) == 1
-    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM monitoring_gap")] == [
-        "sys-b"
-    ]
+    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM event")] == ["sys-b"]
     assert "gap sweep failed: system_id=sys-a type=OperationalError" in caplog.text
     assert "simulated" not in caplog.text
     assert append_lock_is_free(owner_engine)
 
     # The next sweep retries sys-a.
-    monkeypatch.setattr(events, "create_gap_event", real_create)
+    monkeypatch.setattr(gaps, "_insert_gap_event", real_insert)
     assert len(gaps.sweep(app_engine)) == 1
-    assert len(rows(owner_engine, "SELECT * FROM monitoring_gap")) == 2
+    assert len(rows(owner_engine, "SELECT * FROM event")) == 2
 
 
 def test_a_system_removed_between_listing_and_locking_is_skipped(
@@ -324,15 +329,16 @@ def test_a_system_removed_between_listing_and_locking_is_skipped(
 # Closing
 
 
-def test_the_next_sample_closes_the_gap(
+def test_recovery_closes_the_gap_and_counts_from_detection(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
     add_system(owner_engine, "sys-42", last_received_at=T0)
-    fake_clock.advance(901)
+    fake_clock.advance(901)  # the gap is detected (received_at) at T0 + 901 s
     [event_id] = gaps.sweep(app_engine)
-    resumed = fake_clock.advance(98.9)  # data back 999.9 s after the last sample
+    fake_clock.advance(98.9)  # data back 98.9 s after detection
     assert ingest_sample(app_engine, "sys-42", fake_clock) == event_id
 
+    # Spec 3.4: the outage length from the gap's received_at to now, in whole seconds: 98.
     [closed] = rows(
         owner_engine,
         "SELECT actor_id, subject_id, payload FROM ledger_entry WHERE entry_type = 'GAP_CLOSED'",
@@ -340,13 +346,11 @@ def test_the_next_sample_closes_the_gap(
     assert closed == {
         "actor_id": "system",
         "subject_id": event_id,
-        "payload": {"event_id": event_id, "system_id": "sys-42", "gap_seconds": 999},
+        "payload": {"event_id": event_id, "system_id": "sys-42", "gap_seconds": 98},
     }
     assert type(closed["payload"]["gap_seconds"]) is int
-    [gap] = rows(owner_engine, "SELECT closed_at, gap_seconds FROM monitoring_gap")
-    assert gap == {"closed_at": resumed, "gap_seconds": 999}
-    [event] = rows(owner_engine, "SELECT state, closed_at FROM event")
-    assert event == {"state": "CLOSED", "closed_at": resumed}
+    [event] = rows(owner_engine, "SELECT state FROM event")
+    assert event == {"state": "CLOSED"}
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED", "GAP_CLOSED"]
 
 
@@ -392,5 +396,5 @@ def test_close_if_open_does_not_commit(
         assert gaps.close_if_open(session, "sys-42") is not None
         session.rollback()  # the ingest failed later on
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
-    [gap] = rows(owner_engine, "SELECT closed_at FROM monitoring_gap")
-    assert gap["closed_at"] is None
+    [event] = rows(owner_engine, "SELECT state FROM event")
+    assert event["state"] == "FLAGGED"

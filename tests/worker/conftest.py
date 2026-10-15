@@ -25,8 +25,9 @@ WORKER_TABLES = (
     "notification_delivery",
     "notification",
     "webhook",
-    "monitoring_gap",
+    "harm_field",
     "event",
+    "sweeper_heartbeat",
     "monitored_system",
 )
 
@@ -122,19 +123,51 @@ def add_system(
     owner_engine: Engine,
     system_id: str,
     *,
-    started_at: datetime = T0,
-    last_received_at: datetime | None = None,
+    last_received_at: datetime = T0,
+    sampling_interval_s: int = 300,
+    gap_timeout_intervals: int = 3,
 ) -> None:
+    """A monitored_system row as Part 4's seed writes it (spec 4.4; sys-42: 300 s, 3)."""
     with owner_engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO monitored_system (system_id, monitoring_started_at, last_received_at)"
-                " VALUES (:system_id, :started_at, :last_received_at)"
+                "INSERT INTO monitored_system"
+                " (system_id, sampling_interval_s, gap_timeout_intervals, last_received_at)"
+                " VALUES (:system_id, :interval, :intervals, :last_received_at)"
             ),
             {
                 "system_id": system_id,
-                "started_at": started_at,
+                "interval": sampling_interval_s,
+                "intervals": gap_timeout_intervals,
                 "last_received_at": last_received_at,
+            },
+        )
+
+
+def add_event(
+    owner_engine: Engine,
+    event_id: str = "evt-1",
+    *,
+    event_type: str = "threshold_breach",
+    system_id: str = "sys-42",
+    detected_at: datetime = T0,
+    received_at: datetime = T0,
+) -> None:
+    """An event row as Part 1's ingest would write it, for notification tests."""
+    with owner_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO event (event_id, system_id, type, detected_at, received_at, state,"
+                " retain_until) VALUES (:event_id, :system_id, :type, :detected_at,"
+                " :received_at, 'FLAGGED', :retain_until)"
+            ),
+            {
+                "event_id": event_id,
+                "system_id": system_id,
+                "type": event_type,
+                "detected_at": detected_at,
+                "received_at": received_at,
+                "retain_until": detected_at + timedelta(days=200),
             },
         )
 
@@ -144,8 +177,8 @@ def add_webhook(owner_engine: Engine, webhook_id: str, url: str, event_types: li
     with owner_engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO webhook (webhook_id, url, event_types, registered_by, registered_at)"
-                " VALUES (:webhook_id, :url, :event_types, 'rev-1', :now)"
+                "INSERT INTO webhook (webhook_id, url, event_types, created_at)"
+                " VALUES (:webhook_id, :url, :event_types, :now)"
             ),
             {"webhook_id": webhook_id, "url": url, "event_types": event_types, "now": T0},
         )

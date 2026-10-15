@@ -293,12 +293,12 @@ def wait_for_lock_waiters(holder: Connection, count: int) -> None:
 
 @pytest.fixture(scope="module", autouse=True)
 def fresh_database(owner_engine: Engine) -> Iterator[None]:
-    """Rebuild the schema with migrations 0001 to 0003; clean up after the whole scenario."""
+    """Rebuild the schema with migrations 0001 and 0002; clean up after the whole scenario."""
     get_engine().dispose()
     command.downgrade(alembic_config(), "base")
     command.upgrade(alembic_config(), "head")
     with owner_engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004"
     yield
     with owner_engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE ledger_entry ENABLE TRIGGER {TRIGGER_NAME}"))

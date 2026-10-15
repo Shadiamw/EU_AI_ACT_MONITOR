@@ -21,6 +21,7 @@ from tests.worker.conftest import (
     T0,
     FakeClock,
     Receiver,
+    add_event,
     add_webhook,
     app_sessions_in_transaction,
     closed_port_url,
@@ -29,8 +30,10 @@ from tests.worker.conftest import (
 )
 
 
-def request_notification(app_engine: Engine, event_id: str = "evt-1") -> str:
-    """What the ingest or the sweeper does: enqueue in its transaction, then commit."""
+def request_notification(app_engine: Engine, owner_engine: Engine, event_id: str = "evt-1") -> str:
+    """What the ingest or the sweeper does: create the event, enqueue in the same transaction,
+    then commit. The event row here is written by the owner first (Part 1 is a stub)."""
+    add_event(owner_engine, event_id)
     with Session(app_engine) as session:
         notification_id = notifications.enqueue(session, event_id, "sys-42")
         session.commit()
@@ -62,7 +65,7 @@ def test_enqueue_records_the_request_and_one_delivery_per_subscribed_webhook(
     add_webhook(owner_engine, "wh-flag", "http://127.0.0.1:9/a", ["flag_notification"])
     add_webhook(owner_engine, "wh-both", "http://127.0.0.1:9/b", ["reminder", "flag_notification"])
     add_webhook(owner_engine, "wh-reminder", "http://127.0.0.1:9/c", ["reminder"])
-    notification_id = request_notification(app_engine)
+    notification_id = request_notification(app_engine, owner_engine)
 
     entries = rows(owner_engine, "SELECT actor_id, subject_id, payload FROM ledger_entry")
     assert entries == [
@@ -78,11 +81,11 @@ def test_enqueue_records_the_request_and_one_delivery_per_subscribed_webhook(
     ]
     deliveries = rows(
         owner_engine,
-        "SELECT webhook_id, status, attempts, next_attempt_at FROM notification_delivery"
+        "SELECT webhook_id, status, attempt_count, next_attempt_at FROM notification_delivery"
         " ORDER BY webhook_id",
     )
     assert deliveries == [
-        {"webhook_id": wid, "status": "PENDING", "attempts": 0, "next_attempt_at": T0}
+        {"webhook_id": wid, "status": "PENDING", "attempt_count": 0, "next_attempt_at": T0}
         for wid in ("wh-both", "wh-flag")
     ]
 
@@ -90,6 +93,7 @@ def test_enqueue_records_the_request_and_one_delivery_per_subscribed_webhook(
 def test_enqueue_refuses_an_unknown_type_and_writes_nothing(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
+    add_event(owner_engine)
     with Session(app_engine) as session:
         with pytest.raises(ValueError):
             notifications.enqueue(session, "evt-1", "sys-42", "email")
@@ -101,6 +105,7 @@ def test_enqueue_refuses_an_unknown_type_and_writes_nothing(
 def test_enqueue_does_not_commit(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
+    add_event(owner_engine)
     with Session(app_engine) as session:
         notifications.enqueue(session, "evt-1", "sys-42")
         session.rollback()
@@ -115,7 +120,7 @@ def test_delivery_appends_delivered_with_integer_latency_and_boolean_bound(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    notification_id = request_notification(app_engine)
+    notification_id = request_notification(app_engine, owner_engine)
     fake_clock.advance(7.9)  # the pass runs 7.9 s after detection
 
     # Checked inside the HTTP call: no application transaction is open and nobody holds the
@@ -153,9 +158,9 @@ def test_delivery_appends_delivered_with_integer_latency_and_boolean_bound(
     )
     assert entry == {"actor_id": "system", "subject_id": "evt-1"}
     row = delivery(owner_engine)
-    assert (row["status"], row["attempts"], row["last_status"]) == ("DELIVERED", 1, 200)
-    assert row["latency_seconds"] == 7
-    assert row["lease_expires_at"] is None
+    assert (row["status"], row["attempt_count"], row["last_status"]) == ("DELIVERED", 1, "200")
+    assert row["delivered_at"] == T0 + timedelta(seconds=7.9)
+    assert row["lease_until"] is None
 
     # Delivered once: later passes find nothing to do.
     fake_clock.advance(3600)
@@ -173,7 +178,7 @@ def test_within_bound_compares_latency_with_the_configured_bound(
     within: bool,
 ) -> None:
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     fake_clock.advance(delay)
     notifications.deliver_due(app_engine)
     [payload] = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
@@ -192,7 +197,7 @@ def test_ac04_the_bound_is_configurable_to_five_minutes(
 ) -> None:
     monkeypatch.setenv("NOTIFY_MAX_DELAY_SECONDS", "300")
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     fake_clock.advance(delay)
     notifications.deliver_due(app_engine)
     [payload] = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
@@ -204,7 +209,7 @@ def test_each_subscribed_webhook_gets_its_own_delivery(
 ) -> None:
     add_webhook(owner_engine, "wh-a", receiver.url, ["flag_notification"])
     add_webhook(owner_engine, "wh-b", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     assert notifications.deliver_due(app_engine) == 2
     assert sorted(c.body["webhook_id"] for c in receiver.calls) == ["wh-a", "wh-b"]
     assert sorted(
@@ -237,12 +242,13 @@ def test_a_non_2xx_answer_schedules_a_retry_and_appends_nothing(
     status: int,
 ) -> None:
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     receiver.statuses = [status]
     notifications.deliver_due(app_engine)
 
     row = delivery(owner_engine)
-    assert (row["status"], row["attempts"], row["last_status"]) == ("PENDING", 1, status)
+    assert (row["status"], row["attempt_count"], row["last_status"]) == ("PENDING", 1, str(status))
+    assert row["lease_until"] is None
     assert row["next_attempt_at"] == T0 + timedelta(seconds=30)
     assert entry_types(owner_engine) == ["NOTIFICATION_REQUESTED"]
 
@@ -259,7 +265,7 @@ def test_the_last_failed_attempt_appends_failed_and_stops(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    notification_id = request_notification(app_engine)
+    notification_id = request_notification(app_engine, owner_engine)
     receiver.default_status = 500
     started = []
     for delay in [0, 30, 60, 120, 240]:
@@ -295,7 +301,7 @@ def test_no_response_is_a_failure_with_a_null_status(
 ) -> None:
     monkeypatch.setenv("DELIVERY_MAX_ATTEMPTS", "1")
     add_webhook(owner_engine, "wh-1", closed_port_url(), ["flag_notification"])
-    notification_id = request_notification(app_engine)
+    notification_id = request_notification(app_engine, owner_engine)
     assert notifications.deliver_due(app_engine) == 1
     assert ledger_payloads(owner_engine, "NOTIFICATION_FAILED") == [
         {
@@ -314,7 +320,7 @@ def test_a_claimed_delivery_is_not_taken_by_a_second_pass(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     in_call = threading.Event()
     release = threading.Event()
 
@@ -326,7 +332,7 @@ def test_a_claimed_delivery_is_not_taken_by_a_second_pass(
     first = threading.Thread(target=notifications.deliver_due, args=(app_engine, slow_post))
     first.start()
     assert in_call.wait(30)
-    assert notifications.deliver_due(app_engine) == 0  # IN_FLIGHT, lease still running
+    assert notifications.deliver_due(app_engine) == 0  # leased, lease still running
     release.set()
     first.join()
     assert len(ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")) == 1
@@ -337,9 +343,11 @@ def test_an_expired_lease_is_claimed_again_and_the_stale_result_is_ignored(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     [stale] = notifications._claim(app_engine)  # a pass that crashed before recording
-    assert delivery(owner_engine)["status"] == "IN_FLIGHT"
+    row = delivery(owner_engine)
+    assert (row["status"], row["attempt_count"]) == ("PENDING", 1)
+    assert row["lease_until"] == T0 + timedelta(seconds=notifications.lease_seconds())
 
     fake_clock.advance(notifications.lease_seconds() - 1)
     assert notifications.deliver_due(app_engine) == 0
@@ -361,7 +369,7 @@ def test_a_lock_timeout_while_recording_is_rolled_back_and_retried(
 ) -> None:
     """integration_notes.md section 8, Part 3 item 5."""
     add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
-    request_notification(app_engine)
+    request_notification(app_engine, owner_engine)
     timeout_engine = create_engine(
         app_engine.url,
         poolclass=NullPool,
@@ -378,7 +386,8 @@ def test_a_lock_timeout_while_recording_is_rolled_back_and_retried(
             holder.rollback()
         assert "type=OperationalError" in caplog.text
         assert entry_types(owner_engine) == ["NOTIFICATION_REQUESTED"]
-        assert delivery(owner_engine)["status"] == "IN_FLIGHT"
+        row = delivery(owner_engine)
+        assert (row["status"], row["lease_until"] is not None) == ("PENDING", True)
         assert app_sessions_in_transaction(owner_engine) == 0
 
         fake_clock.advance(notifications.lease_seconds())

@@ -90,8 +90,7 @@ def test_register_pings_then_stores_and_appends(
         "webhook_id": webhook_id,
         "url": receiver.url,
         "event_types": ["flag_notification", "reminder"],
-        "registered_by": actor,
-        "registered_at": fake_clock.now(),
+        "created_at": fake_clock.now(),
     }
 
 

@@ -7,8 +7,8 @@ subscribed to its type, and appends NOTIFICATION_REQUESTED as its last write.
 The delivery pass never calls a webhook while a transaction is open (spec, 'Transactions and
 lock order (Pinned)'). For each due delivery it:
 
-1. claims the row in a short transaction (FOR UPDATE SKIP LOCKED, then status IN_FLIGHT with
-   a lease) and commits;
+1. claims the row in a short transaction (FOR UPDATE SKIP LOCKED, then a lease: lease_until on
+   the PENDING row) and commits;
 2. makes the HTTP call with no transaction open;
 3. in a new, short transaction, records the result. A 2xx answer appends
    NOTIFICATION_DELIVERED; the last failed attempt appends NOTIFICATION_FAILED; an earlier
@@ -59,7 +59,7 @@ def enqueue(
     session.execute(
         text(
             "INSERT INTO notification (notification_id, event_id, notification_type,"
-            " requested_at) VALUES (:notification_id, :event_id, :type, :now)"
+            " created_at) VALUES (:notification_id, :event_id, :type, :now)"
         ),
         {
             "notification_id": notification_id,
@@ -71,7 +71,7 @@ def enqueue(
     session.execute(
         text(
             "INSERT INTO notification_delivery"
-            " (notification_id, webhook_id, status, attempts, next_attempt_at)"
+            " (notification_id, webhook_id, status, attempt_count, next_attempt_at)"
             " SELECT :notification_id, webhook_id, 'PENDING', 0, :now FROM webhook"
             " WHERE :type = ANY(event_types)"
         ),
@@ -96,6 +96,7 @@ class Claim:
     notification_id: str
     webhook_id: str
     attempt: int
+    lease_until: datetime  # identifies this claim: a later claim sets a new lease
     url: str
     event_id: str
     notification_type: str
@@ -107,7 +108,7 @@ def retry_delay_seconds(failed_attempt: int) -> int:
 
 
 def lease_seconds() -> int:
-    """How long a claim stays IN_FLIGHT before another pass may take it again."""
+    """How long a claimed PENDING row is skipped by other passes before it may be taken again."""
     return config.webhook_timeout_seconds() + 60
 
 
@@ -123,7 +124,7 @@ def deliver_due(engine: Engine, post: webhooks.Poster = webhooks.post_json) -> i
         try:
             _record(engine, claim, status)
         except (SQLAlchemyError, LedgerError) as exc:
-            # Rolled back: the claim stays IN_FLIGHT and is retried when its lease runs out.
+            # Rolled back: the row keeps its lease and is retried when the lease runs out.
             logger.warning(
                 "delivery result not recorded: notification_id=%s webhook_id=%s type=%s",
                 claim.notification_id,
@@ -134,34 +135,37 @@ def deliver_due(engine: Engine, post: webhooks.Poster = webhooks.post_json) -> i
 
 
 def _claim(engine: Engine) -> list[Claim]:
+    """Take due PENDING rows whose lease is absent or expired, give each a new lease and count
+    the attempt, and commit before any network call (spec 3.5 step 2)."""
     with Session(engine) as session:
         now = clock.now()
         rows = session.execute(
             text(
-                "SELECT d.notification_id, d.webhook_id, d.attempts, w.url, n.event_id,"
-                " n.notification_type, n.requested_at"
+                "SELECT d.notification_id, d.webhook_id, d.attempt_count, w.url, n.event_id,"
+                " n.notification_type, n.created_at"
                 " FROM notification_delivery d"
                 " JOIN notification n ON n.notification_id = d.notification_id"
                 " JOIN webhook w ON w.webhook_id = d.webhook_id"
-                " WHERE (d.status = 'PENDING' AND d.next_attempt_at <= :now)"
-                " OR (d.status = 'IN_FLIGHT' AND d.lease_expires_at <= :now)"
+                " WHERE d.status = 'PENDING' AND d.next_attempt_at <= :now"
+                " AND (d.lease_until IS NULL OR d.lease_until <= :now)"
                 " ORDER BY d.next_attempt_at, d.notification_id, d.webhook_id"
                 " LIMIT :limit FOR UPDATE OF d SKIP LOCKED"
             ),
             {"now": now, "limit": CLAIM_BATCH_SIZE},
         ).all()
+        lease_until = now + timedelta(seconds=lease_seconds())
         claims = []
         for row in rows:
-            attempt = row.attempts + 1
+            attempt = row.attempt_count + 1
             session.execute(
                 text(
-                    "UPDATE notification_delivery SET status = 'IN_FLIGHT', attempts = :attempt,"
-                    " lease_expires_at = :lease_expires_at"
+                    "UPDATE notification_delivery SET attempt_count = :attempt,"
+                    " lease_until = :lease_until"
                     " WHERE notification_id = :notification_id AND webhook_id = :webhook_id"
                 ),
                 {
                     "attempt": attempt,
-                    "lease_expires_at": now + timedelta(seconds=lease_seconds()),
+                    "lease_until": lease_until,
                     "notification_id": row.notification_id,
                     "webhook_id": row.webhook_id,
                 },
@@ -171,10 +175,11 @@ def _claim(engine: Engine) -> list[Claim]:
                     notification_id=row.notification_id,
                     webhook_id=row.webhook_id,
                     attempt=attempt,
+                    lease_until=lease_until,
                     url=row.url,
                     event_id=row.event_id,
                     notification_type=row.notification_type,
-                    requested_at=row.requested_at,
+                    requested_at=row.created_at,
                 )
             )
         session.commit()
@@ -197,28 +202,33 @@ def _record(engine: Engine, claim: Claim, status: int | None) -> None:
     with Session(engine) as session:
         current = session.execute(
             text(
-                "SELECT status, attempts FROM notification_delivery"
+                "SELECT status, attempt_count, lease_until FROM notification_delivery"
                 " WHERE notification_id = :notification_id AND webhook_id = :webhook_id"
                 " FOR UPDATE"
             ),
             {"notification_id": claim.notification_id, "webhook_id": claim.webhook_id},
-        ).one()
-        if current.status != "IN_FLIGHT" or current.attempts != claim.attempt:
+        ).one_or_none()
+        if (
+            current is None  # emptied by a test reset while the call was in flight
+            or current.status != "PENDING"
+            or current.attempt_count != claim.attempt
+            or current.lease_until != claim.lease_until
+        ):
             # Another pass took this delivery over after our lease ran out; its result wins.
             session.rollback()
             return
         now = clock.now()
         keys = {"notification_id": claim.notification_id, "webhook_id": claim.webhook_id}
+        last_status = None if status is None else str(status)
         if webhooks.is_success(status):
             latency = whole_seconds(claim.requested_at, now)
             session.execute(
                 text(
                     "UPDATE notification_delivery SET status = 'DELIVERED',"
-                    " lease_expires_at = NULL, last_status = :status, delivered_at = :now,"
-                    " latency_seconds = :latency"
+                    " lease_until = NULL, last_status = :last_status, delivered_at = :now"
                     " WHERE notification_id = :notification_id AND webhook_id = :webhook_id"
                 ),
-                {**keys, "status": status, "now": now, "latency": latency},
+                {**keys, "last_status": last_status, "now": now},
             )
             ledger.append(
                 session,
@@ -236,10 +246,10 @@ def _record(engine: Engine, claim: Claim, status: int | None) -> None:
             session.execute(
                 text(
                     "UPDATE notification_delivery SET status = 'FAILED',"
-                    " lease_expires_at = NULL, last_status = :status"
+                    " lease_until = NULL, last_status = :last_status"
                     " WHERE notification_id = :notification_id AND webhook_id = :webhook_id"
                 ),
-                {**keys, "status": status},
+                {**keys, "last_status": last_status},
             )
             ledger.append(
                 session,
@@ -251,13 +261,13 @@ def _record(engine: Engine, claim: Claim, status: int | None) -> None:
         else:
             session.execute(
                 text(
-                    "UPDATE notification_delivery SET status = 'PENDING',"
-                    " lease_expires_at = NULL, last_status = :status, next_attempt_at = :next"
+                    "UPDATE notification_delivery SET lease_until = NULL,"
+                    " last_status = :last_status, next_attempt_at = :next"
                     " WHERE notification_id = :notification_id AND webhook_id = :webhook_id"
                 ),
                 {
                     **keys,
-                    "status": status,
+                    "last_status": last_status,
                     "next": now + timedelta(seconds=retry_delay_seconds(claim.attempt)),
                 },
             )

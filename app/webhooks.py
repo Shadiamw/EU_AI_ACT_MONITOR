@@ -107,16 +107,10 @@ def register(
 
     session.execute(
         text(
-            "INSERT INTO webhook (webhook_id, url, event_types, registered_by, registered_at)"
-            " VALUES (:webhook_id, :url, :event_types, :actor_id, :now)"
+            "INSERT INTO webhook (webhook_id, url, event_types, created_at)"
+            " VALUES (:webhook_id, :url, :event_types, :now)"
         ),
-        {
-            "webhook_id": webhook_id,
-            "url": url,
-            "event_types": event_types,
-            "actor_id": actor_id,
-            "now": clock.now(),
-        },
+        {"webhook_id": webhook_id, "url": url, "event_types": event_types, "now": clock.now()},
     )
     stored_types: list[JsonValue] = list(event_types)
     ledger.append(

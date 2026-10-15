@@ -1,29 +1,12 @@
-"""STUB for Part 1 (events). The existence check the audit endpoint needs (plan G1), and the two
-writes the gap sweeper makes to the event table.
+"""STUB for Part 1 (events). Only the existence check the audit endpoint needs (plan G1).
 
 Until Part 1's event table exists, an event exists when the ledger holds an EVENT_FLAGGED or
 GAP_OPENED entry whose subject_id is that id (addendum rule 1; docs/decisions.md 30). Part 1
 replaces this with a lookup on the event table.
-
-create_gap_event and close_gap_event write the stub `event` table from migration 0001. Part 1
-replaces them with writes to its own table, keeping the signatures. Neither commits, and
-neither touches the ledger: the caller appends GAP_OPENED or GAP_CLOSED afterwards.
 """
-
-from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
-GAP_EVENT_TYPE = "monitoring_gap"
-
-# The four Article 3(49) severity fields (REQ-07). A gap event carries all four (API contract).
-HARM_FIELDS = (
-    "health_safety_harm",
-    "critical_infrastructure_disruption",
-    "fundamental_rights_infringement",
-    "property_environmental_damage",
-)
 
 
 def exists(session: Session, event_id: str) -> bool:
@@ -35,33 +18,4 @@ def exists(session: Session, event_id: str) -> bool:
             ),
             {"event_id": event_id},
         ).scalar_one()
-    )
-
-
-def create_gap_event(
-    session: Session, event_id: str, system_id: str, detected_at: datetime
-) -> None:
-    """Insert a FLAGGED monitoring_gap event. Metric fields are null; an outage carries no
-    harm evidence, so each harm field is present and null."""
-    session.execute(
-        text(
-            "INSERT INTO event (event_id, type, system_id, state, detected_at, harm_fields)"
-            " VALUES (:event_id, :type, :system_id, 'FLAGGED', :detected_at,"
-            " CAST(:harm_fields AS jsonb))"
-        ),
-        {
-            "event_id": event_id,
-            "type": GAP_EVENT_TYPE,
-            "system_id": system_id,
-            "detected_at": detected_at,
-            "harm_fields": "{" + ", ".join(f'"{name}": null' for name in HARM_FIELDS) + "}",
-        },
-    )
-
-
-def close_gap_event(session: Session, event_id: str, closed_at: datetime) -> None:
-    """Move a monitoring_gap event to CLOSED when its system's data resumes."""
-    session.execute(
-        text("UPDATE event SET state = 'CLOSED', closed_at = :closed_at WHERE event_id = :id"),
-        {"id": event_id, "closed_at": closed_at},
     )
