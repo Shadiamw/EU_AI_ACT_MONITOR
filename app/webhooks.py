@@ -88,9 +88,39 @@ def _is_private_host(host: str, port: int, resolve: Resolver) -> bool:
     return any(not _is_public_address(address) for address in resolve(name, port))
 
 
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])  # drop an IPv6 zone id
+    except ValueError:
+        return False
+    return True
+
+
+def _client_can_use(url: str, hostname: str) -> bool:
+    """True when the HTTP client can call url at the host it names (decision 107).
+
+    The URL is parsed by httpx.URL, the parser httpx.post uses, so the check and the call cannot
+    disagree: whatever it refuses (a control character, an invalid IP address, an over-long URL,
+    a malformed IDNA label) is refused here. Two more checks use the client's own machinery
+    rather than a list of characters: httpx must read the same host as urlsplit (it
+    percent-encodes characters that cannot be in a host, such as a space, instead of refusing
+    them), and a host name must pass the `idna` codec that the socket layer applies when it
+    connects (an empty or over-long label fails there)."""
+    try:
+        parsed = httpx.URL(url)
+        if parsed.host.lower() != hostname:  # urlsplit lower-cases the host; httpx keeps IPv6 case
+            return False
+        if not _is_ip_literal(hostname):
+            parsed.raw_host.decode("ascii").encode("idna")
+    except Exception:  # any parse or encoding error: the client could not call this URL
+        return False
+    return True
+
+
 def check_url(url: str, *, any_address: bool, resolve: Resolver | None = None) -> None:
-    """Raise WebhookUrlError unless url is an http or https URL with a host (spec 3.6). With
-    any_address False (outside the test environment) also require https and a public host."""
+    """Raise WebhookUrlError unless url is an http or https URL with a host that the HTTP
+    client can use (spec 3.6; decision 107). With any_address False (outside the test
+    environment) also require https and a public host."""
     try:
         parts = urlsplit(url)
         port = parts.port  # raises ValueError for a malformed port
@@ -99,6 +129,8 @@ def check_url(url: str, *, any_address: bool, resolve: Resolver | None = None) -
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https") or not parts.hostname or port == 0:
         raise WebhookUrlError("not an http or https URL")
+    if not _client_can_use(url, parts.hostname):
+        raise WebhookUrlError("not a URL the HTTP client can use")
     if any_address:
         return
     if scheme != "https":
@@ -109,10 +141,12 @@ def check_url(url: str, *, any_address: bool, resolve: Resolver | None = None) -
 
 
 def post_json(url: str, body: dict[str, Any], timeout_seconds: int) -> int | None:
-    """POST body as JSON. Redirects are not followed. Any transport failure gives None."""
+    """POST body as JSON. Redirects are not followed. Any transport failure gives None, and so
+    does a URL the client refuses after all (decision 107: check_url should have caught it).
+    Only the exception's type name is logged: its text can quote the URL (decision 106)."""
     try:
         response = httpx.post(url, json=body, timeout=timeout_seconds, follow_redirects=False)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError) as exc:
         logger.info("webhook call failed: type=%s", type(exc).__name__)
         return None
     return response.status_code

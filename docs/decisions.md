@@ -1027,3 +1027,22 @@ and the newer entry wins.
      (decision 98), but logs go to a different and longer-lived audience, and project logs carry
      no payload values (decision 28). Decided during the Part 2 + Part 3 integration close-out,
      15 October 2026.
+
+107. **A webhook URL must be one the HTTP client can use.** `check_url` parses the URL with
+     `httpx.URL`, the parser `httpx.post` uses, so the check and the call cannot disagree:
+     anything it refuses (a control character such as a newline, tab, NUL or DEL, an invalid IPv4
+     address such as 999.1.1.1, a malformed IDNA label, a URL over 65,536 characters) is 400
+     MALFORMED_BODY, with nothing pinged, stored or appended. Two more checks use the client's own
+     machinery instead of a list of characters: httpx must read the same host as `urlsplit`
+     (ignoring case), because httpx percent-encodes characters that cannot be in a host, such as
+     a space or `<`, instead of refusing them; and a host name must pass the `idna` codec that the
+     socket layer applies when it connects, which refuses an empty or over-63-character label.
+     Every decision-98 rule is unchanged: any URL the client can use is accepted and stored and
+     ledgered exactly as received, query, credentials and fragment included. As defence in depth,
+     `post_json` treats `httpx.InvalidURL` and `UnicodeError` like a transport failure, so a URL
+     that still slips through is a failed ping (422 WEBHOOK_UNVERIFIED, nothing stored), never a
+     500. Only the exception's type name is logged (decisions 36 and 106)
+     (`tests/worker/test_webhook_urls.py`). Reason: spec 3.6 makes anything that is not an
+     acceptable http or https URL a 400; before this, such URLs passed `urlsplit`, reached the
+     ping and became 500 INTERNAL_ERROR. Decided during the Part 2 + Part 3 integration,
+     15 October 2026.
