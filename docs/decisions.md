@@ -925,8 +925,9 @@ and the newer entry wins.
 
     Because `GET /v1/ledger/export` shows every URL to any REVIEWER or VIEWER (decision 32), it
     is recommended, not enforced, that webhook URLs carry no secrets (integration_notes.md
-    4.4; README section 6). Reason: spec 3.6 states the URL rules, and SS decided to follow it
-    only (decision 1 of the integration request, 15 October 2026).
+    4.4; README section 6). Reason: spec 3.6 states the URL rules. Decided during the Part 2 +
+    Part 3 integration, 15 October 2026.
+    Logs never carry webhook URLs (decision 106).
 
 99. **Private-address detection outside the test environment.** A host is refused when:
     - it is `localhost` or ends in `.localhost` (a trailing dot is ignored);
@@ -1013,3 +1014,16 @@ and the newer entry wins.
      the spec on Part 3: the contract's `POST /v1/webhooks` (201 `{webhook_id}`, 422 when the
      ping fails) and its error code WEBHOOK_UNVERIFIED match spec 3.6. "Duplicate resets
      silence" and "Wrong sender clock" (spec 3.9) need Part 1's ingest and stay deferred.
+
+106. **Logs never carry webhook URLs.** `app/webhooks.py`, where the webhook HTTP client is used,
+     holds the `httpx` and `httpcore` loggers at WARNING. httpx otherwise logs every request's
+     full URL at INFO, user name, password, query string and fragment included, and httpcore
+     traces connections at DEBUG. Setting it there covers both the worker's deliveries and the
+     web process's verification ping, whatever LOG_LEVEL says. Part 3's own log lines name a
+     webhook only by its `webhook_id`; the spec 3.8 attempt line keeps the notification id,
+     webhook id, attempt, status and duration. Errors are logged by exception type name only
+     (decision 36), so an exception text holding the URL is never logged
+     (`tests/worker/test_log_privacy.py`). Reason: the export already shows a URL to any VIEWER
+     (decision 98), but logs go to a different and longer-lived audience, and project logs carry
+     no payload values (decision 28). Decided during the Part 2 + Part 3 integration close-out,
+     15 October 2026.

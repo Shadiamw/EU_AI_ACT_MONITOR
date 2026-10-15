@@ -6,8 +6,8 @@ Precedence: contract > Part 2 addendum > spec > Models 4 and 5.
 
 This audit was written on branch `developed-part23merged`, starting from the tip of
 `development-gap-sweeper` (`8fc874a`), **before any fix**. The "Before" column describes that
-commit. Plan items A1 to D4 refer to the integration plan in the project library
-(plans/part2-part3-integration-plan.md, not in this repository). A finding the plan does not list is a **NEW FINDING** (N1, N2, ...). Every finding is
+commit. Plan items A1 to D4 refer to the integration plan, kept outside this repository. A
+finding the plan does not list is a **NEW FINDING** (N1, N2, ...). Every finding is
 fixed in the stage named in the "Stage" column. The "Proof" column names the test that shows the
 fixed behaviour, in `tests/worker/` unless another path is given. The Proof column was
 updated in stage 5 to the final test names; the Before and Status columns are unchanged.

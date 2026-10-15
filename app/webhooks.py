@@ -34,6 +34,13 @@ from app.ledger.canonical import JsonValue
 
 logger = logging.getLogger("worker")
 
+# Logs never carry webhook URLs (decision 106). httpx logs every request's full URL, user name,
+# password, query and fragment included, at INFO, and httpcore traces connections at DEBUG. Both
+# are held at WARNING here, where the client is used, so the worker's deliveries and the web
+# process's verification ping are both covered whatever LOG_LEVEL says.
+for _client_logger in ("httpx", "httpcore"):
+    logging.getLogger(_client_logger).setLevel(logging.WARNING)
+
 # The notification types a webhook may subscribe to (API contract). Phase 3 sends only
 # flag_notification, for flagged events and gaps alike; reminders (REQ-11) come with deadlines.
 NOTIFICATION_TYPES = ("flag_notification", "reminder")

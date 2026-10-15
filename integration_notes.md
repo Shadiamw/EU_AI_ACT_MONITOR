@@ -333,6 +333,8 @@ including one with a query string, a user name and password, or a fragment, and 
 received (spec 3.6; decision 98). Outside the test environment it accepts https only and
 refuses private and loopback addresses (decision 99).
 
+Logs never carry webhook URLs: the HTTP client's loggers are held at WARNING (decision 106).
+
 ### 4.5 How a long-held lock affects the worker
 
 Every append waits for the one ledger lock (section 2.2). While any transaction that has
@@ -710,7 +712,7 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 717 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 720 tests.
 
 ### Part 1
 

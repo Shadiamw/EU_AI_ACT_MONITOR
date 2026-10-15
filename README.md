@@ -283,7 +283,7 @@ psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/boots
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 717 tests: 532 for Part 2 and 185 for Part 3 in
+At the time of writing the suite collects 720 tests: 532 for Part 2 and 188 for Part 3 in
 `tests/worker/`. All pass on the Docker setup (PostgreSQL 16).
 
 ## 6. Known limits and operating notes
