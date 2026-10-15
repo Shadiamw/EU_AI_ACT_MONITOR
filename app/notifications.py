@@ -234,14 +234,16 @@ def _claim(engine: Engine) -> list[Claim]:
 
 
 def _body(claim: Claim) -> dict[str, Any]:
-    """What the webhook receives. The receiver fetches the event itself if it needs more."""
+    """Exactly the spec 3.5 body. `type` is the event type (threshold_breach or monitoring_gap);
+    sent_at is the moment of this attempt."""
     return {
-        "type": claim.notification_type,
+        "notification_type": claim.notification_type,
         "notification_id": claim.notification_id,
-        "webhook_id": claim.webhook_id,
         "event_id": claim.event_id,
-        "requested_at": api_time(claim.received_at),
-        "attempt": claim.attempt,
+        "system_id": claim.system_id,
+        "type": claim.event_type,
+        "detected_at": api_time(claim.detected_at),
+        "sent_at": api_time(clock.now()),
     }
 
 

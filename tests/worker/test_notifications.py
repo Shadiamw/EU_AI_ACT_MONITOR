@@ -137,14 +137,14 @@ def test_a_routed_notification_is_not_sent_to_a_webhook_registered_later(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
     """Spec 3.5 step 1: later-registered webhooks do not receive notifications already routed."""
-    add_webhook(owner_engine, "wh-first", receiver.url, ["flag_notification"])
+    add_webhook(owner_engine, "wh-first", receiver.url + "?wh=first", ["flag_notification"])
     request_notification(app_engine, owner_engine)
     receiver.statuses = [500]  # the first attempt fails, so the delivery is still open
     assert notifications.deliver_due(app_engine) == 1
-    add_webhook(owner_engine, "wh-later", receiver.url, ["flag_notification"])
+    add_webhook(owner_engine, "wh-later", receiver.url + "?wh=later", ["flag_notification"])
     fake_clock.advance(10)
     assert notifications.deliver_due(app_engine) == 1
-    assert [c.body["webhook_id"] for c in receiver.calls] == ["wh-first", "wh-first"]
+    assert [c.path for c in receiver.calls] == ["/hook?wh=first", "/hook?wh=first"]
     assert [r["webhook_id"] for r in rows(owner_engine, "SELECT * FROM notification_delivery")] == [
         "wh-first"
     ]
@@ -176,6 +176,59 @@ def test_enqueue_does_not_commit(
 # Delivery
 
 
+def test_delivery_body_is_exactly_the_spec_shape(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
+) -> None:
+    """Spec 3.5: {notification_type, notification_id, event_id, system_id, type, detected_at,
+    sent_at}, where type is threshold_breach or monitoring_gap. Timestamps in the response
+    format (spec 4). The breach was detected at 10:05:00Z (contract Example 1's timestamp) and
+    received 3 s later; the gap event is detected and received at 10:20:00Z."""
+    breach_detected = datetime(2026, 9, 27, 10, 5, 0, tzinfo=UTC)
+    gap_detected = datetime(2026, 9, 27, 10, 20, 0, tzinfo=UTC)
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    add_event(
+        owner_engine,
+        "evt-7f3a",
+        detected_at=breach_detected,
+        received_at=breach_detected + timedelta(seconds=3),
+    )
+    add_event(
+        owner_engine,
+        "evt-gap",
+        event_type="monitoring_gap",
+        detected_at=gap_detected,
+        received_at=gap_detected,
+    )
+    ids = {}
+    with Session(app_engine) as session:
+        for event_id in ("evt-7f3a", "evt-gap"):
+            ids[event_id] = notifications.enqueue(session, event_id)
+        session.commit()
+    fake_clock.set(datetime(2026, 9, 27, 10, 20, 3, tzinfo=UTC))
+    assert notifications.deliver_due(app_engine) == 2
+    bodies = sorted((c.body for c in receiver.calls), key=lambda b: b["event_id"])
+    assert bodies == [
+        {
+            "notification_type": "flag_notification",
+            "notification_id": ids["evt-7f3a"],
+            "event_id": "evt-7f3a",
+            "system_id": "sys-42",
+            "type": "threshold_breach",
+            "detected_at": "2026-09-27T10:05:00Z",
+            "sent_at": "2026-09-27T10:20:03Z",
+        },
+        {
+            "notification_type": "flag_notification",
+            "notification_id": ids["evt-gap"],
+            "event_id": "evt-gap",
+            "system_id": "sys-42",
+            "type": "monitoring_gap",
+            "detected_at": "2026-09-27T10:20:00Z",
+            "sent_at": "2026-09-27T10:20:03Z",
+        },
+    ]
+
+
 def test_delivery_appends_delivered_with_integer_latency_and_boolean_bound(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
@@ -194,13 +247,15 @@ def test_delivery_appends_delivered_with_integer_latency_and_boolean_bound(
     [call] = receiver.calls
     assert call.observed == (0, True)
     assert call.path == "/hook"
+    # Spec 3.5 body; the pass runs at T0 + 7.9 s, the breach event was detected at T0.
     assert call.body == {
-        "type": "flag_notification",
+        "notification_type": "flag_notification",
         "notification_id": notification_id,
-        "webhook_id": "wh-1",
         "event_id": "evt-1",
-        "requested_at": "2026-10-01T09:00:00Z",
-        "attempt": 1,
+        "system_id": "sys-42",
+        "type": "threshold_breach",
+        "detected_at": "2026-10-01T09:00:00Z",
+        "sent_at": "2026-10-01T09:00:07.9Z",
     }
     [payload] = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
     assert payload == {
@@ -267,11 +322,11 @@ def test_ac04_the_bound_is_configurable_to_five_minutes(
 def test_each_subscribed_webhook_gets_its_own_delivery(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
 ) -> None:
-    add_webhook(owner_engine, "wh-a", receiver.url, ["flag_notification"])
-    add_webhook(owner_engine, "wh-b", receiver.url, ["flag_notification"])
+    add_webhook(owner_engine, "wh-a", receiver.url + "?wh=a", ["flag_notification"])
+    add_webhook(owner_engine, "wh-b", receiver.url + "?wh=b", ["flag_notification"])
     request_notification(app_engine, owner_engine)
     assert notifications.deliver_due(app_engine) == 2
-    assert sorted(c.body["webhook_id"] for c in receiver.calls) == ["wh-a", "wh-b"]
+    assert sorted(c.path for c in receiver.calls) == ["/hook?wh=a", "/hook?wh=b"]
     assert sorted(
         p["webhook_id"] for p in ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
     ) == [
@@ -320,7 +375,7 @@ def test_a_non_2xx_answer_schedules_a_retry_and_appends_nothing(
     assert notifications.deliver_due(app_engine) == 1
     [payload] = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
     assert (payload["attempt"], payload["latency_seconds"]) == (2, 10)
-    assert [c.body["attempt"] for c in receiver.calls] == [1, 2]
+    assert len(receiver.calls) == 2
 
 
 def test_permanent_failure_stops_after_six_attempts(

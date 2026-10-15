@@ -59,8 +59,19 @@ def test_gap_to_delivery_to_close_and_reverify(
         [event] = rows(owner_engine, "SELECT event_id, type, state FROM event")
         event_id = event["event_id"]
         assert (event["type"], event["state"]) == ("monitoring_gap", "FLAGGED")
-        notification = receiver.calls[-1].body
-        assert (notification["event_id"], notification["webhook_id"]) == (event_id, webhook_id)
+        # Spec 3.5 body: the gap was detected at T0 + 900 s and sent in the same iteration.
+        assert receiver.calls[-1].body == {
+            "notification_type": "flag_notification",
+            "notification_id": receiver.calls[-1].body["notification_id"],
+            "event_id": event_id,
+            "system_id": "sys-42",
+            "type": "monitoring_gap",
+            "detected_at": "2026-10-01T09:15:00Z",
+            "sent_at": "2026-10-01T09:15:00Z",
+        }
+        assert receiver.calls[-1].body["notification_id"].startswith("ntf-")
+        [delivery] = rows(owner_engine, "SELECT webhook_id FROM notification_delivery")
+        assert delivery["webhook_id"] == webhook_id
         [delivered] = rows(
             owner_engine,
             "SELECT payload FROM ledger_entry WHERE entry_type = 'NOTIFICATION_DELIVERED'",
