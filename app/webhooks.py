@@ -18,7 +18,7 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import clock, config, ledger
+from app import clock, ledger
 from app.formats import new_id
 from app.ledger.canonical import JsonValue
 
@@ -28,6 +28,7 @@ logger = logging.getLogger("worker")
 # flag_notification, for flagged events and gaps alike; reminders (REQ-11) come with deadlines.
 NOTIFICATION_TYPES = ("flag_notification", "reminder")
 MAX_URL_LENGTH = 2048
+TIMEOUT_SECONDS = 5  # spec 3.5 step 3 and 3.6: deliveries and the verification ping
 
 # post(url, body, timeout_seconds) -> HTTP status, or None when there was no response.
 Poster = Callable[[str, dict[str, Any], int], int | None]
@@ -81,7 +82,7 @@ def register(
     actor_id: str,
     url: str,
     event_types: list[str],
-    post: Poster = post_json,
+    post: Poster | None = None,
 ) -> str:
     """Ping url, then store the webhook and append WEBHOOK_REGISTERED. Returns the webhook id.
 
@@ -97,11 +98,8 @@ def register(
 
     # The ping runs before this function's first write, so it never runs while the ledger
     # lock is held (integration_notes.md 2.3).
-    status = post(
-        url,
-        {"type": "webhook_verification", "webhook_id": webhook_id},
-        config.webhook_timeout_seconds(),
-    )
+    send = post if post is not None else post_json
+    status = send(url, {"type": "webhook_verification", "webhook_id": webhook_id}, TIMEOUT_SECONDS)
     if not is_success(status):
         raise VerificationFailed(status)
 

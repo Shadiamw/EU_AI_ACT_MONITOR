@@ -2,9 +2,10 @@
 
 A system is silent since its last sample (monitored_system.last_received_at, set at seed time
 and by Part 1's ingest on every accepted sample). When it has been silent for the gap timeout or
-longer (3 sampling intervals by default, so 900 seconds: the third missed sample; AC-02,
-decision 92), the sweeper opens one gap for it: a FLAGGED monitoring_gap event with four
-NOT_APPLICABLE harm fields, GAP_OPENED and a flag_notification for the reviewer (spec 3.4). The
+longer (its gap_timeout_intervals x sampling_interval_s: 3 x 300 = 900 seconds for sys-42, so
+the third missed sample; AC-02, decision 92), the sweeper opens one gap for it: a FLAGGED
+monitoring_gap event with four NOT_APPLICABLE harm fields, GAP_OPENED and a flag_notification
+for the reviewer (spec 3.4). The
 system has at most one open gap; its next sample closes it (close_if_open, called inside Part
 1's ingest), and a new silence can then open a new one.
 
@@ -20,12 +21,10 @@ import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import Engine, text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app import clock, config, ledger, notifications
+from app import clock, ledger, notifications
 from app.formats import api_time, new_id, retain_until, whole_seconds
-from app.ledger.canonical import LedgerError
 
 logger = logging.getLogger("worker")
 
@@ -49,51 +48,57 @@ _OPEN_GAP = (
 
 
 def sweep(engine: Engine) -> list[str]:
-    """Open a gap for every system silent for at least the timeout. Returns the new gap
-    event ids. Errors are logged by type name and rolled back; that system is retried on the
-    next sweep."""
-    timeout = timedelta(seconds=config.gap_timeout_seconds())
+    """One sweeper run (spec 3.4): examine every monitored system once and open a gap for each
+    one silent for at least its timeout. Returns the new gap event ids.
+
+    Each system is handled in its own transaction. A row another process holds is skipped. An
+    error for one system is logged by type name and rolled back, and the others carry on; that
+    system is examined again on the next run. Afterwards the real time goes into
+    sweeper_heartbeat (spec 3.3).
+    """
     with Session(engine) as session:
-        candidates = list(
+        system_ids = list(
             session.execute(
-                text(
-                    "SELECT s.system_id FROM monitored_system s"
-                    " WHERE s.last_received_at <= :cutoff"
-                    " AND NOT EXISTS (SELECT 1 FROM event e WHERE e.system_id = s.system_id"
-                    " AND e.type = 'monitoring_gap' AND e.state = 'FLAGGED')"
-                    " ORDER BY s.system_id"
-                ),
-                {"cutoff": clock.now() - timeout},
+                text("SELECT system_id FROM monitored_system ORDER BY system_id")
             ).scalars()
         )
+    examined = 0
     opened = []
-    for system_id in candidates:
+    for system_id in system_ids:
         try:
             with Session(engine) as session:
-                event_id = _open_gap(session, system_id, timeout)
+                locked, event_id = _sweep_system(session, system_id)
                 session.commit()
-        except (SQLAlchemyError, LedgerError) as exc:
+        except Exception as exc:  # one bad row must never stop the sweep (spec 3.3)
             logger.warning("gap sweep failed: system_id=%s type=%s", system_id, type(exc).__name__)
             continue
+        if locked:
+            examined += 1
         if event_id is not None:
             opened.append(event_id)
+    _write_heartbeat(engine)
+    logger.info("gap sweep: systems_examined=%d gaps_opened=%d", examined, len(opened))
     return opened
 
 
-def _open_gap(session: Session, system_id: str, timeout: timedelta) -> str | None:
+def _sweep_system(session: Session, system_id: str) -> tuple[bool, str | None]:
+    """Lock the system row, skipping it if another process holds it (spec 3.4 step 1). Returns
+    whether the row was examined, and the new gap's event id if one was opened."""
     system = session.execute(
         text(
-            "SELECT last_received_at FROM monitored_system WHERE system_id = :system_id FOR UPDATE"
+            "SELECT last_received_at, sampling_interval_s, gap_timeout_intervals"
+            " FROM monitored_system WHERE system_id = :system_id FOR UPDATE SKIP LOCKED"
         ),
         {"system_id": system_id},
     ).one_or_none()
-    if system is None:
-        return None
-    # Re-check under the row lock: a sample or another sweeper may have got here first.
+    if system is None:  # held by another process, or removed since the listing
+        return False, None
+    # The threshold is per system (spec 3.2): gap_timeout_intervals x sampling_interval_s.
+    timeout = timedelta(seconds=system.gap_timeout_intervals * system.sampling_interval_s)
     now = clock.now()
     last_received_at: datetime = system.last_received_at
     if now - last_received_at < timeout or _open_gap_row(session, system_id) is not None:
-        return None
+        return True, None
 
     event_id = new_id("evt")
     _insert_gap_event(session, event_id, system_id, now)
@@ -108,8 +113,24 @@ def _open_gap(session: Session, system_id: str, timeout: timedelta) -> str | Non
             "last_received_at": api_time(last_received_at),
         },
     )
-    notifications.enqueue(session, event_id, WORKER_ACTOR)
-    return event_id
+    notifications.enqueue(session, event_id)
+    return True, event_id
+
+
+def _write_heartbeat(engine: Engine) -> None:
+    """sweeper_heartbeat.last_ran_at = the real time (spec 3.3), never the simulated clock."""
+    try:
+        with Session(engine) as session:
+            session.execute(
+                text(
+                    "INSERT INTO sweeper_heartbeat (singleton, last_ran_at) VALUES (true, :t)"
+                    " ON CONFLICT (singleton) DO UPDATE SET last_ran_at = EXCLUDED.last_ran_at"
+                ),
+                {"t": clock.wall_now()},
+            )
+            session.commit()
+    except Exception as exc:
+        logger.warning("sweeper heartbeat not written: type=%s", type(exc).__name__)
 
 
 def _insert_gap_event(session: Session, event_id: str, system_id: str, now: datetime) -> None:

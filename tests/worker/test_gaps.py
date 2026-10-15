@@ -5,8 +5,8 @@ configuration the gap timeout is 3 x 300 = 900 seconds: the third missed sample 
 (AC-02; decision 92).
 """
 
+import logging
 import threading
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,13 +15,12 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from app import gaps, ledger
+from app import clock, gaps, ledger
 from tests.api.conftest import ApiClient, append_lock_is_free, as_actor, build_app
 from tests.worker.conftest import (
     T0,
     FakeClock,
     add_system,
-    app_sessions_waiting_for_a_lock,
     entry_types,
     rows,
 )
@@ -69,16 +68,36 @@ def test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do(
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
 
 
-def test_timeout_follows_the_sampling_interval_and_interval_count(
+def test_timeout_comes_from_the_system_row(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.2: gap threshold = gap_timeout_intervals x sampling_interval_seconds, per system:
+    2 x 60 = 120 s for sys-fast, while sys-42 keeps 3 x 300 = 900 s."""
+    add_system(owner_engine, "sys-fast", sampling_interval_s=60, gap_timeout_intervals=2)
+    add_system(owner_engine, "sys-42")
+    fake_clock.advance(119)
+    assert gaps.sweep(app_engine) == []
+    fake_clock.advance(1)
+    [fast_gap] = gaps.sweep(app_engine)
+    fake_clock.advance(779)  # 899 s for sys-42
+    assert gaps.sweep(app_engine) == []
+    fake_clock.advance(1)
+    [slow_gap] = gaps.sweep(app_engine)
+    by_system = {r["event_id"]: r["system_id"] for r in rows(owner_engine, "SELECT * FROM event")}
+    assert by_system == {fast_gap: "sys-fast", slow_gap: "sys-42"}
+
+
+def test_env_sampling_settings_do_not_change_the_sweeper(
     app_engine: Engine,
     owner_engine: Engine,
     fake_clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Spec 5: SAMPLING_INTERVAL_SECONDS and GAP_TIMEOUT_INTERVALS only seed sys-42."""
     monkeypatch.setenv("SAMPLING_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("GAP_TIMEOUT_INTERVALS", "2")
-    add_system(owner_engine, "sys-42", last_received_at=T0)
-    fake_clock.advance(119)
+    add_system(owner_engine, "sys-42")  # row: 300 s x 3
+    fake_clock.advance(899)
     assert gaps.sweep(app_engine) == []
     fake_clock.advance(1)
     assert len(gaps.sweep(app_engine)) == 1
@@ -249,37 +268,49 @@ def test_concurrent_sweeps_open_exactly_one_gap(
     callers = 5
     results: list[list[str]] = []
     errors: list[BaseException] = []
+    start = threading.Barrier(callers)
 
     def run() -> None:
         try:
+            start.wait(30)
             results.append(gaps.sweep(app_engine))
         except BaseException as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
-    # Hold the system row so every sweeper has listed sys-42 as a candidate and is waiting
-    # for the row lock before any of them can open the gap (decision 80's approach).
-    with owner_engine.connect() as holder:
-        holder.execute(text("SELECT 1 FROM monitored_system WHERE system_id = 'sys-42' FOR UPDATE"))
-        threads = [threading.Thread(target=run) for _ in range(callers)]
-        for thread in threads:
-            thread.start()
-        deadline = time.monotonic() + 30
-        while True:
-            waiting = app_sessions_waiting_for_a_lock(owner_engine)
-            if waiting >= callers or time.monotonic() > deadline:
-                break
-            time.sleep(0.05)
-        holder.rollback()
+    threads = [threading.Thread(target=run) for _ in range(callers)]
+    for thread in threads:
+        thread.start()
     for thread in threads:
         thread.join()
-    assert waiting == callers, f"{waiting} of {callers} sweepers reached the row lock"
     assert errors == []
-    # The re-check under the row lock stops the others; the unique index is only a backstop,
-    # and hitting it would be logged as a failed sweep.
+    # A sweeper either skips the locked row or re-checks under the lock and finds the open
+    # gap; the unique index is only a backstop, and hitting it would be logged as a failure.
     assert "gap sweep failed" not in caplog.text
     assert sorted(len(r) for r in results) == [0] * (callers - 1) + [1]
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
     assert len(rows(owner_engine, "SELECT * FROM event")) == 1
+
+
+def test_a_locked_system_row_is_skipped_not_waited_for(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.4 step 1: lock each system row, and skip it if another process holds it."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(901)
+    results: list[list[str]] = []
+    with owner_engine.connect() as holder:
+        holder.execute(text("SELECT 1 FROM monitored_system WHERE system_id = 'sys-42' FOR UPDATE"))
+        sweeper = threading.Thread(target=lambda: results.append(gaps.sweep(app_engine)))
+        sweeper.start()
+        sweeper.join(10)
+        finished_while_held = not sweeper.is_alive()
+        holder.rollback()
+    sweeper.join()
+    assert finished_while_held, "the sweeper waited for the held row instead of skipping it"
+    assert results == [[]]
+    assert entry_types(owner_engine) == []
+    # Released: the next sweep opens the gap.
+    assert len(gaps.sweep(app_engine)) == 1
 
 
 # Errors
@@ -321,7 +352,7 @@ def test_a_system_removed_between_listing_and_locking_is_skipped(
 ) -> None:
     fake_clock.advance(901)
     with Session(app_engine) as session:
-        assert gaps._open_gap(session, "sys-missing", timedelta(seconds=900)) is None
+        assert gaps._sweep_system(session, "sys-missing") == (False, None)
         session.rollback()
     assert entry_types(owner_engine) == []
 
@@ -398,3 +429,44 @@ def test_close_if_open_does_not_commit(
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
     [event] = rows(owner_engine, "SELECT state FROM event")
     assert event["state"] == "FLAGGED"
+
+
+# Heartbeat and logging
+
+
+def test_sweep_writes_the_wall_clock_heartbeat(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec 3.3: after every sweep, sweeper_heartbeat.last_ran_at holds the real time, not the
+    simulated clock (here the fake clock is at 2026-10-01; the wall clock is pinned)."""
+    real_time = datetime(2031, 5, 6, 7, 8, 9, tzinfo=UTC)
+    monkeypatch.setattr(clock, "wall_now", lambda: real_time)
+    assert gaps.sweep(app_engine) == []  # even a sweep with no systems
+    assert rows(owner_engine, "SELECT * FROM sweeper_heartbeat") == [
+        {"singleton": True, "last_ran_at": real_time}
+    ]
+    later = real_time + timedelta(seconds=60)
+    monkeypatch.setattr(clock, "wall_now", lambda: later)
+    gaps.sweep(app_engine)
+    assert rows(owner_engine, "SELECT last_ran_at FROM sweeper_heartbeat") == [
+        {"last_ran_at": later}
+    ]
+
+
+def test_sweep_logs_systems_examined_and_gaps_opened(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec 3.8: each sweep logs the systems examined and the gaps opened."""
+    add_system(owner_engine, "sys-a", last_received_at=T0)
+    add_system(owner_engine, "sys-b", last_received_at=T0 + timedelta(seconds=600))
+    add_system(owner_engine, "sys-c", last_received_at=T0)
+    fake_clock.advance(901)
+    with caplog.at_level(logging.INFO, logger="worker"):
+        gaps.sweep(app_engine)
+    assert "gap sweep: systems_examined=3 gaps_opened=2" in caplog.text
