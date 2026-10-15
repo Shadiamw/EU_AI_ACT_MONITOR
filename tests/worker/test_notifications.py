@@ -1,7 +1,8 @@
 """Part 3: notifications (REQ-04) and the delivery pass.
 
 Deliveries go to a real HTTP receiver on 127.0.0.1. Times are on the fake clock (T0 =
-2026-10-01T09:00:00Z); the default bound is 900 seconds and the default attempt limit is 5.
+2026-10-01T09:00:00Z); the default bound is 900 seconds and a delivery gets at most 6
+attempts.
 """
 
 import logging
@@ -462,6 +463,54 @@ def test_a_claimed_delivery_is_not_taken_by_a_second_pass(
     first.join()
     assert len(ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")) == 1
     assert receiver.calls == []
+
+
+def run_pass_while_row_is_held(app_engine: Engine, owner_engine: Engine, lock_sql: str) -> int:
+    """Hold one row FOR UPDATE as the owner and run a delivery pass. Returns the pass's attempt
+    count; fails if the pass waited for the held row instead of skipping it."""
+    results: list[int] = []
+    with owner_engine.connect() as holder:
+        holder.execute(text(lock_sql))
+        worker_pass = threading.Thread(
+            target=lambda: results.append(notifications.deliver_due(app_engine))
+        )
+        worker_pass.start()
+        worker_pass.join(10)
+        finished_while_held = not worker_pass.is_alive()
+        holder.rollback()
+    worker_pass.join()
+    assert finished_while_held, "the delivery pass waited for the held row instead of skipping it"
+    [attempts] = results
+    return attempts
+
+
+def test_a_locked_delivery_row_is_skipped_not_waited_for(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
+) -> None:
+    """Spec 3.5 step 2: due deliveries are claimed with FOR UPDATE SKIP LOCKED, so a row that
+    another process holds is skipped, and taken by a later pass."""
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    request_notification(app_engine, owner_engine)
+    notifications._route(app_engine)
+    held = "SELECT 1 FROM notification_delivery FOR UPDATE"
+    assert run_pass_while_row_is_held(app_engine, owner_engine, held) == 0
+    assert receiver.calls == []
+    assert notifications.deliver_due(app_engine) == 1
+    assert len(receiver.calls) == 1
+
+
+def test_a_locked_notification_is_not_routed_or_waited_for(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
+) -> None:
+    """Spec 3.5 step 1 runs while other passes may run (spec 4.6: row claiming makes it safe):
+    a notification another process holds is left for a later pass, never waited for."""
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    request_notification(app_engine, owner_engine)
+    held = "SELECT 1 FROM notification FOR UPDATE"
+    assert run_pass_while_row_is_held(app_engine, owner_engine, held) == 0
+    assert rows(owner_engine, "SELECT * FROM notification_delivery") == []
+    assert notifications.deliver_due(app_engine) == 1
+    assert len(receiver.calls) == 1
 
 
 def test_an_expired_lease_is_claimed_again_and_the_stale_result_is_ignored(

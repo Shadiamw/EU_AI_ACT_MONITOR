@@ -128,8 +128,8 @@ Statuses:
 | Clause | Spec requires | Before | Status | Stage | Proof |
 |---|---|---|---|---|---|
 | Enqueue | Inserts a notification row and appends NOTIFICATION_REQUESTED in the caller's transaction | Also creates delivery rows | FIXED BY PLAN ITEM A5 | 2 | `test_notifications.py::test_enqueue_records_the_request_and_routes_nothing` |
-| Step 1 Route | In the pass: unrouted notifications get one PENDING row per matching webhook; none means wait; later webhooks do not get already-routed ones | Routed at enqueue; no webhook means never sent | FIXED BY PLAN ITEM A5 | 2 | `test_notifications.py::test_no_webhook_leaves_the_notification_unrouted_until_one_is_registered`, `test_notifications.py::test_a_routed_notification_is_not_sent_to_a_webhook_registered_later` |
-| Step 2 Claim | PENDING and due rows, `FOR UPDATE SKIP LOCKED`, short lease, commit before any call | Uses an extra IN_FLIGHT status | FIXED BY PLAN ITEM C5 | 1, 2 | `test_notifications.py::test_a_claimed_delivery_is_not_taken_by_a_second_pass` |
+| Step 1 Route | In the pass: unrouted notifications get one PENDING row per matching webhook; none means wait; later webhooks do not get already-routed ones | Routed at enqueue; no webhook means never sent | FIXED BY PLAN ITEM A5 | 2 | `test_notifications.py::test_no_webhook_leaves_the_notification_unrouted_until_one_is_registered`, `test_notifications.py::test_a_routed_notification_is_not_sent_to_a_webhook_registered_later`, `test_notifications.py::test_a_locked_notification_is_not_routed_or_waited_for` |
+| Step 2 Claim | PENDING and due rows, `FOR UPDATE SKIP LOCKED`, short lease, commit before any call | Uses an extra IN_FLIGHT status | FIXED BY PLAN ITEM C5 | 1, 2 | `test_notifications.py::test_a_claimed_delivery_is_not_taken_by_a_second_pass`, `test_notifications.py::test_a_locked_delivery_row_is_skipped_not_waited_for` |
 | Step 3 Send | HTTP POST, the spec body, 5 s timeout, no lock held | Timeout from env (default 5); old body | FIXED BY PLAN ITEMS A2, D3 | 2, 3 | `test_notifications.py::test_the_send_timeout_is_five_seconds`, `test_notifications.py::test_delivery_body_is_exactly_the_spec_shape` |
 | Step 4 Success | Any 2xx: DELIVERED and NOTIFICATION_DELIVERED in a new transaction | As specified | MATCHES | 4 | `test_notifications.py::test_delivery_appends_delivered_with_integer_latency_and_boolean_bound` |
 | Step 5 Failure | Retries after 10, 30, 60, 120, 300 s; six attempts; then FAILED and NOTIFICATION_FAILED | 30/60/120/240 s; five attempts | FIXED BY PLAN ITEM A4 | 2 | `test_notifications.py::test_retries_500_500_200_make_exactly_three_attempts`, `test_notifications.py::test_permanent_failure_stops_after_six_attempts` |
@@ -226,4 +226,5 @@ Statuses:
 | 3 | Stage 3: observable webhook behaviour to the spec | A1, A2, A3, A9, A10, N6 |
 | 4 | Stage 4: spec 3.9 tests, exact payload keys, reset tolerance, clock rule | N1, N4 and the tests in section 15 |
 | 5 | Stage 5: docs | Decisions 93 to 105; this table's Proof column |
+| Validation | Add the two SKIP LOCKED tests the mutation check found missing | Tests only: the claim and routing row locks were not covered |
 
