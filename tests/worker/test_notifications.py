@@ -9,6 +9,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
@@ -616,3 +617,156 @@ def test_health_values(
         pending_deliveries=2,
         oldest_pending_delivery_seconds=45,
     )
+
+
+# Spec 3.9 rows and exact entries
+
+
+def test_retries_500_500_200_make_exactly_three_attempts(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
+) -> None:
+    """Spec 3.9 'Retries': 500, 500, then 200 gives exactly three attempts at the scheduled
+    delays (0, then 10 s later, then 30 s after that: T0, T0+10, T0+40) and one
+    NOTIFICATION_DELIVERED."""
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    notification_id = request_notification(app_engine, owner_engine)
+    receiver.statuses = [500, 500, 200]
+    receiver.during = fake_clock.now
+    for wait in (0, 10, 30):
+        if wait:
+            fake_clock.advance(wait - 1)
+            assert notifications.deliver_due(app_engine) == 0
+            fake_clock.advance(1)
+        assert notifications.deliver_due(app_engine) == 1
+    fake_clock.advance(3600)
+    assert notifications.deliver_due(app_engine) == 0
+    assert [call.observed for call in receiver.calls] == [
+        T0,
+        T0 + timedelta(seconds=10),
+        T0 + timedelta(seconds=40),
+    ]
+    assert ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED") == [
+        {
+            "notification_id": notification_id,
+            "webhook_id": "wh-1",
+            "attempt": 3,
+            "latency_seconds": 40,
+            "within_bound": True,
+        }
+    ]
+    assert entry_types(owner_engine) == ["NOTIFICATION_REQUESTED", "NOTIFICATION_DELIVERED"]
+
+
+def test_ac04_a_slow_receiver_with_a_low_bound_is_not_within_bound(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    receiver: Receiver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec 3.9 'AC-04: bound honored': with NOTIFY_MAX_DELAY_SECONDS set low (2), a
+    deliberately slow receiver (3 s on the simulated clock) yields within_bound false; a fast
+    one stays within the bound."""
+    monkeypatch.setenv("NOTIFY_MAX_DELAY_SECONDS", "2")
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    request_notification(app_engine, owner_engine, "evt-fast")
+    notifications.deliver_due(app_engine)
+    request_notification(app_engine, owner_engine, "evt-slow")
+    receiver.during = lambda: fake_clock.advance(3)  # the receiver takes 3 s to answer
+    notifications.deliver_due(app_engine)
+    payloads = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
+    assert [(p["latency_seconds"], p["within_bound"]) for p in payloads] == [(0, True), (3, False)]
+
+
+def test_the_send_timeout_is_five_seconds(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec 3.5 step 3: an HTTP POST with a 5-second timeout; a timeout is a failure."""
+    seen: list[Any] = []
+
+    def fake_post(url: str, **kwargs: Any) -> Any:
+        seen.append((url, kwargs))
+        raise httpx.ReadTimeout("simulated")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    add_webhook(owner_engine, "wh-1", "http://198.51.100.7/hook", ["flag_notification"])
+    request_notification(app_engine, owner_engine)
+    assert notifications.deliver_due(app_engine) == 1
+    [(url, kwargs)] = seen
+    assert (url, kwargs["timeout"], kwargs["follow_redirects"]) == (
+        "http://198.51.100.7/hook",
+        5,
+        False,
+    )
+    row = delivery(owner_engine)
+    assert (row["status"], row["attempt_count"], row["last_status"]) == ("PENDING", 1, None)
+
+
+def test_notification_ledger_entries_have_exact_payload_keys(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
+) -> None:
+    """Spec 2.4 keys: NOTIFICATION_REQUESTED {notification_id, event_id, notification_type};
+    NOTIFICATION_DELIVERED {notification_id, webhook_id, attempt, latency_seconds,
+    within_bound}; NOTIFICATION_FAILED {notification_id, webhook_id, attempts, last_status}.
+    Actor `system`, subject the event id, integers and booleans as JSON scalars."""
+    add_webhook(owner_engine, "wh-ok", receiver.url + "?ok", ["flag_notification"])
+    add_webhook(owner_engine, "wh-bad", closed_port_url(), ["flag_notification"])
+    request_notification(app_engine, owner_engine)
+    for delay in [0, 10, 30, 60, 120, 300]:
+        fake_clock.advance(delay)
+        notifications.deliver_due(app_engine)
+    entries = rows(
+        owner_engine,
+        "SELECT entry_type, actor_id, subject_id, payload FROM ledger_entry ORDER BY seq",
+    )
+    shapes = {
+        e["entry_type"]: (e["actor_id"], e["subject_id"], sorted(e["payload"])) for e in entries
+    }
+    assert shapes == {
+        "NOTIFICATION_REQUESTED": (
+            "system",
+            "evt-1",
+            ["event_id", "notification_id", "notification_type"],
+        ),
+        "NOTIFICATION_DELIVERED": (
+            "system",
+            "evt-1",
+            ["attempt", "latency_seconds", "notification_id", "webhook_id", "within_bound"],
+        ),
+        "NOTIFICATION_FAILED": (
+            "system",
+            "evt-1",
+            ["attempts", "last_status", "notification_id", "webhook_id"],
+        ),
+    }
+    delivered = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")[0]
+    assert [type(delivered[k]) for k in ("attempt", "latency_seconds", "within_bound")] == [
+        int,
+        int,
+        bool,
+    ]
+    failed = ledger_payloads(owner_engine, "NOTIFICATION_FAILED")[0]
+    assert (failed["webhook_id"], failed["attempts"], failed["last_status"]) == ("wh-bad", 6, None)
+
+
+def test_worker_resilience_a_crash_between_claim_and_send_is_retried_after_the_lease(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock, receiver: Receiver
+) -> None:
+    """Spec 3.9 'Worker resilience': a crash between claim and send results in a retry after
+    the lease expires, not a lost notification."""
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    request_notification(app_engine, owner_engine)
+    notifications._route(app_engine)
+    [claim] = notifications._claim(app_engine)  # the worker crashes here, before sending
+    assert receiver.calls == []
+    fake_clock.advance(notifications.LEASE_SECONDS - 1)
+    assert notifications.deliver_due(app_engine) == 0  # still leased
+    fake_clock.advance(1)
+    assert notifications.deliver_due(app_engine) == 1
+    assert len(receiver.calls) == 1
+    [payload] = ledger_payloads(owner_engine, "NOTIFICATION_DELIVERED")
+    assert payload["attempt"] == claim.attempt + 1
+    assert delivery(owner_engine)["status"] == "DELIVERED"

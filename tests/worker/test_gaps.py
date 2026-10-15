@@ -15,7 +15,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from app import clock, gaps, ledger
+from app import clock, gaps, ledger, notifications
 from tests.api.conftest import ApiClient, append_lock_is_free, as_actor, build_app
 from tests.worker.conftest import (
     T0,
@@ -470,3 +470,111 @@ def test_sweep_logs_systems_examined_and_gaps_opened(
     with caplog.at_level(logging.INFO, logger="worker"):
         gaps.sweep(app_engine)
     assert "gap sweep: systems_examined=3 gaps_opened=2" in caplog.text
+
+
+# Spec 3.9 rows and exact entries
+
+
+def test_one_event_per_outage_after_another_1000_seconds(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.9 'One event per outage': advance another 1,000 s; still exactly one open gap."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(900)
+    [event_id] = gaps.sweep(app_engine)
+    fake_clock.advance(1000)
+    assert gaps.sweep(app_engine) == []
+    assert rows(
+        owner_engine, "SELECT event_id, state FROM event WHERE type = 'monitoring_gap'"
+    ) == [{"event_id": event_id, "state": "FLAGGED"}]
+    assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
+
+
+def test_a_gap_detected_on_1_september_is_retained_until_3_march(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.4: retain_until = detected + six calendar months, at least 183 days. Detected
+    2026-09-01T00:00:00Z: six months is 2027-03-01 (181 days), so 183 days wins: 2027-03-03."""
+    detected = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)
+    fake_clock.set(detected - timedelta(seconds=900))
+    add_system(owner_engine, "sys-42", last_received_at=fake_clock.now())
+    fake_clock.set(detected)
+    gaps.sweep(app_engine)
+    [event] = rows(owner_engine, "SELECT detected_at, retain_until FROM event")
+    assert event == {
+        "detected_at": detected,
+        "retain_until": datetime(2027, 3, 3, 0, 0, 0, tzinfo=UTC),
+    }
+
+
+def test_gap_ledger_entries_have_exact_payload_keys_actor_and_subject(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 2.4: GAP_OPENED {event_id, system_id, last_received_at}; GAP_CLOSED {event_id,
+    system_id, gap_seconds}; NOTIFICATION_REQUESTED {notification_id, event_id,
+    notification_type}. Actor `system`, subject the event id; append last (spec 7)."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(900)
+    [event_id] = gaps.sweep(app_engine)
+    fake_clock.advance(30)
+    ingest_sample(app_engine, "sys-42", fake_clock)
+    entries = rows(
+        owner_engine,
+        "SELECT entry_type, actor_id, subject_id, payload FROM ledger_entry ORDER BY seq",
+    )
+    assert [(e["entry_type"], e["actor_id"], e["subject_id"]) for e in entries] == [
+        ("GAP_OPENED", "system", event_id),
+        ("NOTIFICATION_REQUESTED", "system", event_id),
+        ("GAP_CLOSED", "system", event_id),
+    ]
+    keys = [sorted(e["payload"]) for e in entries]
+    assert keys == [
+        ["event_id", "last_received_at", "system_id"],
+        ["event_id", "notification_id", "notification_type"],
+        ["event_id", "gap_seconds", "system_id"],
+    ]
+    assert entries[0]["payload"]["last_received_at"] == "2026-10-01T09:00:00Z"
+    assert entries[2]["payload"]["gap_seconds"] == 30
+
+
+def test_atomicity_a_failure_after_enqueue_leaves_no_event_and_no_notification(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec 3.9 'Atomicity': force a failure after enqueue; neither the event nor the
+    notification persists, and the ledger is unchanged (spec 7: one transaction)."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(900)
+    real_enqueue = notifications.enqueue
+
+    def enqueue_then_fail(session: Session, event_id: str) -> str:
+        real_enqueue(session, event_id)
+        raise RuntimeError("forced failure after enqueue")
+
+    monkeypatch.setattr(notifications, "enqueue", enqueue_then_fail)
+    assert gaps.sweep(app_engine) == []
+    assert "gap sweep failed: system_id=sys-42 type=RuntimeError" in caplog.text
+    assert rows(owner_engine, "SELECT * FROM event") == []
+    assert rows(owner_engine, "SELECT * FROM harm_field") == []
+    assert rows(owner_engine, "SELECT * FROM notification") == []
+    assert entry_types(owner_engine) == []
+    assert append_lock_is_free(owner_engine)
+
+    monkeypatch.setattr(notifications, "enqueue", real_enqueue)
+    assert len(gaps.sweep(app_engine)) == 1  # retried on the next sweep
+
+
+def test_atomicity_in_a_caller_transaction(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """The same rule for Part 1's ingest: event and enqueue in one transaction that fails."""
+    with Session(app_engine) as session:
+        gaps._insert_gap_event(session, "evt-x", "sys-42", fake_clock.now())
+        notifications.enqueue(session, "evt-x")
+        session.rollback()  # the ingest failed after enqueue
+    assert rows(owner_engine, "SELECT * FROM event") == []
+    assert rows(owner_engine, "SELECT * FROM notification") == []
+    assert entry_types(owner_engine) == []
