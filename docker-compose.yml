@@ -48,8 +48,14 @@ services:
     command: ["worker"]
     environment: *app_env
     # The image healthcheck calls /healthz, which only the API process serves.
+    # `docker compose up --wait` fails a long-running service that has no healthcheck,
+    # so this one only checks that the worker process is still alive.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     depends_on:
       migrate:
         condition: service_completed_successfully
