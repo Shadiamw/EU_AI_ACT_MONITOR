@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.13,<2",
     "psycopg[binary]>=3.2,<4",
     "httpx>=0.27,<1",
+    "uvicorn>=0.32,<1",
 ]
 
 [project.optional-dependencies]

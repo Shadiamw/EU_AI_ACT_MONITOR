@@ -519,10 +519,11 @@ In the API, the resulting error becomes 500 INTERNAL_ERROR like any other except
 - A request waiting for the ledger lock holds its connection the whole time, so a stuck lock can
   exhaust the pool as well as block appends (sections 2.7 and 5.5).
 
-### 5.7 uvicorn is not a dependency
+### 5.7 uvicorn
 
-`pyproject.toml` has no ASGI server. uvicorn 0.30.6 was installed outside the project for the
-real-server check only (decision 50). Part 4 adds the server dependency.
+uvicorn is a project dependency (decision 109). `python -m app.runtime api` execs
+`uvicorn app.main:app`. Decision 50 is the earlier real-server check, from before that
+dependency existed.
 
 ### 5.8 The clock stub
 
@@ -788,8 +789,9 @@ Part 3 is in this repository; these checks are for after Parts 1 and 4 replace t
    `.venv/bin/pytest tests/test_append.py tests/api/test_audit.py`. Expect all pass,
    including `test_recorded_at_comes_from_clock`.
 7. Check the pool arithmetic against `max_connections` (section 5.6).
-8. Add the CI job. Expect the full suite to pass, plus
-   `.venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy`.
+8. The CI job is `.github/workflows/ci.yml` (decision 108). Expect the full suite to pass,
+   plus `ruff check .`, `ruff format --check .` and `mypy`, and
+   `python tools/check_acceptance.py` on that run's JUnit file.
 
 ## 9. Open items for integration
 
@@ -799,7 +801,8 @@ From `docs/decisions.md`, "Open items for integration" (M4 close-out):
    confirm this.
 2. The stubs to replace when Part 1 lands are listed in `docs/decisions.md`, "Stubs to replace
    when Part 1 lands", and in section 3.1 here.
-3. Part 4 sets `lock_timeout` or `statement_timeout` at connection level (decision 10).
+3. Settled for the deployed processes: `LOCK_TIMEOUT=5s` on application connections
+   (decision 110). The test suite leaves it unset (decision 10).
 4. Real-server result (decision 50): over real HTTP under uvicorn, these all held:
    commit-before-return, concurrency, verify and export.
 5. Index finding (decision 51): `(subject_id, seq)` is indexed, and the audit lookup takes about

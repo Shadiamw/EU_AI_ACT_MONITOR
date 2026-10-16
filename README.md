@@ -283,15 +283,20 @@ psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/boots
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 747 tests: 532 for Part 2 and 215 for Part 3 in
-`tests/worker/`. All pass on the Docker setup (PostgreSQL 16).
+The same commands run in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on every push
+and pull request, against PostgreSQL 16. After pytest, `tools/check_acceptance.py` requires
+the AC-02, AC-04, AC-06 and AC-15 tests in that run to have passed. AC-12 is not a Phase 3
+test (section 8.2). A second job builds the image and waits until `GET /healthz` returns 200.
+
+The suite is the Part 2 tests, the Part 3 tests in `tests/worker/`, and the deployment tests
+in `tests/api/test_health.py` and `tests/test_lock_timeout.py`.
 
 ## 6. Known limits and operating notes
 
 | Item | Decision |
 |---|---|
 | **Global append lock.** `append` takes one transaction-scoped advisory lock (key 1279607879) and holds it until the caller commits. So every append, including every event view (EVENT_VIEWED) and every audit call (AUDIT_VIEWED), waits for the one before it. | 10; M4 notes |
-| **No lock timeout in the ledger.** Part 4 must set `lock_timeout` or `statement_timeout` at connection level. Without one, a stuck transaction blocks every append. | 10 |
+| **Lock timeout only when `LOCK_TIMEOUT` is set.** The deployed API and worker set it to `5s`. The test suite leaves it unset, so a test can hold the append lock until every caller is waiting. Without a timeout, a stuck transaction blocks every append. | 10, 110 |
 | **Export shows webhook URLs.** Export returns every entry, including WEBHOOK_REGISTERED payloads, to any REVIEWER or VIEWER. Recommended: avoid secrets in webhook URLs. The API does not enforce this (decision 98). | 32, 98; M4 notes |
 | **Pool sizing.** The application engine uses `pool_size=10` and `max_overflow=40`, so up to 50 connections per web process. Size PostgreSQL's `max_connections` above the total across all processes. | 38 |
 | **Docker daemon restart.** See section 5.2. | 12 |
@@ -307,7 +312,7 @@ At the time of writing the suite collects 747 tests: 532 for Part 2 and 215 for 
 | **What the script will not do.** It does not detect end-of-ledger removal, and gives no exact strings for degenerate seq values. | 16, 59 |
 | **Integration hand-off.** See [integration_notes.md](integration_notes.md). | 71 |
 | **Wrong method is 404.** A wrong HTTP method on a known route returns 404 NOT_FOUND, because the spec has no 405 code. This is still to be confirmed when Part 1 lands. | 27 |
-| **No ASGI server dependency.** uvicorn is not yet a project dependency. It was installed outside the project for the one real-server check. | 50 |
+| **uvicorn is the server.** `python -m app.runtime api` execs it. Decision 50 recorded the earlier real-server check, before it was a dependency. | 50, 109 |
 | **Logs.** An unexpected exception, LedgerError included, returns 500 INTERNAL_ERROR. The `api` logger records only the exception's type name, never its message or a traceback. The `ledger` logger never writes a payload value or a stored hash. | 14, 28, 36 |
 
 ## 7. Requirements and acceptance criteria
@@ -419,3 +424,14 @@ constants, not settings.
 | **Address check at registration only.** Outside the test environment, a host that later resolves to a private address is not re-checked at delivery. | 99 |
 | **Reminders (REQ-11)** are accepted as a webhook type but not generated: they depend on Phase 4 deadlines. | 89 |
 | **Two spec 3.9 rows need Part 1's ingest:** "Duplicate resets silence" and "Wrong sender clock". | 105 |
+
+## 9. Deployment
+
+`docker compose up --build` starts PostgreSQL 16, migrates, seeds the ledger, and runs the
+API on port 8000 and the worker. `GET /healthz` returns the three worker values from
+`worker.health_values` (decision 111). The role script runs once, as the database superuser,
+the first time the volume is created. `docker compose down -v` drops that volume.
+
+The passwords in the compose file are the local test passwords from section 5.4. AWS is not
+created from this repository. What is still open, including the Evidently report format, is
+in [docs/phase3_uncertainties.md](docs/phase3_uncertainties.md).

@@ -1,0 +1,59 @@
+# One API process, one worker, PostgreSQL 16. This is the process shape an EC2 host
+# or two ECS services would run (docs/phase3_uncertainties.md). The role script runs
+# once, as the superuser, the first time the data volume is created.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    command: ["postgres", "-c", "max_connections=200"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./tests/sql/bootstrap_roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "5432:5432"
+
+  migrate:
+    build: .
+    command: ["prepare"]
+    environment: &app_env
+      DATABASE_URL: postgresql+psycopg://monitor_app:monitor_app@postgres:5432/monitor_test
+      DATABASE_ADMIN_URL: postgresql+psycopg://monitor_owner:monitor_owner@postgres:5432/monitor_test
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOCK_TIMEOUT: 5s
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    command: ["api"]
+    environment: *app_env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["worker"]
+    environment: *app_env
+    # The image healthcheck calls /healthz, which only the API process serves.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
