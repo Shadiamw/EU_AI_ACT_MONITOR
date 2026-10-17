@@ -1,14 +1,4 @@
-"""STUB for Part 1 (events). The existence check the audit endpoint needs (plan G1), and the two
-writes the gap sweeper makes to the event table.
-
-Until Part 1's event table exists, an event exists when the ledger holds an EVENT_FLAGGED or
-GAP_OPENED entry whose subject_id is that id (addendum rule 1; docs/decisions.md 30). Part 1
-replaces this with a lookup on the event table.
-
-create_gap_event and close_gap_event write the stub `event` table from migration 0001. Part 1
-replaces them with writes to its own table, keeping the signatures. Neither commits, and
-neither touches the ledger: the caller appends GAP_OPENED or GAP_CLOSED afterwards.
-"""
+"""Event lookup and gap writes shared with the worker. Callers own transactions."""
 
 from datetime import datetime
 
@@ -29,10 +19,7 @@ HARM_FIELDS = (
 def exists(session: Session, event_id: str) -> bool:
     return bool(
         session.execute(
-            text(
-                "SELECT EXISTS (SELECT 1 FROM ledger_entry WHERE subject_id = :event_id"
-                " AND entry_type IN ('EVENT_FLAGGED', 'GAP_OPENED'))"
-            ),
+            text("SELECT EXISTS (SELECT 1 FROM event WHERE event_id = :event_id)"),
             {"event_id": event_id},
         ).scalar_one()
     )

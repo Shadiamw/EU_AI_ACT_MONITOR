@@ -298,7 +298,7 @@ def fresh_database(owner_engine: Engine) -> Iterator[None]:
     command.downgrade(alembic_config(), "base")
     command.upgrade(alembic_config(), "head")
     with owner_engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004"
     yield
     with owner_engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE ledger_entry ENABLE TRIGGER {TRIGGER_NAME}"))
@@ -471,6 +471,15 @@ def test_d_a_rolled_back_append_leaves_the_chain_and_its_seq_is_reused(
 def test_e_audit_lists_the_event_and_a_view_appends_one_entry(
     client: ApiClient, owner_engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    with owner_engine.begin() as conn:
+        for event_id, kind in ((EVENT, "threshold_breach"), (GAP, "monitoring_gap")):
+            conn.execute(
+                text(
+                    "INSERT INTO event (event_id, type, system_id, state, detected_at, harm_fields)"
+                    " VALUES (:id, :kind, 'sys-42', 'FLAGGED', :now, '{}'::jsonb)"
+                ),
+                {"id": event_id, "kind": kind, "now": AUDIT_TIME},
+            )
     fixed_clock(monkeypatch, AUDIT_TIME)
     response = client.get(f"/v1/events/{EVENT}/audit", headers=as_actor("rev-1"))
     assert (response.status_code, response.json()) == (200, EVENT_TRAIL)
@@ -479,7 +488,8 @@ def test_e_audit_lists_the_event_and_a_view_appends_one_entry(
 
     fixed_clock(monkeypatch, VIEW_TIME)
     response = client.get(f"/v1/events/{EVENT}", headers=as_actor("viewer-1"))
-    assert (response.status_code, response.json()) == (200, {"event_id": EVENT})
+    assert response.status_code == 200
+    assert response.json()["event_id"] == EVENT
 
     rows = owner_rows(owner_engine)
     assert len(rows) == 65

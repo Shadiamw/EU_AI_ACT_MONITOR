@@ -126,6 +126,13 @@ def seed(app_engine: Engine) -> None:
 def flag_event(app_engine: Engine, event_id: str) -> ledger.LedgerEntry:
     """EVENT_FLAGGED and NOTIFICATION_REQUESTED in one transaction, as Part 1's ingest does."""
     with Session(app_engine) as session:
+        session.execute(
+            text(
+                "INSERT INTO event (event_id, type, system_id, state, detected_at, harm_fields)"
+                " VALUES (:id, 'threshold_breach', 'sys-42', 'FLAGGED', now(), '{}'::jsonb)"
+            ),
+            {"id": event_id},
+        )
         flagged = ledger.append(
             session,
             "EVENT_FLAGGED",

@@ -797,3 +797,26 @@ settle is an **ASSUMPTION** to check against them.
     been missed. Reason: AC-02 is what the system is accepted against, and the one-second
     difference cannot make a live system with samples every 300 s open a gap any earlier than
     the third missed sample.
+
+
+## Part 1 implementation decisions
+
+93. **Part 1 proceeds with explicit assumptions.** The user supplied the project discussion
+    confirming ingestion, versioned threshold detection, breach occurrences, evidence capture,
+    harm-field prefilling, and atomic ledger/notification writes as the Phase 3 API scope,
+    then authorized implementation despite the missing exact-algorithm specification.
+    [part1_api.md](part1_api.md) records the implemented choices and rationale: natural-key
+    replay without changing the agreed request body; strict threshold comparison selected
+    by sample time; series ending on newer healthy data; preceding-hour evidence; list
+    pagination and role scope. These choices remain provisional for team confirmation.
+
+94. **Credential lookup ends before handler work.** Auth reads key digests through a short
+    autocommit connection, closed before the handler. This prevents a key lookup from
+    leaving an application transaction open during webhook verification. Business writes
+    still use the request Session and commit explicitly before response.
+
+95. **Additive persistence and explicit demo provisioning.** Revision 0004 extends the
+    existing event table and creates samples plus the minimal key/threshold contracts
+    needed before Part 4 arrives. It grants the application read-only access to keys and
+    thresholds. `python -m tools.seed_part1` provisions published demo fixtures only in
+    ENVIRONMENT=test. Normal startup and migrations never seed those credentials.

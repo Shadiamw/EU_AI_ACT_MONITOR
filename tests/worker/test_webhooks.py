@@ -191,10 +191,17 @@ def test_wrong_method_is_404(client: ApiClient) -> None:
 def test_the_real_app_mounts_the_webhook_route(receiver: Receiver, fake_clock: FakeClock) -> None:
     from app.main import create_app
 
-    with ApiClient(create_app()) as real_client:
-        # The stub resolver in app/auth.py is always rev-1.
+    app = create_app()
+    from app.auth import resolve_principal
+    from tests.api.conftest import header_principal
+
+    app.dependency_overrides[resolve_principal] = header_principal
+    with ApiClient(app) as real_client:
         response = real_client.request(
-            "POST", "/v1/webhooks", json={"url": receiver.url, "event_types": ["reminder"]}
+            "POST",
+            "/v1/webhooks",
+            headers=as_actor("rev-1"),
+            json={"url": receiver.url, "event_types": ["reminder"]},
         )
     assert response.status_code == 201
 

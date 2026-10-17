@@ -59,3 +59,10 @@ def empty_ledger(owner_engine: Engine) -> None:
     """Every test starts with an empty ledger. Truncation as the owner is allowed (addendum 1)."""
     with owner_engine.begin() as conn:
         conn.execute(text("TRUNCATE ledger_entry"))
+
+
+@pytest.fixture(autouse=True)
+def empty_part1_tables(owner_engine: Engine) -> None:
+    """Independent of ledger cleanup overrides used by the chain scenarios."""
+    with owner_engine.begin() as conn:
+        conn.execute(text("TRUNCATE event, metric_sample, api_key, threshold_version"))

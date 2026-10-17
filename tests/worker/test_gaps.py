@@ -139,6 +139,13 @@ def test_a_gap_writes_the_event_the_gap_row_and_two_ledger_entries(
         "threshold_value": None,
         "harm_fields": HARM_NULLS,
         "closed_at": None,
+        "metric_type": None,
+        "threshold_version_id": None,
+        "series_open": False,
+        "evidence_bundle": [],
+        "disposition": None,
+        "deadline_utc": None,
+        "revisions": [],
     }
     [gap] = rows(owner_engine, "SELECT * FROM monitoring_gap")
     assert gap == {

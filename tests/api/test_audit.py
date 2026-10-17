@@ -39,7 +39,7 @@ def audit(client: ApiClient, event_id: str, actor: str = "viewer-1") -> list[dic
 def view(client: ApiClient, event_id: str, actor: str) -> None:
     response = client.get(f"/v1/events/{event_id}", headers=as_actor(actor))
     assert response.status_code == 200, response.text
-    assert response.json() == {"event_id": event_id}
+    assert response.json()["event_id"] == event_id
 
 
 def stored_timestamp(owner_engine: Engine, seq: int) -> str:

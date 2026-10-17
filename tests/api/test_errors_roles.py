@@ -66,15 +66,12 @@ def test_reviewer_and_viewer_are_allowed(
     assert client.get(path, headers=as_actor(actor)).status_code == 200
 
 
-def test_the_default_stub_principal_is_rev_1(app_engine: Engine, owner_engine: Engine) -> None:
+def test_real_auth_requires_a_key(app_engine: Engine, owner_engine: Engine) -> None:
     flag_event(app_engine, "evt-a")
     with ApiClient(build_app(override_principal=False)) as client:
         response = client.get("/v1/events/evt-a/audit")
-    # With no override, the stub resolver returns REVIEWER rev-1 (plan G3), so the call is
-    # allowed and its AUDIT_VIEWED names rev-1.
-    assert response.status_code == 200
-    audit_rows = [r for r in owner_rows(owner_engine) if r["entry_type"] == "AUDIT_VIEWED"]
-    assert [r["actor_id"] for r in audit_rows] == ["rev-1"]
+    assert (response.status_code, response.json()) == (401, UNAUTHORIZED)
+    assert count_entries(owner_engine, "AUDIT_VIEWED") == 0
 
 
 # F2. 401 and 403 come before the 404 lookup
@@ -188,13 +185,19 @@ def test_the_real_app_does_not_mount_the_test_only_routes(
 
     flag_event(app_engine, "evt-a")
     before = owner_rows(owner_engine)
-    with ApiClient(create_app()) as client:
-        # The event exists, but GET /v1/events/{id} belongs to Part 1 and is mounted only in
-        # the tests (decision 34): the real app treats it as an unknown route and logs nothing.
-        for path in ("/v1/events/evt-a", "/_test/typed", "/_test/session-info"):
+    app = create_app()
+    from app.auth import resolve_principal
+    from tests.api.conftest import header_principal
+
+    app.dependency_overrides[resolve_principal] = header_principal
+    with ApiClient(app) as client:
+        for path in ("/_test/typed", "/_test/session-info"):
             response = client.get(path)
             assert (response.status_code, response.json()) == (404, NOT_FOUND)
-        # The three Part 2 endpoints are mounted.
+        assert client.get("/v1/events/evt-a", headers=as_actor("viewer-1")).status_code == 200
         for path in ENDPOINTS:
-            assert client.get(path).status_code == 200
-    assert [r["entry_type"] for r in owner_rows(owner_engine)][len(before) :] == ["AUDIT_VIEWED"]
+            assert client.get(path, headers=as_actor("rev-1")).status_code == 200
+    assert [r["entry_type"] for r in owner_rows(owner_engine)][len(before) :] == [
+        "EVENT_VIEWED",
+        "AUDIT_VIEWED",
+    ]

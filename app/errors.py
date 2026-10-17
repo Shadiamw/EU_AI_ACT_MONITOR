@@ -1,4 +1,4 @@
-"""STUB for Part 1 (errors). ApiError and the global error handlers (docs/decisions.md 27, 28).
+"""Shared API errors. ApiError and the global error handlers (docs/decisions.md 27, 28).
 
 Every error body is exactly {"error_code": "...", "message": "..."}:
 
