@@ -445,11 +445,18 @@ constants, not settings.
 ## 9. Deployment
 
 `docker compose up --build` starts PostgreSQL 16, migrates, seeds sys-42 and the three API
-keys, and runs the API on port 8000 and the worker. `GET /healthz` returns the three worker
-values from `worker.health_values` (decision 111). In `ENVIRONMENT=test`,
-`POST /v1/test/reset` and `POST /v1/test/clock/advance` are available for the Pod demo
+keys, and runs the API on port 8000 and the worker. Open `http://127.0.0.1:8000/ui/` for the
+console UI (health, reset, clock advance, ledger, and running the smoke/acceptance/full
+test suite). `GET /healthz` returns the three worker values from `worker.health_values`
+(decision 111). In `ENVIRONMENT=test`, `POST /v1/test/reset`,
+`POST /v1/test/clock/advance`, and `POST /v1/test/suite` are available for the Pod demo
 (decision 133). The role script runs once, as the database superuser, the first time the
 volume is created. `docker compose down -v` drops that volume.
+
+The same UI can be hosted on **Vercel** (`vercel.json` builds `web/` from `app/static`).
+Set `API_BASE_URL` to a publicly reachable API (Docker behind a tunnel, or any host running
+compose). Vercel only serves the static console; it does not run Postgres, the worker, or
+pytest.
 
 A one-command walkthrough of ingest → webhook → gap → verify is in
 [`tools/demo_showcase.sh`](tools/demo_showcase.sh). The passwords and keys in the compose

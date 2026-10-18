@@ -10,7 +10,9 @@ COPY pyproject.toml alembic.ini ./
 COPY app ./app
 COPY migrations ./migrations
 COPY tools ./tools
-RUN pip install --no-cache-dir .
+COPY tests ./tests
+# [dev] pulls in pytest so the UI can run the suite in ENVIRONMENT=test.
+RUN pip install --no-cache-dir ".[dev]"
 
 USER monitor
 EXPOSE 8000

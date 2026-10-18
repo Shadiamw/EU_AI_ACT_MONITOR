@@ -8,3 +8,5 @@ __pycache__/
 build/
 .local-tools/
 test-results.xml
+web/
+.vercel/

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "echo 'no install'",
+  "buildCommand": "node scripts/vercel-build.mjs",
+  "outputDirectory": "web",
+  "rewrites": [{ "source": "/(.*)", "destination": "/$1" }]
+}

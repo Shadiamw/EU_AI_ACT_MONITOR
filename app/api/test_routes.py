@@ -1,6 +1,6 @@
-"""POST /v1/test/reset and POST /v1/test/clock/advance (spec 4.6, decision 133).
+"""POST /v1/test/reset, clock advance, and suite runner (spec 4.6, decision 133).
 
-Both exist only when ENVIRONMENT=test. Outside the test environment they return 404, so a
+These exist only when ENVIRONMENT=test. Outside the test environment they return 404, so a
 production deploy does not expose them.
 """
 
@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app import config, platform
+from app import config, platform, suite_runner
 from app.errors import ApiError, not_found
 
 router = APIRouter()
@@ -52,3 +52,41 @@ async def test_clock_advance(request: Request) -> JSONResponse:
             "deliveries": result["deliveries"],
         }
     )
+
+
+@router.get("/v1/test/suite")
+def test_suite_status() -> JSONResponse:
+    """Latest suite run (or null). Poll while status is queued/running."""
+    _require_test()
+    run = suite_runner.current_run()
+    return JSONResponse({"run": None if run is None else run.to_dict()})
+
+
+@router.post("/v1/test/suite")
+async def test_suite_start(request: Request) -> JSONResponse:
+    """Start smoke, acceptance, or full pytest. Body: {"scope": "smoke"|"acceptance"|"full"}."""
+    _require_test()
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise ApiError(400, "MALFORMED_BODY", "the request is malformed") from None
+    if not isinstance(body, dict) or set(body) != {"scope"}:
+        raise ApiError(400, "MALFORMED_BODY", "the request is malformed")
+    scope = body["scope"]
+    if not isinstance(scope, str):
+        raise ApiError(400, "MALFORMED_BODY", "the request is malformed")
+    try:
+        run = suite_runner.start(scope)
+    except ValueError:
+        raise ApiError(400, "MALFORMED_BODY", "the request is malformed") from None
+    except RuntimeError:
+        current = suite_runner.current_run()
+        return JSONResponse(
+            {
+                "accepted": False,
+                "message": "a suite run is already in progress",
+                "run": None if current is None else current.to_dict(),
+            },
+            status_code=200,
+        )
+    return JSONResponse({"accepted": True, "run": run.to_dict()}, status_code=202)

@@ -15,8 +15,11 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+    # Host mapping optional: published as 5433 so a local Postgres on 5432 does not block
+    # `compose up`. API and worker reach this service as hostname `postgres` on the compose
+    # network; they do not need the host port.
     ports:
-      - "5432:5432"
+      - "5433:5432"
 
   migrate:
     build: .
@@ -27,6 +30,9 @@ services:
       ENVIRONMENT: test
       LOCK_TIMEOUT: 5s
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # So the Vercel-hosted UI can call this API from another origin.
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+
       # Same test-only keys as tests/conftest.py. Only digests are stored.
       INGEST_KEY_SYS_42: test-ingest-key-sys-42-0d6f1c2e9b8a4f37
       REVIEWER_KEY: test-reviewer-key-rev-1-5a7e3b9c1d2f4086

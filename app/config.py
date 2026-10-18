@@ -98,3 +98,17 @@ def log_level() -> str:
     if level not in LOG_LEVELS:
         raise RuntimeError(f"environment variable LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")
     return level
+
+
+def cors_origins() -> list[str]:
+    """CORS_ORIGINS: comma-separated browser origins allowed to call the API.
+
+    Unset in ENVIRONMENT=test defaults to `*` so the Vercel UI can reach a local or
+    tunneled API. Outside test, unset means no CORS middleware (same-origin only).
+    """
+    raw = os.environ.get("CORS_ORIGINS")
+    if raw is None or raw.strip() == "":
+        return ["*"] if is_test_environment() else []
+    if raw.strip() == "*":
+        return ["*"]
+    return [part.strip() for part in raw.split(",") if part.strip()]

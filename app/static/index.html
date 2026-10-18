@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EU AI Act Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <header class="top">
+      <div class="brand">
+        <p class="brand-mark">EU AI Act Monitor</p>
+        <p class="brand-sub">Compliance ledger · gap sweeper · notifications</p>
+      </div>
+      <div class="health" id="health-chip" data-state="unknown">
+        <span class="dot"></span>
+        <span id="health-label">checking…</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="ops-title">
+        <div class="panel-head">
+          <h1 id="ops-title">Operations</h1>
+          <p>Call the live service. Keys default to the compose test fixtures.</p>
+        </div>
+        <div class="key-row">
+          <label>
+            Viewer key
+            <input id="viewer-key" type="password" autocomplete="off" />
+          </label>
+          <label>
+            Reviewer key
+            <input id="reviewer-key" type="password" autocomplete="off" />
+          </label>
+        </div>
+        <div class="actions" role="group" aria-label="Service actions">
+          <button type="button" data-action="health">Refresh health</button>
+          <button type="button" data-action="reset" class="warn">Reset (test)</button>
+          <button type="button" data-action="advance">Advance clock 900s</button>
+          <button type="button" data-action="verify">Verify ledger</button>
+          <button type="button" data-action="events">List events</button>
+          <button type="button" data-action="export">Export ledger</button>
+        </div>
+        <pre class="out" id="ops-out" aria-live="polite">Ready.</pre>
+      </section>
+
+      <section class="panel suite" aria-labelledby="suite-title">
+        <div class="panel-head">
+          <h1 id="suite-title">Test suite</h1>
+          <p>
+            Run checks from this UI. <strong>Acceptance</strong> and
+            <strong>full</strong> invoke pytest against the database (destructive).
+            <strong>Smoke</strong> only hits live HTTP endpoints.
+          </p>
+        </div>
+        <div class="actions" role="group" aria-label="Suite scopes">
+          <button type="button" data-suite="smoke">Run smoke</button>
+          <button type="button" data-suite="acceptance" class="primary">
+            Run acceptance
+          </button>
+          <button type="button" data-suite="full">Run full suite</button>
+          <button type="button" data-suite="refresh" class="ghost">Refresh status</button>
+        </div>
+        <div class="suite-meta" id="suite-meta">No run yet.</div>
+        <pre class="out tall" id="suite-out" aria-live="polite"></pre>
+      </section>
+    </main>
+
+    <footer>
+      <span>Test environment console</span>
+      <a id="healthz-link" href="/healthz">/healthz</a>
+      <span id="api-base-label" class="api-base"></span>
+    </footer>
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

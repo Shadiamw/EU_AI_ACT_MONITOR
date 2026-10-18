@@ -1,6 +1,11 @@
-"""Application factory: ingestion, events, ledger, webhooks, health and test-only routes."""
+"""Application factory: ingestion, events, ledger, webhooks, health, UI and test-only routes."""
+
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import config, errors, observability
 from app.api import (
@@ -12,6 +17,8 @@ from app.api import (
     webhook_routes,
 )
 
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
 
 def create_app() -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -21,9 +28,25 @@ def create_app() -> FastAPI:
     app.include_router(stub_routes.router)
     app.include_router(health_routes.router)
     app.include_router(test_routes.router)
+
+    @app.get("/")
+    def ui_home() -> RedirectResponse:
+        return RedirectResponse(url="/ui/", status_code=307)
+
+    # html=True so /ui/ serves index.html and relative ./app.css resolves under /ui/.
+    app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="ui")
+
     errors.install(app)
     # Outermost, so the request log line also covers the 500 body from errors.install.
     app.add_middleware(observability.RequestLogMiddleware)
+    origins = config.cors_origins()
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     observability.configure_logging(config.log_level())
     return app
 
