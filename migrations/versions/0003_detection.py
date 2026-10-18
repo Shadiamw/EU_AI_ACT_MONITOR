@@ -1,16 +1,22 @@
-"""STUB for Part 1: Detection (spec 4.4, migration 0003).
+"""Detection: metric_sample, breach_series, event and harm_field (spec 1.7, 4.4).
 
-Part 1 owns migration 0003 (metric_sample, breach_series, event, harm_field and their indexes).
-Until Part 1's real 0003 replaces this file, it creates only the two tables Parts 2 and 3 use,
-with the spec 1.7 table, column and index names, so Part 3's SQL works unchanged on the real
-tables:
+Part 1. This file replaces the Part 1 STUB `0003_detection_stub.py` that Parts 2 and 3 used. It
+keeps the stub's `event` and `harm_field` tables exactly (Part 3's SQL and
+`tests/worker/test_schema.py` pin them) and adds Part 1's other two tables, with the spec 1.7
+table, column and index names:
 
-- event: every flagged event. The gap sweeper inserts monitoring_gap events (spec 1.7: "Part 3
-  inserts gap events into your event table") and closes them.
+- metric_sample: every accepted sample. Unique on (system_id, metric_name, timestamp), the
+  duplicate key of spec 1.4 step 5. event_id is set when the sample breached (a new or a joined
+  event).
+- breach_series: one row per run of consecutive breaching samples for (system_id, metric_name).
+  At most one is open (closed_at null): the partial unique index. occurrence_count starts at 1.
+- event: every flagged event, breach or gap. The gap sweeper inserts monitoring_gap events (spec
+  1.7: "Part 3 inserts gap events into your event table") and closes them.
 - harm_field: four rows per event (spec 1.5 and 1.7).
 
-metric_sample and breach_series are not created here; nothing in Parts 2 and 3 uses them.
-The application role gets normal read and write (spec 4.4).
+No foreign keys between these tables: the spec names none, and Part 4's reset and the tests
+truncate them in any order (decision 127). The application role gets normal read and write
+(spec 4.4).
 
 Revision ID: 0003
 Revises: 0002
@@ -32,7 +38,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _ROLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
-TABLES = ("event", "harm_field")
+TABLES = ("metric_sample", "breach_series", "event", "harm_field")
 EVENT_STATES = ("FLAGGED", "UNDER_REVIEW", "DISPOSITIONED", "CLOSED")
 HARM_FIELD_STATUSES = ("PREFILLED_PENDING_CONFIRMATION", "CONFIRMED", "NOT_APPLICABLE")
 
@@ -51,6 +57,43 @@ def _in(values: Sequence[str]) -> str:
 def upgrade() -> None:
     app_role = _app_role()
     timestamp = sa.DateTime(timezone=True)
+
+    op.create_table(
+        "metric_sample",
+        sa.Column("sample_id", sa.Text, primary_key=True),
+        sa.Column("system_id", sa.Text, nullable=False),
+        sa.Column("metric_name", sa.Text, nullable=False),
+        sa.Column("metric_type", sa.Text, nullable=False),
+        sa.Column("value", sa.Numeric, nullable=False),
+        sa.Column("timestamp", timestamp, nullable=False),
+        sa.Column("received_at", timestamp, nullable=False),
+        sa.Column("event_id", sa.Text, nullable=True),
+        sa.CheckConstraint(
+            "metric_type IN ('performance', 'drift')", name="ck_metric_sample_metric_type"
+        ),
+        sa.UniqueConstraint(
+            "system_id", "metric_name", "timestamp", name="uq_metric_sample_identity"
+        ),
+    )
+
+    op.create_table(
+        "breach_series",
+        sa.Column("series_id", sa.Text, primary_key=True),
+        sa.Column("system_id", sa.Text, nullable=False),
+        sa.Column("metric_name", sa.Text, nullable=False),
+        sa.Column("event_id", sa.Text, nullable=False),
+        sa.Column("opened_at", timestamp, nullable=False),
+        sa.Column("closed_at", timestamp, nullable=True),
+        sa.Column("occurrence_count", sa.Integer, nullable=False, server_default=sa.text("1")),
+        sa.CheckConstraint("occurrence_count >= 1", name="ck_breach_series_occurrence_count"),
+    )
+    op.create_index(
+        "uq_breach_series_one_open_per_metric",
+        "breach_series",
+        ["system_id", "metric_name"],
+        unique=True,
+        postgresql_where=sa.text("closed_at IS NULL"),
+    )
 
     op.create_table(
         "event",
