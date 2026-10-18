@@ -18,7 +18,15 @@ from sqlalchemy.orm import Session
 from app import gaps, worker
 from tests.api.conftest import ApiClient, as_actor, build_app, seed
 from tests.script_helpers import run_subprocess
-from tests.worker.conftest import T0, FakeClock, Receiver, add_system, entry_types, rows
+from tests.worker.conftest import (
+    T0,
+    FakeClock,
+    Receiver,
+    add_system,
+    add_webhook,
+    entry_types,
+    rows,
+)
 
 
 def test_gap_to_delivery_to_close_and_reverify(
@@ -59,8 +67,19 @@ def test_gap_to_delivery_to_close_and_reverify(
         [event] = rows(owner_engine, "SELECT event_id, type, state FROM event")
         event_id = event["event_id"]
         assert (event["type"], event["state"]) == ("monitoring_gap", "FLAGGED")
-        notification = receiver.calls[-1].body
-        assert (notification["event_id"], notification["webhook_id"]) == (event_id, webhook_id)
+        # Spec 3.5 body: the gap was detected at T0 + 900 s and sent in the same iteration.
+        assert receiver.calls[-1].body == {
+            "notification_type": "flag_notification",
+            "notification_id": receiver.calls[-1].body["notification_id"],
+            "event_id": event_id,
+            "system_id": "sys-42",
+            "type": "monitoring_gap",
+            "detected_at": "2026-10-01T09:15:00Z",
+            "sent_at": "2026-10-01T09:15:00Z",
+        }
+        assert receiver.calls[-1].body["notification_id"].startswith("ntf-")
+        [delivery] = rows(owner_engine, "SELECT webhook_id FROM notification_delivery")
+        assert delivery["webhook_id"] == webhook_id
         [delivered] = rows(
             owner_engine,
             "SELECT payload FROM ledger_entry WHERE entry_type = 'NOTIFICATION_DELIVERED'",
@@ -84,7 +103,8 @@ def test_gap_to_delivery_to_close_and_reverify(
             ("system", "NOTIFICATION_DELIVERED"),
         ]
 
-        # Data resumes 1000 s after the last sample: Part 1's ingest closes the gap.
+        # Data resumes 1000 s after the last sample, 100 s after the gap was detected: Part 1's
+        # ingest closes the gap.
         fake_clock.advance(100)
         with Session(app_engine) as session:
             assert gaps.close_if_open(session, "sys-42") == event_id
@@ -96,18 +116,32 @@ def test_gap_to_delivery_to_close_and_reverify(
         [closed] = rows(
             owner_engine, "SELECT payload FROM ledger_entry WHERE entry_type = 'GAP_CLOSED'"
         )
-        assert closed["payload"]["gap_seconds"] == 1000
+        assert closed["payload"]["gap_seconds"] == 100  # from detection (spec 3.4)
+
+        # The gap's audit trail, in order: GAP_OPENED, NOTIFICATION_REQUESTED,
+        # NOTIFICATION_DELIVERED, the earlier audit call's own AUDIT_VIEWED, then GAP_CLOSED.
+        audit = client.get(f"/v1/events/{event_id}/audit", headers=as_actor("viewer-1"))
+        assert [(e["actor_id"], e["action"]) for e in audit.json()] == [
+            ("system", "GAP_OPENED"),
+            ("system", "NOTIFICATION_REQUESTED"),
+            ("system", "NOTIFICATION_DELIVERED"),
+            ("viewer-1", "AUDIT_VIEWED"),
+            ("system", "GAP_CLOSED"),
+        ]
 
         export = client.get("/v1/ledger/export", headers=as_actor("rev-1"))
         verify = client.get("/v1/ledger/verify", headers=as_actor("rev-1"))
     # SEED, WEBHOOK_REGISTERED, GAP_OPENED, NOTIFICATION_REQUESTED, NOTIFICATION_DELIVERED,
-    # AUDIT_VIEWED (the audit call above) and GAP_CLOSED.
-    assert verify.json() == {"valid": True, "entries_checked": 7, "first_mismatch": None}
+    # AUDIT_VIEWED, GAP_CLOSED and the second AUDIT_VIEWED.
+    assert verify.json() == {"valid": True, "entries_checked": 8, "first_mismatch": None}
     export_file = tmp_path / "export.json"
     export_file.write_bytes(export.content)
     run = run_subprocess([str(export_file)])
     assert (run.code, run.result) == (0, verify.json())
-    assert [e["entry_type"] for e in json.loads(export.content)][-1] == "GAP_CLOSED"
+    assert [e["entry_type"] for e in json.loads(export.content)][-2:] == [
+        "GAP_CLOSED",
+        "AUDIT_VIEWED",
+    ]
 
 
 class StopLoop(BaseException):
@@ -140,3 +174,65 @@ def test_the_loop_sweeps_every_minute_and_survives_a_failed_iteration(
     assert sleeps == [5, 5, 5, 5, 5]
     assert "worker iteration failed: type=RuntimeError" in caplog.text
     assert "boom" not in caplog.text
+
+
+RESET_TABLES = (
+    "notification_delivery, notification, webhook, harm_field, event, sweeper_heartbeat,"
+    " monitored_system, ledger_entry"
+)
+
+
+def reset_tables(owner_engine: Engine) -> None:
+    """What Part 4's test reset does to the tables (spec 4.6), as the owner role."""
+    with owner_engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE {RESET_TABLES}"))
+
+
+def test_the_loop_survives_a_reset_that_empties_the_tables(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    receiver: Receiver,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec 3.3: the worker tolerates tables being emptied by a test reset while it runs: once
+    in the middle of a webhook call (the claimed row vanishes) and once between iterations."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    add_webhook(owner_engine, "wh-1", receiver.url, ["flag_notification"])
+    fake_clock.advance(900)
+    receiver.during = lambda: reset_tables(owner_engine)  # reset while the call is in flight
+    iterations = []
+    real_iteration = worker.run_iteration
+
+    def counting_iteration(engine: Any, *, sweep: bool) -> None:
+        iterations.append(sweep)
+        real_iteration(engine, sweep=sweep)
+
+    def fake_sleep(seconds: float) -> None:
+        if len(iterations) == 1:
+            # Between iterations: reset again, then reseed a silent system and a webhook.
+            reset_tables(owner_engine)
+            add_system(owner_engine, "sys-42", last_received_at=T0)
+            add_webhook(owner_engine, "wh-2", receiver.url, ["flag_notification"])
+            receiver.during = None
+        if len(iterations) == 2:
+            raise StopLoop
+
+    monkeypatch.setattr(worker, "run_iteration", counting_iteration)
+    monkeypatch.setattr(worker, "sleep", fake_sleep)
+    monkeypatch.setattr(worker, "monotonic", lambda: 0.0)  # sweep on the first iteration only
+    with caplog.at_level(logging.WARNING), pytest.raises(StopLoop):
+        worker.run_forever(app_engine)
+    assert iterations == [True, False]  # the loop kept running after the mid-call reset
+    assert "worker iteration failed" not in caplog.text
+    assert len(receiver.calls) == 1  # the first gap's notification (its result was discarded)
+
+    # After the loop: a fresh iteration on the reseeded tables opens and delivers a new gap.
+    worker.run_iteration(app_engine, sweep=True)
+    assert entry_types(owner_engine) == [
+        "GAP_OPENED",
+        "NOTIFICATION_REQUESTED",
+        "NOTIFICATION_DELIVERED",
+    ]
+    assert len(receiver.calls) == 2

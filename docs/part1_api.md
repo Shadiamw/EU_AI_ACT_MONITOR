@@ -1,166 +1,114 @@
-# Part 1: detection and ingestion
+# Part 1: ingestion, detection and events
 
-Part 1 implements `POST /v1/metrics`, `GET /v1/events`, and
-`GET /v1/events/{event_id}`. It uses the existing Part 2 ledger/audit and
-Part 3 gap/notification functions. Disposition, reports, deployment, reset and
-the simulated-clock endpoint remain outside this implementation.
+Part 1 builds `POST /v1/metrics`, `GET /v1/events`, `GET /v1/events/{event_id}`, the two 501
+stubs (`POST /v1/events/{event_id}/disposition`, `GET /v1/events/{event_id}/report`),
+authentication and the error format, to `Phase3_Implementation_Spec.docx` ("the spec")
+sections 1.1 to 1.9. It calls Part 2's `ledger.append` and `audit.record_view` and Part 3's
+`gaps.close_if_open` and `notifications.enqueue`. The decisions it rests on are 116 to 131 in
+`docs/decisions.md`; the tests that prove each rule are mapped in `docs/part1_test_map.md`; the
+clause-by-clause check is `docs/part1_spec_audit.md`.
+
+Not built here (Part 4): the real clock and `clock_state`, `POST /v1/test/reset`,
+`POST /v1/test/clock/advance`, `/healthz`, roles setup, CI, Docker and AWS, the acceptance
+runner and the sender simulator. Their stand-ins are marked STUB (integration_notes.md
+section 10).
+
+## Code
+
+| File | What it holds |
+|---|---|
+| `app/auth.py` | `Principal`, Bearer key resolution, `require(*roles)` (decision 123) |
+| `app/errors.py` | `ApiError` and the global handlers (Part 2's module, adopted; decision 131) |
+| `app/ingestion.py` | The request model and the step 2 to 11 algorithm of spec 1.4 |
+| `app/evidence.py` | The evidence bundle and its SHA-256 (decision 119) |
+| `app/events.py` | The contract Event object and list summaries |
+| `app/jsonout.py` | JSON responses that write Decimals as exact JSON numbers (decision 124) |
+| `app/observability.py` | The request log line and counters (decision 126) |
+| `app/api/ingestion_routes.py` | The three endpoints |
+| `app/api/stub_routes.py` | The two 501 stubs (decision 125) |
+| `migrations/versions/0003_detection.py` | metric_sample, breach_series, event, harm_field (decision 127) |
+| `migrations/versions/0001_platform_stub.py` | Part 4's stub, with api_key and threshold_version added |
+| `tools/seed_part1.py` | STUB for Part 4: the spec's seed fixtures (decision 128) |
 
 ## Run locally
 
-Use the Python 3.12/PostgreSQL 16 setup in README section 5. With both database URLs
-configured, run:
+Use the Python 3.12 and PostgreSQL 16 setup in README section 5. With DATABASE_URL,
+DATABASE_ADMIN_URL, ENVIRONMENT=test and the three keys set:
 
 ```sh
-python -m pip install -e '.[dev]'
-python -m alembic upgrade head
-# Only for local/test fixtures; never enable these public credentials in production.
-ENVIRONMENT=test python -m tools.seed_part1
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-# In a separate terminal, with the same database environment:
-python -m app.worker
+export INGEST_KEY_SYS_42=... REVIEWER_KEY=... VIEWER_KEY=...   # your own test values
+.venv/bin/alembic upgrade head
+.venv/bin/python -m tools.seed_part1      # ENVIRONMENT=test only; uses DATABASE_ADMIN_URL
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-PowerShell uses `$env:ENVIRONMENT='test'` before `python -m tools.seed_part1`.
-Seeding is explicit and idempotent. Migrations and normal startup never install
-demo credentials. The seed command uses DATABASE_ADMIN_URL; the API and worker use
-DATABASE_URL. Part 4 retains ownership of startup SEED ledger entries and reset.
-
-The optional `dev` installation includes uvicorn. Alembic head is now **0004**;
-the new migration extends the existing schema without rewriting revisions 0001-0003.
-
-## Credentials and fixtures
-
-Send credentials in the `X-API-Key` header. Only SHA-256 digests are stored in `api_key`.
-Credential lookup uses a short autocommit connection closed before handler work, so
-authentication cannot leave a transaction open during webhook verification.
-The following are intentionally public, local-test credentials:
-
-| Role | Actor | Key |
-| --- | --- | --- |
-| SYSTEM | sys-42 | local-test-system-sys42-9e4bb169f4584fa69d92 |
-| REVIEWER | rev-1 | local-test-reviewer-rev1-830607463f814883a285 |
-| VIEWER | viewer-1 | local-test-viewer-1-6f57355ca3764cce9acf |
-
-Seeded thresholds, effective from 2000-01-01T00:00:00Z:
-
-| Version | System | Metric | Type | Breach condition |
-| --- | --- | --- | --- | --- |
-| thr-1 | sys-42 | accuracy_drift | drift | value > 0.30 |
-| thr-2 | sys-42 | accuracy | performance | value < 0.80 |
-
-The drift fixture matches the convention's example. The accuracy fixture and its
-0.80 limit are provisional. For production, Part 4 must provision independently
-generated high-entropy keys and the team's real thresholds using the owner role.
-The application can read keys/thresholds but cannot insert, update, or delete them.
-Threshold changes are new rows with distinct version IDs and effective times.
-
-Example request:
+uvicorn is not a project dependency yet (integration_notes.md section 5.7). The keys come from
+the environment (spec 5) and only their SHA-256 digests are stored. The test suite sets its own
+test-only values in `tests/conftest.py`.
 
 ```sh
 curl -X POST http://127.0.0.1:8000/v1/metrics \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: local-test-system-sys42-9e4bb169f4584fa69d92' \
-  -d '{"system_id":"sys-42","metric_name":"accuracy_drift","metric_type":"drift","value":0.34,"timestamp":"2026-10-17T12:00:00Z"}'
+  -H "Authorization: Bearer $INGEST_KEY_SYS_42" -H 'Content-Type: application/json' \
+  -d '{"system_id":"sys-42","metric_name":"accuracy_drift","metric_type":"drift","value":0.34,"timestamp":"2026-09-27T10:05:00Z"}'
 ```
 
-Success is 201 with `{sample_id, flagged_event_id}` for breaches, or `{sample_id}`
-otherwise, following the convention's fixed example. Event IDs and sample IDs are
-opaque strings. Event detail returns the convention's Event shape, with JSON
-numbers for metric values and all four HarmField objects. Exact decimal values
-are retained in PostgreSQL, evidence bundles, and ledger payload strings; HTTP
-numeric presentation uses the usual floating-point conversion.
+returns 201 `{"sample_id": "smp-…", "flagged_event_id": "evt-…"}` (contract Example 1).
 
-## Ingestion behavior and assumptions to confirm with the team
+## Behaviour in brief
 
-These choices fill gaps in the supplied materials. They are implemented and tested,
-but should be reconciled with the separate Phase 3 specification if it is recovered.
+- **Auth** (spec 1.3, 4): `Authorization: Bearer <key>`; SHA-256 digest compared in constant
+  time against every stored digest. 401, then 403 FORBIDDEN_ROLE, then 400 MALFORMED_BODY, then
+  403 SYSTEM_MISMATCH. Roles: ingest SYSTEM only; list any role; detail, audit, export and
+  verify REVIEWER or VIEWER; disposition REVIEWER only; report REVIEWER or VIEWER.
+- **Ingest** (spec 1.4): validate (decision 121), lock the system row, insert-or-ignore on
+  (system_id, metric_name, timestamp). A duplicate is 200 with the original ids, sets
+  last_received_at and does nothing else (decision 116). Otherwise set last_received_at,
+  close an open gap, read the newest threshold version (decision 120): none gives 201
+  `{sample_id}`; healthy closes the open series (decision 129); a breach joins the open series
+  or creates the event, its four harm fields and a series, appends EVENT_FLAGGED, then
+  enqueues the notification. One transaction; lock order in decision 122.
+- **Thresholds** are strict: gt breaches when value > limit, lt when value < limit, compared
+  as Decimal. A value equal to the limit never breaches.
+- **A new event** (spec 1.5): detected_at is the sample's timestamp, received_at is
+  `clock.now()`, retain_until is detected_at plus six calendar months and at least 183 days,
+  harm fields PREFILLED_PENDING_CONFIRMATION with null evidence and confirmer.
+- **List** (spec 1.6): a bare array of summaries, newest first, any role, no ledger entry,
+  limit 50 by default and capped at 200 (decisions 117, 118).
+- **Detail** (spec 1.6): the contract Event object, exact decimals, EVENT_VIEWED in the same
+  transaction; unknown id 404 with nothing written.
+- **Logs and counters** (spec 1.8): decision 126.
 
-1. **Identity/retries.** The contract has no snapshot ID. A sample is identified by
-   `(system_id, metric_name, metric_type, timestamp)`; equivalent UTC representations
-   identify the same instant. An identical numeric value returns the original 201
-   IDs. A changed value returns 409 DUPLICATE_CONFLICT. Retries change no heartbeat,
-   gap, event, notification or ledger state.
-2. **Thresholds.** Select the newest version effective at the sample's timestamp.
-   Comparators are explicit `gt` or `lt`; equality is healthy. Missing configuration
-   returns 422 THRESHOLD_NOT_CONFIGURED and writes nothing. Each sample records its
-   evaluated version. An event keeps the first breach's value and threshold version
-   even if later occurrences were evaluated under a newer version.
-3. **Series.** At most one open series exists per system/metric/type. Repeated
-   breaches link additional stored samples to it and return the same event ID,
-   without further flag or notification entries. A healthy sample newer than all
-   previously stored samples ends the series. This does not close the human review
-   event: it stays FLAGGED. Late healthy data cannot end a current series. A late
-   breach joins the current series or creates one if none exists. A later breach
-   after recovery creates a fresh event. Phase 4 must clear `series_open` on human
-   closure if it introduces an independent closure path.
-4. **Time.** `detected_at` and `last_received_at` use the service's `clock.now()`;
-   sample timestamps are preserved separately. Requests require UTC ISO-8601
-   timestamps and finite JSON numbers (not numeric strings or booleans). Future
-   timestamps are accepted because no skew bound was specified. A sample timestamp
-   does not advance the service clock. Text IDs and metric names are limited to
-   256 characters; values support up to 100 digits with up to 50 fractional digits.
-5. **Evidence.** Capture a fixed snapshot of this system's already stored samples
-   in the inclusive preceding hour `[sample timestamp - 1 hour, sample timestamp]`,
-   across metrics, including the triggering sample. Future or later-arriving samples
-   are not added retroactively. `event.evidence_bundle` holds decimal strings,
-   sample IDs, timestamps and evaluated threshold versions for future reporting.
-   Each harm field contains factual metric context with
-   PREFILLED_PENDING_CONFIRMATION, with no human confirmation or legal judgment.
-6. **Listing.** Return an array of Event objects (the full object also serves as a
-   summary), ordered by `detected_at, event_id` ascending. Query parameters:
-   `system_id`, `state`, `type`, inclusive `since`, `limit` (1-200, default 50),
-   `offset` (default 0). Pagination metadata uses `X-Total-Count`, `X-Limit`,
-   `X-Offset` headers. Lists do not append EVENT_VIEWED; detail reads do.
-7. **Roles.** Every authenticated role may list events, with SYSTEM restricted to
-   its own system. REVIEWER/VIEWER may read event detail; existing ledger, audit
-   and webhook roles are preserved. SYSTEM alone may ingest and must match the
-   body's system_id; mismatches return 403 SYSTEM_MISMATCH. An authenticated system
-   missing from monitored_system returns 404 NOT_FOUND. Auth precedes body validation
-   and resource lookup. Wrong HTTP methods retain the existing 404 behavior.
+## What changed in Part 1 and why (for atharej)
 
-## Transactions and platform handoff
+Your Part 1 (`5310ae8`) was written before the spec reached us, against a pre-fix Part 3. It
+was merged into this branch with a real merge commit, so your commit stays in the history,
+then reworked to the spec. The full list, clause by clause, is `docs/part1_spec_audit.md`; the
+fate of each of your tests is the last table of `docs/part1_test_map.md`. The main changes:
 
-Ingestion locks the monitored-system row, then checks duplicates and selects the
-threshold. It stores the sample, updates receipt time, and closes an open gap through
-`gaps.close_if_open`. A new breach stores its evidence/event/occurrence, appends
-EVENT_FLAGGED, then calls `notifications.enqueue` (NOTIFICATION_REQUESTED).
-All writes commit before the response. A failure rolls back all of them, including
-gap closure. No network calls occur in this transaction.
+| Was | Now | Why |
+|---|---|---|
+| `X-API-Key` header | `Authorization: Bearer <key>` | Spec 4, Auth (pinned) |
+| Published fixed keys in the seed and in this file | Keys from INGEST_KEY_SYS_42, REVIEWER_KEY, VIEWER_KEY | Spec 5 |
+| Disabled keys (`enabled` column) | No such column | Spec 4.4 lists the api_key columns |
+| Duplicate identity includes metric_type; changed value 409; heartbeat unchanged | (system_id, metric_name, timestamp); 200 with the original ids; last_received_at set | Spec 1.4 step 5 (decision 116) |
+| No threshold: 422 THRESHOLD_NOT_CONFIGURED | 201 `{sample_id}` | Spec 1.4 step 7; 422 is not a spec code |
+| Unknown system after a valid key: 404 | 500 | Spec 1.4 step 4 |
+| Threshold valid at the sample's time | Highest `version` | Spec 1.4 step 7 (decision 120) |
+| accuracy limit 0.80 | lt 0.70 | Spec 4, Seed fixtures |
+| detected_at = server time | detected_at = the sample's timestamp | Spec 1.5 and contract Example 2 |
+| Only a newer healthy sample ends a series | Any healthy sample does | Spec 1.4 step 9 (decision 129) |
+| `event.series_open` | breach_series table | Spec 1.7 |
+| Evidence: all metrics, a bare list | This metric only, `{window, samples}` | Spec 1.5 (decision 119) |
+| Harm-field evidence text | Null evidence, PREFILLED_PENDING_CONFIRMATION | Spec 1.5 and 4 (Phase 3 stub shape) |
+| Gap harm fields shown as PREFILLED | NOT_APPLICABLE, as Part 3 writes them | Spec 4 |
+| JSON numbers through float | Exact decimals | Spec 1.6 (decision 124) |
+| List: full Event objects, oldest first, X-Total-Count, SYSTEM sees its own system | Summaries, newest first, no header, any role sees all | Spec 1.6 (decisions 117, 118) |
+| limit 0 or above 200 is 400 | limit 0 gives `[]`; above 200 is capped | Spec 1.6 "max 200" and the user's decision |
+| Extra body fields 400; names limited to 256 characters, empty refused | Extra fields ignored; no length rule | Spec 1.4; decision 121 |
+| No disposition or report endpoints | 501 stubs after auth | Spec 1.6 (decision 125) |
+| No request log line or counters | Both | Spec 1.8 (decision 126) |
+| Migration 0004 altering `event`, keys and thresholds read-only for the app | Tables in 0001 and 0003; normal read and write | Spec 4.4 (decision 127) |
 
-The existing lock order is preserved: system row, event/notification rows, ledger
-lock. As the integration notes require, gap closure may acquire the ledger lock
-before the remaining ingest work. The per-system lock and unique constraints
-serialize concurrent requests without duplicate events or notifications.
-
-Migration 0004 supplies minimal `api_key` and `threshold_version` platform contracts
-so Part 1 is runnable before Part 4 lands. It also adds `metric_sample`, event
-evidence, series tracking, threshold version, and reserved disposition/deadline/revision
-fields for contract serialization. Part 4 should extend these through new migrations,
-include the new tables in reset, and add its normal clock, seeding and timeout setup.
-
-Worker gap rows remain compatible. Their legacy null harm fields are serialized
-as pending HarmField objects with null evidence/confirmation; the worker's storage
-format and behavior are unchanged.
-
-## Verification
-
-`python -m pytest tests/part1` covers real-key authorization, threshold boundaries,
-version selection, replay/conflicts, evidence precision, series/recovery, pagination,
-gap closure, rollback after a ledger write, and concurrent retries. Run the full
-suite plus Ruff and strict mypy as described in README section 5.
-
-
-Validation on 2026-10-17 used Windows, Python 3.12.10 and a real PostgreSQL 16.15
-server with separate non-superuser owner/application roles. All 34 Part 1 tests
-passed, including a real HTTP webhook receiver and the check that verification and
-delivery do not run inside an application transaction. A separate migration check
-preserved a populated Part 3 event and ledger hash through upgrade, downgrade, and
-re-upgrade. Ruff and strict mypy passed. The disposable test cluster used disabled
-crash-durability flushes during part of validation; crash recovery was not tested.
-
-
-The broad regression run exercised 649 cases: 648 passed and one legacy worker
-assertion expected only the pre-0004 event columns. That assertion now also checks
-all seven added columns and their gap defaults; its rerun passed against the main
-test database. The 34 Part 1 cases were additionally rerun on the final authentication
-implementation in an isolated database and all passed. No worker behavior was changed.
+Kept from your version: the short autocommit connection for the key lookup (decision 114), the
+system-row lock first, insert-or-ignore on a unique key, Decimal parsing with `parse_float`,
+the 100-digit and 50-place bound on values, and the tests' real-webhook and rollback checks.

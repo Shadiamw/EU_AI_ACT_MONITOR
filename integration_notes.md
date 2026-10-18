@@ -1,14 +1,15 @@
-# Integration notes: Part 2 (ledger and audit)
+# Integration notes: Part 2 (ledger and audit), with Parts 1 and 3
 
-**Part 1 is now implemented.** See [docs/part1_api.md](docs/part1_api.md) for the current
-API, assumptions, migration 0004, fixtures, and platform handoff. Sections below preserve
-the original Part 2/3 handoff context; references to Part 1 stubs and a missing event table
-are historical. Auth now resolves hashed `X-API-Key` credentials; events are looked up in
-the event table; ingestion calls gap closure and notification enqueue atomically.
+**Parts 1, 2 and 3 are integrated on `developed-part123merged`.** Part 1 is built to the spec:
+[docs/part1_api.md](docs/part1_api.md) describes it, and section 3.9 below says what changed in
+Part 1 and why. Section 3.1 is kept as the record of the Part 1 stubs, all now replaced.
+Section 5.12 lists what Part 4 must do when it lands, and section 10 the stubs that remain,
+all Part 4's.
 
 These notes are for the owners of Part 1 (API), Part 3 (worker) and Part 4 (platform). They say
 what Part 2 provides, what every caller must do, and what each part replaces or checks when its
-code lands.
+code lands. Part 3 is now in this repository too: section 4.6 gives its settled
+interfaces, and section 10 lists the stubs Parts 1 and 4 replace.
 
 How to read the citations:
 
@@ -145,11 +146,11 @@ use the webhook id, and SEED uses null (same section).
 | SEED | Part 4, via `ensure_seed` | `system` (set by `ensure_seed`) | null | `systems` (list of ids), `threshold_count` (string, e.g. `"2"`, addendum rule 7) |
 | EVENT_FLAGGED | Part 1, ingest | the system principal, e.g. `sys-42` (addendum rule 7) | event id | `event_id`, `system_id`, `metric_name`, `observed_value`, `threshold_value`, `threshold_version_id` |
 | GAP_OPENED | Part 3, `gaps.sweep` | `system` (background work) | event id (decision 30) | `event_id`, `system_id`, `last_received_at` |
-| GAP_CLOSED | Part 3, `gaps.close_if_open`, called inside Part 1's ingest | **ASSUMPTION:** `system`; the spec does not say whether it is `system` or the ingesting principal | event id | `event_id`, `system_id`, `gap_seconds` |
-| NOTIFICATION_REQUESTED | Part 3, `notifications.enqueue` (called by Part 1 for breaches, Part 3 for gaps) | **ASSUMPTION:** the caller's actor: `sys-42` in ingest, `system` in the sweeper | event id | `notification_id`, `event_id`, `notification_type` |
+| GAP_CLOSED | Part 3, `gaps.close_if_open`, called inside Part 1's ingest | `system` (spec 3.2: the worker's actor is `system`; decision 101) | event id | `event_id`, `system_id`, `gap_seconds` |
+| NOTIFICATION_REQUESTED | Part 3, `notifications.enqueue` (called by Part 1 for breaches, Part 3 for gaps) | `system`, for breaches and gaps alike; enqueue takes no actor (decision 93) | event id | `notification_id`, `event_id`, `notification_type` |
 | NOTIFICATION_DELIVERED | Part 3, delivery pass | `system` (background work) | event id | `notification_id`, `webhook_id`, `attempt`, `latency_seconds`, `within_bound` |
 | NOTIFICATION_FAILED | Part 3, delivery pass | `system` (background work) | event id | `notification_id`, `webhook_id`, `attempts`, `last_status` |
-| WEBHOOK_REGISTERED | Part 3, `POST /v1/webhooks` | **ASSUMPTION:** the registering principal (`rev-1` or `viewer-1`) | webhook id | `webhook_id`, `url`, `event_types` |
+| WEBHOOK_REGISTERED | Part 3, `POST /v1/webhooks` | the registering principal (`rev-1` or `viewer-1`; decision 103) | webhook id (spec 3.6) | `webhook_id`, `url`, `event_types` |
 | EVENT_VIEWED | Part 2, `audit.record_view`, called by Part 1 | `principal.actor_id` | event id | none (`{}`) |
 | AUDIT_VIEWED | Part 2, the audit endpoint | `principal.actor_id` | event id | none (`{}`) |
 
@@ -177,13 +178,16 @@ call, every ingest that flags, and every worker append. Part 4 sets the timeout 
 
 ### 3.1 Stubs to replace
 
+Done: every row below was replaced by Part 1 on `developed-part123merged`, keeping the "Keep"
+column (decisions 123 and 131; section 3.9). The table is kept as the record.
+
 | File | What it stubs | Replace with | Keep |
 |---|---|---|---|
 | `app/errors.py` | `ApiError` and the global handlers: 404 and 405 become 404 NOT_FOUND, 422 becomes 400 MALFORMED_BODY, and a middleware turns any other exception into 500 INTERNAL_ERROR (decisions 27, 28, 36, 37) | Part 1's errors module, `errors.ApiError(status, error_code, message)` plus handlers (spec, 'Shared interfaces between parts (Pinned)') | The contract error body; LedgerError becomes 500 with nothing leaked (decision 28) |
 | `app/auth.py` | `resolve_principal()` (always REVIEWER rev-1) and `require(*roles)`; `Principal` (decisions 29 and 41) | Part 1's key auth | `require(*roles)` returns `Principal(role, actor_id, system_id)`; 401 before 403 before any 404 lookup (decision 29) |
 | `app/events.py` | `exists(session, event_id)`: true when the ledger has an EVENT_FLAGGED or GAP_OPENED entry with that subject_id (decisions 30 and 44) | A lookup on Part 1's event table | Same signature, called after the role check |
 | `app/db.py` | The engine (application role, READ COMMITTED, pool 10 plus 40, `pool_pre_ping`) and `get_session`, which rolls back on error, closes, and never commits (decisions 25, 26, 38) | Part 1 or Part 4 session handling | Application role, READ COMMITTED, one transaction per request, no commit in teardown |
-| `app/main.py` | `create_app()`, which mounts only the Part 2 router and the error handlers, with `/docs`, `/redoc` and `/openapi.json` off (decision 39) | Part 1's app | It must include `app.api.ledger_routes.router` |
+| `app/main.py` | `create_app()`, which mounts only the Part 2 router and the error handlers, with `/docs`, `/redoc` and `/openapi.json` off (decision 39) | Part 1's app | It must include `app.api.ledger_routes.router` and `app.api.webhook_routes.router` (Part 3) |
 | `tests/api/g2_routes.py` | Test-only `GET /v1/events/{event_id}` and two `/_test/` routes; never mounted by `app/main.py` (decision 34) | Part 1's real event-detail endpoint | The test-only routes stay out of the real app |
 
 Effects on the Part 2 tests:
@@ -277,6 +281,23 @@ spec has no code for 405 (decision 27;
 
 Commands are listed in section 8, Part 1.
 
+### 3.9 What Part 1 provides, and what changed
+
+- `auth.require(*roles)` returns `Principal(role, actor_id, system_id)` from a real
+  `Authorization: Bearer <key>` header: 401, then 403 (decision 123). Tests that choose the
+  caller still override `app.auth.resolve_principal` (section 3.1); tests that need a real key
+  use `bearer(actor)` from `tests/db_helpers.py` after the seed or `install_keys`.
+- `events.exists` and the real `GET /v1/events/{event_id}` read the `event` table, and the
+  detail is the contract Event object. Tests that build the ledger by hand also insert the
+  event row (`insert_event` in `tests/db_helpers.py`).
+- The ingest appends at most GAP_CLOSED, EVENT_FLAGGED and NOTIFICATION_REQUESTED, in that
+  order (section 3.4), and locks the open breach series before `gaps.close_if_open`
+  (decision 122).
+- Wrong method on a known route stays 404 NOT_FOUND (decision 27, confirmed in decision 131).
+
+What changed from atharej's first Part 1 (`5310ae8`), and why, is the table "What changed in
+Part 1 and why" in [docs/part1_api.md](docs/part1_api.md).
+
 ## 4. Part 3 (worker owner)
 
 ### 4.1 Payloads
@@ -286,16 +307,19 @@ non-integer numbers become plain decimal strings, datetimes become strings, no f
 
 | entry_type | Payload |
 |---|---|
-| GAP_OPENED | `{"event_id": str, "system_id": str, "last_received_at": str}`. The datetime is a string (addendum rule 10). |
-| GAP_CLOSED | `{"event_id": str, "system_id": str, "gap_seconds": int}`. **ASSUMPTION:** whole seconds as an integer; if fractional, a plain decimal string via `format(value, 'f')`. |
+| GAP_OPENED | `{"event_id": str, "system_id": str, "last_received_at": str}`. The datetime is a string in the API format `YYYY-MM-DDTHH:MM:SSZ`, fraction only when present (addendum rule 10; decision 84). |
+| GAP_CLOSED | `{"event_id": str, "system_id": str, "gap_seconds": int}`. Whole seconds, rounded down, from the gap's `received_at` to the closing moment (spec 3.4; decision 101). |
 | NOTIFICATION_REQUESTED | `{"notification_id": str, "event_id": str, "notification_type": "flag_notification"}`. Gap events use the same type (spec, '3.5 Notifications (REQ-04)'). |
-| NOTIFICATION_DELIVERED | `{"notification_id": str, "webhook_id": str, "attempt": int, "latency_seconds": int, "within_bound": bool}`. latency_seconds is an integer (addendum rule 2). |
-| NOTIFICATION_FAILED | `{"notification_id": str, "webhook_id": str, "attempts": int, "last_status": ...}`. **ASSUMPTION:** last_status is the HTTP status as an integer, or null when there was no response. |
+| NOTIFICATION_DELIVERED | `{"notification_id": str, "webhook_id": str, "attempt": int, "latency_seconds": int, "within_bound": bool}`. latency_seconds is an integer (addendum rule 2), from the event's `received_at` (spec 3.5; decision 94). |
+| NOTIFICATION_FAILED | `{"notification_id": str, "webhook_id": str, "attempts": 6, "last_status": int or null}`. last_status is the last HTTP status as an integer, or null when there was no response; the `notification_delivery.last_status` column holds the same value as text (decision 96). |
 | WEBHOOK_REGISTERED | `{"webhook_id": str, "url": str, "event_types": [str, ...]}` |
 
-`within_bound` must be a JSON boolean, never the string "true". **ASSUMPTION:** it is
-`latency_seconds <= NOTIFY_MAX_DELAY_SECONDS` (900; spec, 'Configuration (environment
-variables)').
+`within_bound` must be a JSON boolean, never the string "true". It is
+`latency_seconds <= NOTIFY_MAX_DELAY_SECONDS` (900; spec 3.5 and 'Configuration (environment
+variables)'; decision 94). The exact key sets are pinned by
+`tests/worker/test_gaps.py::test_gap_ledger_entries_have_exact_payload_keys_actor_and_subject`,
+`tests/worker/test_notifications.py::test_notification_ledger_entries_have_exact_payload_keys`
+and `tests/worker/test_webhooks.py::test_register_pings_then_stores_and_appends`.
 
 Subjects and actors are in section 2.5. Entries about an event use the event id as subject_id,
 so they appear in that event's audit trail.
@@ -309,11 +333,14 @@ decision 26). The owner role is only for migrations and test reset (`app/config.
 ### 4.3 Delivery results go in a new, short transaction
 
 Never deliver a webhook inside a transaction that has appended (spec, 'Transactions and lock
-order (Pinned)'). **ASSUMPTION:** the delivery pass works in three steps:
+order (Pinned)'). The delivery pass (spec 3.5; decision 94) works in these steps:
 
-1. Claim due delivery rows (`FOR UPDATE SKIP LOCKED`, spec, 'Pinned technology') and commit.
-2. Make the HTTP call with no transaction open.
-3. In a new, short transaction: update the delivery row, append NOTIFICATION_DELIVERED or
+1. Route each notification that has no delivery rows yet to the webhooks subscribed to its
+   type, and commit. With no such webhook it waits for the next pass.
+2. Claim due PENDING rows (`FOR UPDATE SKIP LOCKED`, spec, 'Pinned technology'), set
+   `lease_until` and count the attempt, and commit.
+3. Make the HTTP call with no transaction open.
+4. In a new, short transaction: update the delivery row, append NOTIFICATION_DELIVERED or
    NOTIFICATION_FAILED last, and commit.
 
 The sweeper's order is: lock the system row, create the gap event, append GAP_OPENED, then call
@@ -323,9 +350,16 @@ sweeper (REQ-02)').
 ### 4.4 Webhook URLs are visible to every VIEWER
 
 `GET /v1/ledger/export` returns every entry, WEBHOOK_REGISTERED payloads included, to any
-REVIEWER or VIEWER (decision 32; `docs/decisions.md`, "M4 notes"). A webhook URL must not
-carry a secret (a token in the path or query string). The ledger cannot remove it later,
-because entries are never updated or deleted.
+REVIEWER or VIEWER (decision 32; `docs/decisions.md`, "M4 notes"). Recommended: avoid secrets
+in webhook URLs; the export shows every URL to any VIEWER, and the ledger cannot remove it
+later, because entries are never updated or deleted.
+
+This is advice, not a rule the API enforces. `POST /v1/webhooks` accepts any http or https URL,
+including one with a query string, a user name and password, or a fragment, and stores it as
+received (spec 3.6; decision 98). Outside the test environment it accepts https only and
+refuses private and loopback addresses (decision 99).
+
+Logs never carry webhook URLs: the HTTP client's loggers are held at WARNING (decision 106).
 
 ### 4.5 How a long-held lock affects the worker
 
@@ -335,51 +369,79 @@ appended stays open, the worker's appends wait, with no timeout in the ledger co
 appends and then does slow work blocks every event view and audit call. Keep worker transactions
 that append short. Once Part 4 sets `lock_timeout`, a wait that runs out raises
 `OperationalError` (psycopg `LockNotAvailable`, SQLSTATE 55P03); this was checked in the sandbox
-against the ledger's lock key. **ASSUMPTION:** the worker rolls back and retries on its next
-pass.
+against the ledger's lock key. The worker rolls it back, logs the type name, and the delivery
+is claimed again when its lease runs out
+(`tests/worker/test_notifications.py::test_a_lock_timeout_while_recording_is_rolled_back_and_retried`;
+decision 94).
 
 ### 4.6 What Part 3 provides (implemented)
 
-Part 3 is now in this repository (README section 8; decisions 81 to 91). It settles the Part 3
-**ASSUMPTION**s above as written: GAP_CLOSED and the worker entries use actor `system`;
-NOTIFICATION_REQUESTED uses the caller's actor; WEBHOOK_REGISTERED uses the registering
-principal; `gap_seconds` and `latency_seconds` are integers; `within_bound` is
-`latency_seconds <= NOTIFY_MAX_DELAY_SECONDS`; `last_status` is an integer or null; and a
-lock timeout while recording a delivery is rolled back and retried.
+Part 3 is in this repository and follows spec sections 3.1 to 3.8 (README section 8; decisions
+93 to 105, which supersede parts of decisions 81 to 89). The clause-by-clause check is
+`docs/part3_spec_audit.md`. The Part 3 **ASSUMPTION**s above are settled as written there:
+every worker entry, GAP_CLOSED and NOTIFICATION_REQUESTED included, uses actor `system`;
+WEBHOOK_REGISTERED uses the registering principal; `gap_seconds` and `latency_seconds` are
+integers; `within_bound` is `latency_seconds <= NOTIFY_MAX_DELAY_SECONDS`; `last_status` in the
+payload is an integer or null; and a lock timeout while recording a delivery is rolled back and
+retried.
 
-For Part 1 (ingest), both run inside the ingest transaction and never commit:
+The interfaces are the spec's pinned signatures ('Shared interfaces between parts (Pinned)').
+`session` is a SQLAlchemy ORM `Session` at READ COMMITTED, and `engine` a SQLAlchemy `Engine`
+for the application role.
 
 ```python
-from app import gaps, notifications
+from app import gaps, notifications, worker
 
-gaps.close_if_open(session, system_id) -> str | None        # step 6: GAP_CLOSED if a gap was open
-notifications.enqueue(session, event_id, actor_id) -> str   # step 11, after EVENT_FLAGGED
+# Part 1's ingest, inside its transaction; neither commits.
+gaps.close_if_open(session, system_id) -> str | None   # step 6: GAP_CLOSED if a gap was open
+notifications.enqueue(session, event_id, notification_type="flag_notification") -> str
+                                                       # step 11, after EVENT_FLAGGED
+
+# Part 4's clock-advance endpoint and the worker; each commits its own short transactions.
+gaps.sweep(engine) -> list[str]            # new gap event ids; also writes sweeper_heartbeat
+notifications.deliver_due(engine) -> int   # delivery attempts made in this pass
+
+# Part 4's /healthz; read-only.
+worker.health_values(engine) -> worker.HealthValues
+#   .sweeper_last_ran_seconds_ago: int | None    (real time)
+#   .pending_deliveries: int
+#   .oldest_pending_delivery_seconds: int | None (clock.now())
+notifications.late_delivery_count() -> int  # late deliveries counted by this process
 ```
 
-- Lock the `monitored_system` row before step 6. `close_if_open` locks it again, which is a
-  no-op, so the lock order holds either way.
-- Ingest sets `monitored_system.last_received_at` to `clock.now()` for every accepted sample.
-  The sweeper measures silence from it.
-- Replace `events.create_gap_event` and `events.close_gap_event` in `app/events.py` with writes
-  to the real event table, keeping the signatures. Gap events are `type = "monitoring_gap"`,
-  state FLAGGED, null metric fields, and all four harm fields present and null (decision 84);
-  closing moves them to CLOSED.
-- `GET /v1/events?type=monitoring_gap` reads that table. Gaps appear without any ingest.
+For Part 1 (ingest and events):
+
+- Lock the `monitored_system` row before step 6, as spec 3.4 says. `close_if_open` locks it
+  again, which is a no-op, so the lock order holds either way.
+- Set `monitored_system.last_received_at` to `clock.now()` for every accepted sample,
+  duplicates included (spec 3.4 step 2). The sweeper measures silence from it.
+- The gap sweeper inserts `monitoring_gap` events and their four NOT_APPLICABLE `harm_field`
+  rows into Part 1's `event` and `harm_field` tables, using the spec 1.7 column names, and
+  `close_if_open` moves them to CLOSED. Part 1's real 0003 migration must keep those names,
+  the state check, and the partial unique index on `event(system_id)` for open gaps
+  (section 10).
+- `app.formats.retain_until(detected_at)` computes "six calendar months, at least 183 days"
+  (decision 102); breach events can use it.
+- `GET /v1/events?type=monitoring_gap` reads the event table. Gaps appear without any ingest.
+- Mount `app.api.webhook_routes.router` in the real app.
 
 For Part 4 (platform):
 
-- Migration 0001 must provide `monitored_system(system_id, monitoring_started_at,
-  last_received_at)`, both as timestamptz, with SELECT, INSERT and UPDATE for the application
-  role. UPDATE is needed for `SELECT ... FOR UPDATE`. Seed or reset must set
-  `monitoring_started_at` from `clock.now()`.
-- Migration 0003 (Part 3's tables) revises 0002, and its grants follow the user in
-  DATABASE_URL, as in 0002.
-- Test reset must truncate `notification_delivery`, `notification`, `webhook` and
-  `monitoring_gap` too.
-- Run `python -m app.worker` as its own process, as the application role. Add the
-  `ensure_seed` call at its start-up (decision 89).
-- The worker only ever reads `clock.now()` for its decisions, so `POST /v1/test/clock/advance`
-  takes effect at the next sweep (within `SWEEP_INTERVAL_SECONDS` of wall time) or delivery pass.
+- Replace the 0001 stub with the real migration. It must keep `monitored_system` and
+  `sweeper_heartbeat` as described in section 10, and grant the application role normal read
+  and write on them. Seed or reset sets `last_received_at` to the new current time (spec 4.4
+  and 4.6).
+- Test reset truncates, as the owner, every table the worker uses: `notification_delivery`,
+  `notification`, `webhook`, `harm_field` and `event`, as spec 4.6 lists, along with the
+  ledger and Part 1's other tables. The worker tolerates this while it runs (decision 104).
+- `POST /v1/test/clock/advance` calls `gaps.sweep(engine)` once and then
+  `notifications.deliver_due(engine)` once (spec 4.6). Row claiming makes this safe while the
+  worker runs.
+- `/healthz` reads `worker.health_values(engine)` (decision 97).
+- Run `python -m app.worker` as its own process, as the application role, with `ENVIRONMENT`
+  set (decision 100). Add the `ensure_seed` call at its start-up (decision 89).
+- The worker reads `clock.now()` for every decision and `clock.wall_now()` only for the
+  heartbeat. The real clock module must provide both (section 10).
 
 ## 5. Part 4 (platform owner)
 
@@ -397,8 +459,11 @@ For Part 4 (platform):
 
 ### 5.2 Migrations 0001 and 0002
 
-- Part 4 owns migration 0001. Here it is an empty stub with revision id `"0001"`, which exists
-  only so 0002 has a parent (`migrations/versions/0001_platform_stub.py`).
+- Part 4 owns migration 0001. Here it is a stub with revision id `"0001"`
+  (`migrations/versions/0001_platform_stub.py`). It gives 0002 its parent and creates only the
+  Part 4 tables Parts 1 and 3 use: `monitored_system`, `sweeper_heartbeat`, `api_key` and
+  `threshold_version` (section 10; decisions 95 and 127). The chain is 0001, 0002, 0003 (Part
+  1's Detection) and 0004 (Part 3's Notifications), with head `0004` (spec 4.4).
 - 0002 expects:
   - revision `"0001"` as its parent;
   - both roles to exist already;
@@ -492,6 +557,10 @@ real-server check only (decision 50). Part 4 adds the server dependency.
 
 - `clock.now()` must return a timezone-aware datetime. A naive one makes `append` raise
   LedgerError (decision 7).
+- The stub also has `clock.wall_now()`, real UTC time with no offset, which the worker uses
+  only for `sweeper_heartbeat` (spec 3.3; decision 101). The real module must keep it.
+- `tests/worker/test_clock_rule.py::test_no_direct_system_time_calls_outside_the_clock_module`
+  is the grep test of spec 4.5: no file outside `app/clock.py` reads the system time.
 - Callers use `clock.now()` through the module, so tests can patch `app.clock.now`
   (`tests/test_append.py::test_recorded_at_comes_from_clock`,
   `tests/api/test_audit.py::test_view_timestamp_is_the_overridden_clock`).
@@ -529,7 +598,9 @@ export DATABASE_ADMIN_URL=postgresql+psycopg://monitor_owner:monitor_owner@local
 ```
 
 Each run rebuilds the schema (`alembic downgrade base`, then `upgrade head`) as the owner
-(`tests/conftest.py`).
+(`tests/conftest.py`). A database last built from the `development-gap-sweeper` branch is at
+an older revision `0003` that no longer exists, so the downgrade fails; drop and recreate it
+once (README section 5.5).
 
 **Docker daemon restart** (decision 12): in the sandbox the daemon sometimes stops between
 sessions, and tests then fail with `OperationalError` (connection refused). Restart the daemon,
@@ -547,6 +618,29 @@ docker start ledger-pg
 - **External storage of the chain head** is also Phase 5. The chain alone cannot detect removal
   of entries from the end (addendum rule 12; decision 16). `head_seq` and `head_hash` are not
   in the verify response (decision 33).
+
+### 5.12 Part 4 hand-off from the Part 1 integration
+
+1. **Logging.** Keep the `httpx` and `httpcore` loggers at WARNING or higher. httpx logs each
+   request's full URL at INFO, and a webhook URL can carry a secret; `app/webhooks.py` holds
+   both at WARNING (decision 106), and Part 4's logging configuration must not lower them. Do not turn on
+   PostgreSQL statement logging (`log_statement`, `log_min_duration_statement` with
+   parameters) and do not set SQLAlchemy `echo`: both would write key digests, payloads and
+   webhook URLs to the logs. The `api.request` line format is decision 126. `create_app` attaches its own stderr handler to the `api` logger (decision 132); if Part 4's logging configuration adds a root handler, remove that one so lines are not written twice.
+2. **Body size limit.** Nothing in the app limits the request body. Set one at the load
+   balancer or server (Uvicorn has none by default), for example 64 KiB for every route.
+3. **lock_timeout or statement_timeout** at connection level (section 5.5). A timeout inside
+   the ingest becomes 500 INTERNAL_ERROR and rolls everything back.
+4. **The clock.** The request log's `ts` and every ingest call `clock.now()`. With the real
+   test-environment clock, which reads `clock_state` on each call (spec 4.5), each request
+   reads it a few times more.
+5. **Seed and reset.** Replace `tools/seed_part1.py` with the startup seed and
+   `POST /v1/test/reset` (spec 4.6). Reset must also truncate metric_sample, breach_series,
+   event, harm_field, api_key and threshold_version, and reseed the keys from the
+   environment. Then replace the PENDING steps in `tests/part1/test_smoke.py` with the real
+   endpoints.
+6. **Merge style.** Bring this branch into main with a merge commit, not a squash or a
+   rebase, so atharej's Part 1 commit `5310ae8` and the Part 2 and Part 3 history stay in it.
 
 ## 6. The standalone verifier
 
@@ -667,9 +761,13 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 615 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 947 tests.
 
 ### Part 1
+
+Done on `developed-part123merged`: steps 1 to 9 hold, with the full suite passing. The
+in-process run of the spec section 9 smoke test is
+`tests/part1/test_smoke.py::test_spec_section_9_smoke_in_process`.
 
 1. Replace `app/errors.py`. Run `.venv/bin/pytest tests/api/test_errors_roles.py`. Expect all
    pass, with only the message constants in `tests/api/conftest.py` updated if Part 1's
@@ -701,32 +799,42 @@ means `.venv/bin/pytest`, which must pass with no failures or errors. Today it r
 
 ### Part 3
 
-1. Run the gap sweeper past the gap timeout. Expect GAP_OPENED then NOTIFICATION_REQUESTED in
-   the export, with the gap event id as subject_id, and `GET /v1/events/{id}/audit` listing
-   both.
-2. Send a sample after the gap. Expect GAP_CLOSED with an integer `gap_seconds`, in the same
-   transaction as the ingest.
-3. Deliver a notification to a local receiver. Expect NOTIFICATION_DELIVERED with an integer
-   `latency_seconds` and a boolean `within_bound`. Also expect that no transaction that has
-   appended was open during the HTTP call (section 4.3).
-4. Register a webhook. Expect WEBHOOK_REGISTERED with a URL that carries no secret (section
-   4.4).
-5. Hold an appending transaction open in a test, and run a delivery pass with `lock_timeout`
+Part 3 is in this repository; these checks are for after Parts 1 and 4 replace their stubs
+(section 10).
+
+1. Run `.venv/bin/pytest tests/worker`. Expect all pass against the real 0001 and 0003
+   migrations.
+2. With the real clock, `POST /v1/test/clock/advance` by 900 s with no samples. Expect a
+   `monitoring_gap` event in `GET /v1/events`, GAP_OPENED then NOTIFICATION_REQUESTED in the
+   export with the gap event id as subject_id, and `GET /v1/events/{id}/audit` listing both.
+   At 600 s and 899 s, expect nothing (AC-02).
+3. Send a sample after the gap. Expect the event CLOSED and GAP_CLOSED with an integer
+   `gap_seconds` from the gap's `received_at`, in the same transaction as the ingest.
+4. Register a webhook, then flag an event. Expect the spec 3.5 body at the receiver and
+   NOTIFICATION_DELIVERED with an integer `latency_seconds` and a boolean `within_bound`, with
+   no transaction that has appended open during the HTTP call (section 4.3).
+5. With `ENVIRONMENT` other than `test`, register `https://127.0.0.1/` and
+   `http://example.com/`. Expect 400 MALFORMED_BODY for both, and no ping (decision 98).
+6. Hold an appending transaction open in a test, and run a delivery pass with `lock_timeout`
    set. Expect a 55P03 error that is rolled back and retried, not a crash (section 4.5).
-6. Save the export to a file and run `python3 tools/verify_ledger.py export.json`. Expect exit
+7. Save the export to a file and run `python3 tools/verify_ledger.py export.json`. Expect exit
    0 and `"valid": true`.
-7. Run the full suite. Expect it all to pass.
+8. Run the full suite. Expect it all to pass.
 
 ### Part 4
 
 1. Create the roles and migration 0001. Run `.venv/bin/alembic downgrade base` then
-   `.venv/bin/alembic upgrade head` as the owner. Expect it to end at `0003 (head)`.
+   `.venv/bin/alembic upgrade head` as the owner. Expect it to end at `0004 (head)`.
+   Run `.venv/bin/pytest tests/worker/test_schema.py`. Expect all pass, after adding the
+   new Part 4 tables to its expected table list.
 2. Run `.venv/bin/pytest tests/test_schema_permissions.py`. Expect all pass: the application
    role has INSERT and SELECT only, the trigger is enabled, and the owner can TRUNCATE.
 3. Implement `POST /v1/test/reset`. Then call `GET /v1/ledger/verify`. Expect
    `{"valid": true, "entries_checked": 1, "first_mismatch": null}` (spec, 'Stubs so all four
    can work in parallel').
 4. Restart the web and worker processes together. Expect still exactly one SEED.
+   Call `/healthz`. Expect `sweeper_last_ran_seconds_ago`, `pending_deliveries` and
+   `oldest_pending_delivery_seconds` from `worker.health_values` (decision 97).
 5. Set `lock_timeout` (section 5.5). Then, with an appending transaction held open, call
    `GET /v1/events/{id}`. Expect 500 INTERNAL_ERROR after the timeout, not a hang.
 6. Replace `app/clock.py`. Run
@@ -753,13 +861,61 @@ From `docs/decisions.md`, "Open items for integration" (M4 close-out):
 Raised while writing these notes. None changes Part 2 code, and each needs the named owner to
 confirm:
 
-6. The actor_id for GAP_CLOSED, NOTIFICATION_REQUESTED and WEBHOOK_REGISTERED is not pinned by
-   the spec (section 2.5). Parts 1 and 3.
+6. Settled: the actor_id for GAP_CLOSED and NOTIFICATION_REQUESTED is `system` (spec 3.2;
+   decisions 93 and 101), and for WEBHOOK_REGISTERED the registering principal (decision 103)
+   (section 2.5).
 7. GAP_CLOSED is appended at ingest step 6, so the ledger lock is held for the rest of the
    ingest transaction (section 3.4). Parts 1 and 3.
 8. Who creates the database roles, given that migrations run as a role without CREATEROLE
    (section 5.2). Part 4.
 9. Whether the real `clock.now()` uses a second connection inside `append` (section 5.8).
    Part 4.
-10. The Part 2 endpoint tests depend on the auth override, the ledger-based event stub and the
-    exact error messages (section 3.1). Part 1.
+10. Settled: the Part 2 endpoint tests keep the auth override and the exact error messages;
+    the ledger-based event stub is gone and the fixtures insert event rows (section 3.9).
+
+Raised by the Part 2 and Part 3 integration (decisions 93 to 105):
+
+11. Settled (decision 127): Part 1's real 0003 keeps the spec 1.7 names the gap sweeper's SQL uses: the `event`
+    and `harm_field` columns, `ck_event_state`, and the partial unique index on
+    `event(system_id)` for open gaps. The stub's `harm_field` has no foreign key to `event`,
+    because spec 1.7 names none (section 10). Part 1.
+12. Part 4's real 0001 must keep `sweeper_heartbeat` to one row. The worker upserts with
+    `ON CONFLICT (singleton)`, so a different single-row mechanism needs a matching change in
+    `app/gaps.py` (decision 95). Part 4.
+13. `oldest_pending_delivery_seconds` counts PENDING delivery rows only. A notification that is
+    waiting for its first webhook has no delivery row and is not counted (decision 97). Part 4,
+    for `/healthz`.
+14. Outside the test environment, a refused webhook URL is 400 MALFORMED_BODY, because the
+    spec names no code for it. The private-address check runs at registration, not again at
+    delivery (decisions 98 and 99). All parts.
+15. Settled: the two spec 3.9 rows that need Part 1's ingest, "Duplicate resets silence" and
+    "Wrong sender clock", are tested through the real ingest in
+    `tests/worker/test_gaps_via_ingest.py`.
+
+Raised by the Part 1 integration (decisions 116 to 131), for the other team or Part 4:
+
+16. Confirm with the other team (spec Appendix B): a duplicate is 200 with the original ids
+    and does not close a gap (decision 116); GET /v1/events is a bare array that every role can
+    read, with limit capped at 200 (decisions 117 and 118).
+17. The Part 4 hand-off items in section 5.12.
+
+## 10. Stubs to replace when Part 4 lands
+
+Part 1's stubs are all replaced (section 3.1). What remains is Part 4's. Each stub below is
+marked `STUB` in its first line. Replacing one should need no change to Part 1, 2 or 3 code, as
+long as the "Keep" column holds. After each replacement, run the checks named for it, then the
+full suite, `ruff check .`, `ruff format --check .` and `mypy` (section 5.10).
+
+| File | What the stub contains | Replaced by | Keep | Re-run |
+|---|---|---|---|---|
+| `migrations/versions/0001_platform_stub.py` | Revision `"0001"`. `monitored_system`, `sweeper_heartbeat` (single row, decision 95), `api_key` (key_hash PK; role SYSTEM, REVIEWER or VIEWER; actor_id; system_id set exactly for SYSTEM) and `threshold_version` (spec 4.4 columns; comparator gt or lt; unique (system_id, metric_name, version)). Grants SELECT, INSERT, UPDATE, DELETE to the user in DATABASE_URL; nothing to PUBLIC | Part 4's real 0001, adding `clock_state` and the roles (spec 4.4) | Revision id `"0001"`; the four tables' names, columns and constraints; normal read and write for the application role | `alembic downgrade base` then `upgrade head` (expect `0004 (head)`); `tests/worker/test_schema.py`; `tests/part1/test_schema.py`; `tests/test_schema_permissions.py` |
+| `app/clock.py` | `now()` and `wall_now()`, both real UTC time | The real clock: real time plus `clock_state.offset_seconds` in test (spec 4.5) | `now()` timezone-aware; `wall_now()` with no offset, for the heartbeat; callers patch `app.clock.now` | `tests/test_append.py`, `tests/api/test_audit.py`, `tests/worker/test_clock_rule.py`, `tests/worker/test_gaps.py::test_sweep_writes_the_wall_clock_heartbeat` |
+| `app/db.py` | The application-role engine and `get_session` (Part 1 uses it as it is; decision 131) | Part 4's session settings, if any (`lock_timeout`, pool sizes) | READ COMMITTED; no commit in teardown | `tests/api/test_transactions.py`; `tests/worker/test_webhooks.py` |
+| `tools/seed_part1.py` | The spec's seed fixtures from the environment, ENVIRONMENT=test only (decision 128) | Part 4's startup seed and `POST /v1/test/reset` (spec 4.6) | The fixtures exactly; keys only as digests; SEED only on an empty ledger | `tests/part1/test_seed.py`; then switch `tests/part1/conftest.py` to reset |
+| `tests/part1/test_smoke.py` (steps 1 and 4) | Reset and clock advance done in process, marked PENDING | Calls to `POST /v1/test/reset` and `POST /v1/test/clock/advance` | The five steps and their expected results (spec 9) | The test itself, then Part 4's real smoke script |
+| `tests/sql/bootstrap_roles.sql` | Creates `monitor_owner`, `monitor_app` and the `monitor_test` database; grants USAGE on `public` | Part 4's role setup (section 5.2) | Neither role a superuser; the app role is not the migration role | `tests/test_schema_permissions.py`; `tests/worker/test_schema.py` |
+| `tests/worker/conftest.py` (`add_system`, `add_event`, `WORKER_TABLES`) | Test helpers that insert a `monitored_system` row and an `event` row as the owner | Part 4's seed and reset; Part 1's ingest is already real | The column values the tests assume (sys-42, 300 s, 3 intervals) | `tests/worker/` |
+
+The tests in `tests/worker/test_schema.py` pin the columns exactly. When a real migration adds
+columns or tables, extend `EXPECTED_COLUMNS` there with the new ones from the spec; do not
+remove the ones Parts 1 and 3 use.

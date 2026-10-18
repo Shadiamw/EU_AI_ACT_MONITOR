@@ -20,9 +20,35 @@ def database_admin_url() -> str:
     return _required("DATABASE_ADMIN_URL")
 
 
-# Part 3 (worker). Every value is a whole number of seconds or a count, read on each call so
-# tests can change the environment. **ASSUMPTION:** the names; the spec's Configuration table
-# is not in this repository (docs/decisions.md, Part 3 decisions).
+def ingest_key_sys_42() -> str:
+    """INGEST_KEY_SYS_42 (required): the seeded SYSTEM key for sys-42. Only its SHA-256 digest
+    is stored (spec 1.3, 5). Read by the seed, never logged."""
+    return _required("INGEST_KEY_SYS_42")
+
+
+def reviewer_key() -> str:
+    """REVIEWER_KEY (required): the seeded REVIEWER key for rev-1."""
+    return _required("REVIEWER_KEY")
+
+
+def viewer_key() -> str:
+    """VIEWER_KEY (required): the seeded VIEWER key for viewer-1."""
+    return _required("VIEWER_KEY")
+
+
+# Part 3 (worker) settings, from spec 5 'Configuration (environment variables)'. Each is read on
+# every call so tests can change the environment.
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def environment() -> str:
+    """ENVIRONMENT (required): `test` enables test-only behaviour; anything else disables it."""
+    return _required("ENVIRONMENT")
+
+
+def is_test_environment() -> bool:
+    return environment() == "test"
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -39,35 +65,36 @@ def _positive_int(name: str, default: int) -> int:
 
 
 def sampling_interval_seconds() -> int:
-    """REQ-01: the metric sampling interval, 5 minutes by default."""
+    """SAMPLING_INTERVAL_SECONDS (300). Only seeds sys-42's sampling_interval_s (Part 4); the
+    sweeper reads the monitored_system row, never this variable."""
     return _positive_int("SAMPLING_INTERVAL_SECONDS", 300)
 
 
-def gap_timeout_seconds() -> int:
-    """REQ-02: silence this long opens a gap; 3 missed sampling intervals by default."""
-    return _positive_int("GAP_TIMEOUT_INTERVALS", 3) * sampling_interval_seconds()
+def gap_timeout_intervals() -> int:
+    """GAP_TIMEOUT_INTERVALS (3). Only seeds sys-42's gap_timeout_intervals (Part 4)."""
+    return _positive_int("GAP_TIMEOUT_INTERVALS", 3)
 
 
 def notify_max_delay_seconds() -> int:
-    """REQ-04: the maximum delay from detection to notification, 15 minutes by default."""
+    """NOTIFY_MAX_DELAY_SECONDS (900): the REQ-04 bound. It judges lateness; it never delays
+    sending."""
     return _positive_int("NOTIFY_MAX_DELAY_SECONDS", 900)
 
 
 def sweep_interval_seconds() -> int:
-    """How often the worker runs the gap sweeper, in wall-clock seconds: every minute."""
+    """SWEEP_INTERVAL_SECONDS (60): the gap sweeper's period, in real time."""
     return _positive_int("SWEEP_INTERVAL_SECONDS", 60)
 
 
 def delivery_poll_seconds() -> int:
-    """How often the worker runs the delivery pass, in wall-clock seconds."""
+    """DELIVERY_POLL_SECONDS (5): the delivery pass's period, in real time."""
     return _positive_int("DELIVERY_POLL_SECONDS", 5)
 
 
-def webhook_timeout_seconds() -> int:
-    """How long a webhook call (delivery or verification ping) may take before it fails."""
-    return _positive_int("WEBHOOK_TIMEOUT_SECONDS", 5)
-
-
-def delivery_max_attempts() -> int:
-    """Delivery attempts per (notification, webhook) before NOTIFICATION_FAILED."""
-    return _positive_int("DELIVERY_MAX_ATTEMPTS", 5)
+def log_level() -> str:
+    """LOG_LEVEL (INFO)."""
+    raw = os.environ.get("LOG_LEVEL") or "INFO"
+    level = raw.upper()
+    if level not in LOG_LEVELS:
+        raise RuntimeError(f"environment variable LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")
+    return level

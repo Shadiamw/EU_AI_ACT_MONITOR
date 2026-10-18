@@ -2,17 +2,21 @@
 
 Compliance monitoring system implementing **Part 1: detection and ingestion (API)**,
 **Part 2: ledger and audit**, and **Part 3: the worker** (gap sweeper and notifications).
-Part 4 deployment, reset, and simulated-clock support remain pending.
+All three are built to `Phase3_Implementation_Spec.docx`. Part 4 (the real clock, test reset
+and clock advance, `/healthz`, CI and deployment) is not built yet; its stand-ins are marked
+STUB ([integration_notes.md](integration_notes.md), section 10).
 
-See **[docs/part1_api.md](docs/part1_api.md)** for Part 1 endpoints, local setup,
-credentials, persistence, integration details, and assumptions to confirm with the team.
+See **[docs/part1_api.md](docs/part1_api.md)** for Part 1: endpoints, local setup, behaviour,
+and what changed from its first version and why.
 
 Where to look:
 
 - **This README:** what the ledger is, how to check it, how to run everything, and its known
   limits; section 8 covers the worker.
-- **[integration_notes.md](integration_notes.md):** what Parts 1, 3 and 4 must do when they call
-  the ledger or replace a stub.
+- **[integration_notes.md](integration_notes.md):** what each part calls and provides, and what
+  Part 4 must do when it replaces a stub (sections 5.12 and 10).
+- **[docs/part1_test_map.md](docs/part1_test_map.md):** which test proves each Part 1 rule of
+  the spec, and what happened to the first Part 1 tests.
 - **[docs/decisions.md](docs/decisions.md):** every settled decision, with its reason. "Decision
   N" below means entry N there.
 - **[docs/ac06_storage_evidence.md](docs/ac06_storage_evidence.md):** the storage-layer evidence
@@ -40,7 +44,7 @@ the chain, either with `GET /v1/ledger/verify` or with the standard-library scri
 | Standalone verifier | `tools/verify_ledger.py` |
 | The three-entry fixture | `tests/fixtures/fixture_export.json` |
 | Part 1 API, authentication and event reads | `app/ingestion.py`, `app/api/ingestion_routes.py`, `app/auth.py`, `app/events.py` |
-| Remaining platform clock and baseline migration | `app/clock.py`, `migrations/versions/0001_platform_stub.py` |
+| Part 4 stand-ins (STUB): clock, sessions, baseline migration, seed fixtures | `app/clock.py`, `app/db.py`, `migrations/versions/0001_platform_stub.py`, `tools/seed_part1.py` |
 
 ## 2. Hash definition
 
@@ -256,6 +260,10 @@ export DATABASE_ADMIN_URL=postgresql+psycopg://monitor_owner:monitor_owner@local
 export ENVIRONMENT=test
 ```
 
+The three seeded keys (spec 5) are also required by the app: `INGEST_KEY_SYS_42`,
+`REVIEWER_KEY` and `VIEWER_KEY`. The test suite sets test-only values for them in
+`tests/conftest.py`; set your own anywhere else.
+
 ### 5.5 Migrations
 
 ```sh
@@ -263,10 +271,26 @@ export ENVIRONMENT=test
 .venv/bin/alembic current           # expect: 0004 (head)
 ```
 
-Migration 0002 grants ledger privileges to the user named in `DATABASE_URL`. It refuses to run
-if that user is the role running the migration. Migration 0003 creates the worker's tables
-(section 8). Migration 0004 extends the event table and adds metric samples, API-key digests,
-and threshold versions (see docs/part1_api.md).
+The chain follows spec 4.4: 0001 Platform (a stub for Part 4), 0002 Ledger, 0003 Detection
+(Part 1) and 0004 Notifications (Part 3, section 8). Migration 0002 grants ledger
+privileges to the user named in `DATABASE_URL`. It refuses to run if that user is the role
+running the migration. The stubs are listed in
+[integration_notes.md](integration_notes.md), section 10.
+
+**A database built from the `development-gap-sweeper` branch** is at an older revision `0003`
+(`0003_worker.py`) that no longer exists, so `alembic downgrade base` fails with a missing
+table. Drop and recreate the test database once, then rerun the role script (its "already
+exists" errors are harmless):
+
+```sh
+psql "postgresql://postgres:postgres@localhost:5432/postgres" -c "DROP DATABASE monitor_test"
+psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/bootstrap_roles.sql
+```
+
+Part 1's tables (metric samples, breach series, events and harm fields in 0003; API-key digests
+and threshold versions in the 0001 stub) and its endpoints are described in
+[docs/part1_api.md](docs/part1_api.md). To load the spec's seed fixtures by hand, run
+`ENVIRONMENT=test .venv/bin/python -m tools.seed_part1` after the migrations (decision 128).
 
 ### 5.6 Tests and static checks
 
@@ -276,8 +300,9 @@ and threshold versions (see docs/part1_api.md).
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 615 tests. All pass on the Docker setup. The 532
-Part 2 tests also passed on the native setup; the 83 Part 3 tests have not been run there.
+At the time of writing the suite collects 947 tests: 532 for Part 2, 229 for Part 3 in
+`tests/worker/` and 186 for Part 1 in `tests/part1/`. All pass on the Docker setup and on a
+native PostgreSQL 16 server.
 
 ## 6. Known limits and operating notes
 
@@ -285,7 +310,7 @@ Part 2 tests also passed on the native setup; the 83 Part 3 tests have not been 
 |---|---|
 | **Global append lock.** `append` takes one transaction-scoped advisory lock (key 1279607879) and holds it until the caller commits. So every append, including every event view (EVENT_VIEWED) and every audit call (AUDIT_VIEWED), waits for the one before it. | 10; M4 notes |
 | **No lock timeout in the ledger.** Part 4 must set `lock_timeout` or `statement_timeout` at connection level. Without one, a stuck transaction blocks every append. | 10 |
-| **Export shows webhook URLs.** Export returns every entry, including WEBHOOK_REGISTERED payloads, to any REVIEWER or VIEWER. Webhook URLs must not carry secrets. | 32; M4 notes |
+| **Export shows webhook URLs.** Export returns every entry, including WEBHOOK_REGISTERED payloads, to any REVIEWER or VIEWER. Recommended: avoid secrets in webhook URLs. The API does not enforce this (decision 98). | 32, 98; M4 notes |
 | **Pool sizing.** The application engine uses `pool_size=10` and `max_overflow=40`, so up to 50 connections per web process. Size PostgreSQL's `max_connections` above the total across all processes. | 38 |
 | **Docker daemon restart.** See section 5.2. | 12 |
 | **Large integers.** Integers above 2**53 are accepted. A JavaScript re-verifier would lose precision on them. | 6 |
@@ -317,74 +342,98 @@ Only the ids that the spec or the addendum names for Part 2 are listed here.
 ## 8. Worker (Part 3): gap sweeper and notifications
 
 The worker covers REQ-02 (a monitoring-gap event, and the reviewer notified, when a monitored
-system stops sending data) and REQ-04 (the reviewer notified within 15 minutes of detection).
-Run it as its own process, as the application role:
+system stops sending data) and REQ-04 (the reviewer notified within a configurable bound,
+default 15 minutes). It follows spec sections 3.1 to 3.8; the clause-by-clause check is
+[docs/part3_spec_audit.md](docs/part3_spec_audit.md), and the settled choices are decisions 93
+to 105. Run it as its own process, as the application role:
 
 ```sh
-.venv/bin/python -m app.worker
+ENVIRONMENT=test .venv/bin/python -m app.worker
 ```
 
-Each loop runs the gap sweeper once a minute (wall clock), then a delivery pass every 5
-seconds. Every decision about gaps, retries and latency reads `clock.now()`, so in the test
-environment advancing the simulated clock takes effect at the next sweep or pass.
+One loop runs the gap sweeper every `SWEEP_INTERVAL_SECONDS` (60) and a delivery pass every
+`DELIVERY_POLL_SECONDS` (5), both on real elapsed time. Every decision about gaps, retries and
+latency reads `clock.now()`, so in the test environment advancing the simulated clock takes
+effect at the next sweep or pass. Only the sweeper heartbeat uses real time
+(`clock.wall_now()`).
 
 | What | Where |
 |---|---|
 | Gap sweeper, and `gaps.close_if_open` for Part 1's ingest | `app/gaps.py` |
-| `notifications.enqueue` and the delivery pass | `app/notifications.py` |
+| `notifications.enqueue` and the delivery pass `notifications.deliver_due` | `app/notifications.py` |
 | Webhook URL rules, the HTTP call and registration | `app/webhooks.py` |
 | `POST /v1/webhooks` | `app/api/webhook_routes.py` |
-| The worker loop | `app/worker.py` |
-| Tables: monitoring_gap, webhook, notification, notification_delivery | `migrations/versions/0003_worker.py` |
-| Shared event and monitored-system tables | `migrations/versions/0001_platform_stub.py`, `migrations/versions/0004_ingestion.py`, `app/events.py` |
+| The worker loop and `health_values` for Part 4's `/healthz` | `app/worker.py` |
+| `retain_until`, the API time format and ids | `app/formats.py` |
+| Settings | `app/config.py` |
+| Tables `webhook`, `notification`, `notification_delivery` | `migrations/versions/0004_notifications.py` |
+| `monitored_system` and `sweeper_heartbeat` (Part 4's stub); `event` and `harm_field` (Part 1) | `migrations/versions/0001_platform_stub.py`, `migrations/versions/0003_detection.py` |
 | Tests | `tests/worker/` |
 
 ### 8.1 Behaviour
 
-- **Gap.** A system is silent since its last sample, or since monitoring started if it has never
-  sent one. Silence of at least the timeout (3 × 300 = 900 seconds by default) opens one gap:
-  a FLAGGED `monitoring_gap` event, GAP_OPENED, and a `flag_notification`. A system has at most
-  one open gap. Its next sample closes the gap (GAP_CLOSED, with `gap_seconds` the whole silent
-  time) and moves the event to CLOSED. Gap events skip review, deadlines and reports.
-- **Notification.** One delivery per webhook subscribed to the type. A 2xx answer within the
-  timeout is a delivery: NOTIFICATION_DELIVERED with an integer `latency_seconds` from detection
-  and a boolean `within_bound`. A failed attempt is retried after 30, 60, 120 and 240 seconds;
-  the fifth failure appends NOTIFICATION_FAILED. No webhook is called while a transaction is
-  open. Delivery is at least once, so a receiver can see the same `notification_id` twice.
-- **Webhook registration.** `POST /v1/webhooks {url, event_types}`, REVIEWER or VIEWER. The
-  URL is pinged first; 201 `{webhook_id}` on a 2xx answer, 422 `WEBHOOK_VERIFICATION_FAILED`
-  otherwise, and 400 `MALFORMED_BODY` for a bad body or a URL with credentials, a query string
-  or a fragment (webhook URLs are visible in the export).
+- **Gap.** Each system's threshold is its own `gap_timeout_intervals × sampling_interval_s`
+  (seed: 3 × 300 = 900 seconds), and its silence is `clock.now() − last_received_at`. When the
+  silence reaches the threshold and the system has no open gap, the sweeper creates a FLAGGED
+  `monitoring_gap` event with four NOT_APPLICABLE harm fields and `retain_until` six calendar
+  months later (at least 183 days), appends GAP_OPENED and requests a `flag_notification`, in
+  one transaction. A system row another process holds is skipped until the next sweep. A
+  system has at most one open gap. Its next sample closes the gap: the event moves to CLOSED
+  and GAP_CLOSED records `gap_seconds` from the gap's `received_at`.
+- **Notification.** The delivery pass routes each new notification to the webhooks subscribed
+  to its type; with none, it waits until one is registered. It then claims due deliveries with
+  a lease and POSTs `{notification_type, notification_id, event_id, system_id, type,
+  detected_at, sent_at}` with a 5-second timeout and no transaction open. Any 2xx answer is a
+  delivery: NOTIFICATION_DELIVERED with an integer `latency_seconds` from the event's
+  `received_at` and a boolean `within_bound`. A failed attempt is retried after 10, 30, 60, 120
+  and 300 seconds; the sixth failure appends NOTIFICATION_FAILED. Late deliveries are logged
+  and counted, and never delayed. Delivery is at least once, so a receiver can see the same
+  `notification_id` twice.
+- **Webhook registration.** `POST /v1/webhooks {url, event_types}`, REVIEWER or VIEWER. The URL
+  must be http or https; outside the test environment, https only and no private or loopback
+  address. Any other URL is accepted and stored as received. The URL is pinged with
+  `{"notification_type": "verification_ping", "sent_at": ...}` before anything is stored:
+  201 `{webhook_id}` on a 2xx answer, 422 `WEBHOOK_UNVERIFIED` otherwise, and 400
+  `MALFORMED_BODY` for a bad body or a refused URL, with no ping.
+- **Observability.** Each sweep logs the systems examined and gaps opened; each delivery
+  attempt logs the notification id, webhook id, attempt, status and duration; each late
+  delivery logs a warning. `worker.health_values(engine)` returns the seconds since the last
+  sweep, the number of pending deliveries and the age of the oldest one.
 
 ### 8.2 Acceptance criteria
 
 | Id | Requirement | Where it is exercised | Method |
 |---|---|---|---|
-| AC-02 | REQ-02 | `tests/worker/test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do` (600 s and 899 s: no gap; 900 s: gap); `tests/worker/test_worker_system.py::test_gap_to_delivery_to_close_and_reverify` (exactly 15 minutes withheld, then the worker delivers to a real HTTP receiver within 15 minutes of the third missed interval) | Automated. The manual check of delivery reads NOTIFICATION_DELIVERED in `GET /v1/ledger/export`, or a registered webhook receiver |
-| AC-04 | REQ-04 | `tests/worker/test_notifications.py`: `test_delivery_appends_delivered_with_integer_latency_and_boolean_bound`, `test_within_bound_compares_latency_with_the_configured_bound` (900 s in bound, 901 s not), `test_ac04_the_bound_is_configurable_to_five_minutes` (300 s in bound, 301 s not) | Automated: `latency_seconds` and `within_bound` in NOTIFICATION_DELIVERED |
+| AC-02 | REQ-02 | `tests/worker/test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do` (600 s and 899 s: no gap; 900 s: gap); `tests/worker/test_worker_system.py::test_gap_to_delivery_to_close_and_reverify` (exactly 15 minutes withheld, then the worker delivers to a real HTTP receiver) | Automated. The manual check of delivery reads NOTIFICATION_DELIVERED in `GET /v1/ledger/export`, or a registered webhook receiver |
+| AC-04 | REQ-04 | `tests/worker/test_notifications.py`: `test_delivery_appends_delivered_with_integer_latency_and_boolean_bound`, `test_within_bound_compares_latency_with_the_configured_bound` (900 s in bound, 901 s not), `test_ac04_the_bound_is_configurable_to_five_minutes` (300 s in bound, 301 s not), `test_ac04_a_slow_receiver_with_a_low_bound_is_not_within_bound` | Automated: `latency_seconds` and `within_bound` in NOTIFICATION_DELIVERED |
 | AC-12 | REQ-11 | Not in Phase 3: reminders need the deadlines of REQ-10. `reminder` is already a valid webhook type. | — |
 
 ### 8.3 Configuration
 
-All are optional environment variables, in whole seconds or counts (decision 81).
+From spec 5 (decision 100). Each is read on every call.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SAMPLING_INTERVAL_SECONDS` | 300 | REQ-01 sampling interval |
-| `GAP_TIMEOUT_INTERVALS` | 3 | Missed intervals before a gap (REQ-02) |
-| `NOTIFY_MAX_DELAY_SECONDS` | 900 | REQ-04 bound, used for `within_bound` |
-| `SWEEP_INTERVAL_SECONDS` | 60 | How often the sweeper runs (wall clock) |
-| `DELIVERY_POLL_SECONDS` | 5 | How often the delivery pass runs (wall clock) |
-| `WEBHOOK_TIMEOUT_SECONDS` | 5 | Timeout for a delivery or a verification ping |
-| `DELIVERY_MAX_ATTEMPTS` | 5 | Attempts before NOTIFICATION_FAILED |
+| `ENVIRONMENT` | required | `test` allows any webhook address; anything else allows only public https URLs |
+| `NOTIFY_MAX_DELAY_SECONDS` | 900 | REQ-04 bound, used for `within_bound`; it never delays sending |
+| `SWEEP_INTERVAL_SECONDS` | 60 | How often the sweeper runs (real time) |
+| `DELIVERY_POLL_SECONDS` | 5 | How often the delivery pass runs (real time) |
+| `LOG_LEVEL` | INFO | The worker's log level |
+| `SAMPLING_INTERVAL_SECONDS` | 300 | Seeded into sys-42's `monitored_system` row by Part 4; the sweeper reads the row, not this variable |
+| `GAP_TIMEOUT_INTERVALS` | 3 | Seeded into sys-42's `monitored_system` row by Part 4, as above |
+
+The webhook timeout (5 seconds) and the number of attempts (6) are fixed by the spec and are
+constants, not settings.
 
 ### 8.4 Known limits
 
 | Item | Decision |
 |---|---|
-| **Part 1 integration.** Ingest calls `gaps.close_if_open` and `notifications.enqueue` in its transaction; `GET /v1/events?type=monitoring_gap` lists worker gap events. | 82, 85 |
-| **Webhooks registered later miss earlier notifications.** Deliveries are created when the notification is requested. | 86 |
-| **No webhook, no delivery.** A notification requested while no webhook is subscribed is recorded, but nothing is sent. | 86 |
-| **At-least-once delivery.** A result that could not be recorded is retried when its lease runs out. | 88 |
+| **Part 1 integration.** Ingest calls `gaps.close_if_open` and `notifications.enqueue` in its transaction; `GET /v1/events?type=monitoring_gap` lists worker gap events. | 93, 101 |
+| **Stub tables.** `monitored_system` and `sweeper_heartbeat` come from Part 4's stub migration 0001 until Part 4 replaces it ([integration_notes.md](integration_notes.md), section 10). `event` and `harm_field` are Part 1's real 0003. | 95, 127 |
+| **Webhooks registered after routing miss that notification.** A notification is routed once, to the webhooks subscribed at that moment. One routed to nobody waits for the first webhook. | 94 |
+| **At-least-once delivery.** A result that could not be recorded is retried when its lease runs out. | 94 |
+| **Webhook URLs are not checked for secrets.** Any http or https URL is stored as received and shown in the export; avoiding secrets in it is recommended. | 98 |
+| **Address check at registration only.** Outside the test environment, a host that later resolves to a private address is not re-checked at delivery. | 99 |
 | **Reminders (REQ-11)** are accepted as a webhook type but not generated: they depend on Phase 4 deadlines. | 89 |
-| **Webhook calls are not restricted by destination.** Any http(s) host can be registered, private addresses included. | 87 |
+| **The two spec 3.9 rows that need Part 1's ingest**, "Duplicate resets silence" and "Wrong sender clock", are tested through the real ingest in `tests/worker/test_gaps_via_ingest.py`. | 105, 116 |

@@ -5,9 +5,9 @@ configuration the gap timeout is 3 x 300 = 900 seconds: the third missed sample 
 (AC-02; decision 92).
 """
 
+import logging
 import threading
-import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -15,23 +15,22 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from app import events, gaps, ledger
+from app import clock, gaps, ledger, notifications
 from tests.api.conftest import ApiClient, append_lock_is_free, as_actor, build_app
 from tests.worker.conftest import (
     T0,
     FakeClock,
     add_system,
-    app_sessions_waiting_for_a_lock,
     entry_types,
     rows,
 )
 
-HARM_NULLS = {
-    "health_safety_harm": None,
-    "critical_infrastructure_disruption": None,
-    "fundamental_rights_infringement": None,
-    "property_environmental_damage": None,
-}
+HARM_FIELD_KEYS = [
+    "critical_infrastructure_disruption",
+    "fundamental_rights_infringement",
+    "health_safety_harm",
+    "property_environmental_damage",
+]
 
 
 def ingest_sample(app_engine: Engine, system_id: str, fake_clock: FakeClock) -> str | None:
@@ -69,26 +68,47 @@ def test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do(
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
 
 
-def test_timeout_follows_the_sampling_interval_and_interval_count(
+def test_timeout_comes_from_the_system_row(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.2: gap threshold = gap_timeout_intervals x sampling_interval_seconds, per system:
+    2 x 60 = 120 s for sys-fast, while sys-42 keeps 3 x 300 = 900 s."""
+    add_system(owner_engine, "sys-fast", sampling_interval_s=60, gap_timeout_intervals=2)
+    add_system(owner_engine, "sys-42")
+    fake_clock.advance(119)
+    assert gaps.sweep(app_engine) == []
+    fake_clock.advance(1)
+    [fast_gap] = gaps.sweep(app_engine)
+    fake_clock.advance(779)  # 899 s for sys-42
+    assert gaps.sweep(app_engine) == []
+    fake_clock.advance(1)
+    [slow_gap] = gaps.sweep(app_engine)
+    by_system = {r["event_id"]: r["system_id"] for r in rows(owner_engine, "SELECT * FROM event")}
+    assert by_system == {fast_gap: "sys-fast", slow_gap: "sys-42"}
+
+
+def test_env_sampling_settings_do_not_change_the_sweeper(
     app_engine: Engine,
     owner_engine: Engine,
     fake_clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Spec 5: SAMPLING_INTERVAL_SECONDS and GAP_TIMEOUT_INTERVALS only seed sys-42."""
     monkeypatch.setenv("SAMPLING_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("GAP_TIMEOUT_INTERVALS", "2")
-    add_system(owner_engine, "sys-42", last_received_at=T0)
-    fake_clock.advance(119)
+    add_system(owner_engine, "sys-42")  # row: 300 s x 3
+    fake_clock.advance(899)
     assert gaps.sweep(app_engine) == []
     fake_clock.advance(1)
     assert len(gaps.sweep(app_engine)) == 1
 
 
-def test_a_system_that_never_sent_data_is_measured_from_monitoring_start(
+def test_a_seeded_system_with_no_samples_is_measured_from_seed_time(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
-    # No ingest at all: the gap still appears (API contract, GET /v1/events?type=monitoring_gap).
-    add_system(owner_engine, "sys-42", started_at=T0)
+    # No ingest at all: last_received_at is the seed time (spec 3.4 step 2), and the gap still
+    # appears (API contract, GET /v1/events?type=monitoring_gap).
+    add_system(owner_engine, "sys-42", last_received_at=T0)
     fake_clock.advance(901)
     [event_id] = gaps.sweep(app_engine)
     [opened] = rows(
@@ -97,10 +117,8 @@ def test_a_system_that_never_sent_data_is_measured_from_monitoring_start(
     assert opened["payload"] == {
         "event_id": event_id,
         "system_id": "sys-42",
-        "last_received_at": None,
+        "last_received_at": "2026-10-01T09:00:00Z",
     }
-    [gap] = rows(owner_engine, "SELECT last_received_at, silent_since FROM monitoring_gap")
-    assert gap == {"last_received_at": None, "silent_since": T0}
 
 
 def test_only_silent_systems_get_gaps(
@@ -110,15 +128,13 @@ def test_only_silent_systems_get_gaps(
     add_system(owner_engine, "sys-b", last_received_at=T0 + timedelta(seconds=600))
     fake_clock.advance(1000)  # sys-a silent 1000 s, sys-b 400 s
     gaps.sweep(app_engine)
-    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM monitoring_gap")] == [
-        "sys-a"
-    ]
+    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM event")] == ["sys-a"]
 
 
 # What a gap writes
 
 
-def test_a_gap_writes_the_event_the_gap_row_and_two_ledger_entries(
+def test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
     last = T0 + timedelta(seconds=10, microseconds=250000)
@@ -127,40 +143,41 @@ def test_a_gap_writes_the_event_the_gap_row_and_two_ledger_entries(
     [event_id] = gaps.sweep(app_engine)
     assert event_id.startswith("evt-")
 
+    # Spec 3.4 table: detected 2026-10-01T09:15:11.25Z. Six calendar months is 2027-04-01, only
+    # 182 days later, so the 183-day floor applies: 2027-04-02T09:15:11.25Z.
     [event] = rows(owner_engine, "SELECT * FROM event")
     assert event == {
         "event_id": event_id,
-        "type": "monitoring_gap",
         "system_id": "sys-42",
-        "state": "FLAGGED",
-        "detected_at": detected,
+        "type": "monitoring_gap",
         "metric_name": None,
         "observed_value": None,
         "threshold_value": None,
-        "harm_fields": HARM_NULLS,
-        "closed_at": None,
-        "metric_type": None,
         "threshold_version_id": None,
-        "series_open": False,
-        "evidence_bundle": [],
-        "disposition": None,
+        "detected_at": detected,
+        "received_at": detected,
+        "state": "FLAGGED",
         "deadline_utc": None,
-        "revisions": [],
+        "evidence_bundle": None,
+        "evidence_sha256": None,
+        "retain_until": datetime(2027, 4, 2, 9, 15, 11, 250000, tzinfo=UTC),
     }
-    [gap] = rows(owner_engine, "SELECT * FROM monitoring_gap")
-    assert gap == {
-        "event_id": event_id,
-        "system_id": "sys-42",
-        "last_received_at": last,
-        "silent_since": last,
-        "opened_at": detected,
-        "closed_at": None,
-        "gap_seconds": None,
-    }
+    harm = rows(owner_engine, "SELECT * FROM harm_field ORDER BY field_key")
+    assert harm == [
+        {
+            "event_id": event_id,
+            "field_key": key,
+            "status": "NOT_APPLICABLE",
+            "evidence": None,
+            "confirmed_by": None,
+            "confirmed_at": None,
+        }
+        for key in HARM_FIELD_KEYS
+    ]
     [notification] = rows(owner_engine, "SELECT * FROM notification")
     assert notification["event_id"] == event_id
     assert notification["notification_type"] == "flag_notification"
-    assert notification["requested_at"] == detected
+    assert notification["created_at"] == detected
 
     entries = rows(
         owner_engine,
@@ -225,17 +242,19 @@ def test_no_second_gap_while_one_is_open(
 
 
 def test_the_database_refuses_a_second_open_gap(owner_engine: Engine) -> None:
+    """Spec 1.7: a partial unique index allows one FLAGGED monitoring_gap event per system."""
     insert = (
-        "INSERT INTO monitoring_gap (event_id, system_id, silent_since, opened_at)"
-        " VALUES (:id, 'sys-42', :t, :t)"
+        "INSERT INTO event (event_id, system_id, type, detected_at, received_at, state,"
+        " retain_until) VALUES (:id, 'sys-42', 'monitoring_gap', :t, :t, :state, :t)"
     )
     with owner_engine.begin() as conn:
-        conn.execute(text(insert), {"id": "evt-1", "t": T0})
+        conn.execute(text(insert), {"id": "evt-1", "t": T0, "state": "FLAGGED"})
+        conn.execute(text(insert), {"id": "evt-0", "t": T0, "state": "CLOSED"})
     with (
-        pytest.raises(IntegrityError, match="uq_monitoring_gap_one_open_per_system"),
+        pytest.raises(IntegrityError, match="uq_event_one_open_gap_per_system"),
         owner_engine.begin() as conn,
     ):
-        conn.execute(text(insert), {"id": "evt-2", "t": T0})
+        conn.execute(text(insert), {"id": "evt-2", "t": T0, "state": "FLAGGED"})
 
 
 def test_concurrent_sweeps_open_exactly_one_gap(
@@ -249,37 +268,49 @@ def test_concurrent_sweeps_open_exactly_one_gap(
     callers = 5
     results: list[list[str]] = []
     errors: list[BaseException] = []
+    start = threading.Barrier(callers)
 
     def run() -> None:
         try:
+            start.wait(30)
             results.append(gaps.sweep(app_engine))
         except BaseException as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
-    # Hold the system row so every sweeper has listed sys-42 as a candidate and is waiting
-    # for the row lock before any of them can open the gap (decision 80's approach).
-    with owner_engine.connect() as holder:
-        holder.execute(text("SELECT 1 FROM monitored_system WHERE system_id = 'sys-42' FOR UPDATE"))
-        threads = [threading.Thread(target=run) for _ in range(callers)]
-        for thread in threads:
-            thread.start()
-        deadline = time.monotonic() + 30
-        while True:
-            waiting = app_sessions_waiting_for_a_lock(owner_engine)
-            if waiting >= callers or time.monotonic() > deadline:
-                break
-            time.sleep(0.05)
-        holder.rollback()
+    threads = [threading.Thread(target=run) for _ in range(callers)]
+    for thread in threads:
+        thread.start()
     for thread in threads:
         thread.join()
-    assert waiting == callers, f"{waiting} of {callers} sweepers reached the row lock"
     assert errors == []
-    # The re-check under the row lock stops the others; the unique index is only a backstop,
-    # and hitting it would be logged as a failed sweep.
+    # A sweeper either skips the locked row or re-checks under the lock and finds the open
+    # gap; the unique index is only a backstop, and hitting it would be logged as a failure.
     assert "gap sweep failed" not in caplog.text
     assert sorted(len(r) for r in results) == [0] * (callers - 1) + [1]
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
     assert len(rows(owner_engine, "SELECT * FROM event")) == 1
+
+
+def test_a_locked_system_row_is_skipped_not_waited_for(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.4 step 1: lock each system row, and skip it if another process holds it."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(901)
+    results: list[list[str]] = []
+    with owner_engine.connect() as holder:
+        holder.execute(text("SELECT 1 FROM monitored_system WHERE system_id = 'sys-42' FOR UPDATE"))
+        sweeper = threading.Thread(target=lambda: results.append(gaps.sweep(app_engine)))
+        sweeper.start()
+        sweeper.join(10)
+        finished_while_held = not sweeper.is_alive()
+        holder.rollback()
+    sweeper.join()
+    assert finished_while_held, "the sweeper waited for the held row instead of skipping it"
+    assert results == [[]]
+    assert entry_types(owner_engine) == []
+    # Released: the next sweep opens the gap.
+    assert len(gaps.sweep(app_engine)) == 1
 
 
 # Errors
@@ -295,27 +326,25 @@ def test_a_failure_for_one_system_does_not_stop_the_others(
     add_system(owner_engine, "sys-a", last_received_at=T0)
     add_system(owner_engine, "sys-b", last_received_at=T0)
     fake_clock.advance(901)
-    real_create = events.create_gap_event
+    real_insert = gaps._insert_gap_event
 
     def failing_for_a(session: Session, event_id: str, system_id: str, *args: Any) -> None:
         if system_id == "sys-a":
             raise OperationalError("INSERT", {}, Exception("simulated"))
-        real_create(session, event_id, system_id, *args)
+        real_insert(session, event_id, system_id, *args)
 
-    monkeypatch.setattr(events, "create_gap_event", failing_for_a)
+    monkeypatch.setattr(gaps, "_insert_gap_event", failing_for_a)
     opened = gaps.sweep(app_engine)
     assert len(opened) == 1
-    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM monitoring_gap")] == [
-        "sys-b"
-    ]
+    assert [r["system_id"] for r in rows(owner_engine, "SELECT system_id FROM event")] == ["sys-b"]
     assert "gap sweep failed: system_id=sys-a type=OperationalError" in caplog.text
     assert "simulated" not in caplog.text
     assert append_lock_is_free(owner_engine)
 
     # The next sweep retries sys-a.
-    monkeypatch.setattr(events, "create_gap_event", real_create)
+    monkeypatch.setattr(gaps, "_insert_gap_event", real_insert)
     assert len(gaps.sweep(app_engine)) == 1
-    assert len(rows(owner_engine, "SELECT * FROM monitoring_gap")) == 2
+    assert len(rows(owner_engine, "SELECT * FROM event")) == 2
 
 
 def test_a_system_removed_between_listing_and_locking_is_skipped(
@@ -323,7 +352,7 @@ def test_a_system_removed_between_listing_and_locking_is_skipped(
 ) -> None:
     fake_clock.advance(901)
     with Session(app_engine) as session:
-        assert gaps._open_gap(session, "sys-missing", timedelta(seconds=900)) is None
+        assert gaps._sweep_system(session, "sys-missing") == (False, None)
         session.rollback()
     assert entry_types(owner_engine) == []
 
@@ -331,15 +360,16 @@ def test_a_system_removed_between_listing_and_locking_is_skipped(
 # Closing
 
 
-def test_the_next_sample_closes_the_gap(
+def test_recovery_closes_the_gap_and_counts_from_detection(
     app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
     add_system(owner_engine, "sys-42", last_received_at=T0)
-    fake_clock.advance(901)
+    fake_clock.advance(901)  # the gap is detected (received_at) at T0 + 901 s
     [event_id] = gaps.sweep(app_engine)
-    resumed = fake_clock.advance(98.9)  # data back 999.9 s after the last sample
+    fake_clock.advance(98.9)  # data back 98.9 s after detection
     assert ingest_sample(app_engine, "sys-42", fake_clock) == event_id
 
+    # Spec 3.4: the outage length from the gap's received_at to now, in whole seconds: 98.
     [closed] = rows(
         owner_engine,
         "SELECT actor_id, subject_id, payload FROM ledger_entry WHERE entry_type = 'GAP_CLOSED'",
@@ -347,13 +377,11 @@ def test_the_next_sample_closes_the_gap(
     assert closed == {
         "actor_id": "system",
         "subject_id": event_id,
-        "payload": {"event_id": event_id, "system_id": "sys-42", "gap_seconds": 999},
+        "payload": {"event_id": event_id, "system_id": "sys-42", "gap_seconds": 98},
     }
     assert type(closed["payload"]["gap_seconds"]) is int
-    [gap] = rows(owner_engine, "SELECT closed_at, gap_seconds FROM monitoring_gap")
-    assert gap == {"closed_at": resumed, "gap_seconds": 999}
-    [event] = rows(owner_engine, "SELECT state, closed_at FROM event")
-    assert event == {"state": "CLOSED", "closed_at": resumed}
+    [event] = rows(owner_engine, "SELECT state FROM event")
+    assert event == {"state": "CLOSED"}
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED", "GAP_CLOSED"]
 
 
@@ -399,5 +427,154 @@ def test_close_if_open_does_not_commit(
         assert gaps.close_if_open(session, "sys-42") is not None
         session.rollback()  # the ingest failed later on
     assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
-    [gap] = rows(owner_engine, "SELECT closed_at FROM monitoring_gap")
-    assert gap["closed_at"] is None
+    [event] = rows(owner_engine, "SELECT state FROM event")
+    assert event["state"] == "FLAGGED"
+
+
+# Heartbeat and logging
+
+
+def test_sweep_writes_the_wall_clock_heartbeat(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec 3.3: after every sweep, sweeper_heartbeat.last_ran_at holds the real time, not the
+    simulated clock (here the fake clock is at 2026-10-01; the wall clock is pinned)."""
+    real_time = datetime(2031, 5, 6, 7, 8, 9, tzinfo=UTC)
+    monkeypatch.setattr(clock, "wall_now", lambda: real_time)
+    assert gaps.sweep(app_engine) == []  # even a sweep with no systems
+    assert rows(owner_engine, "SELECT * FROM sweeper_heartbeat") == [
+        {"singleton": True, "last_ran_at": real_time}
+    ]
+    later = real_time + timedelta(seconds=60)
+    monkeypatch.setattr(clock, "wall_now", lambda: later)
+    gaps.sweep(app_engine)
+    assert rows(owner_engine, "SELECT last_ran_at FROM sweeper_heartbeat") == [
+        {"last_ran_at": later}
+    ]
+
+
+def test_sweep_logs_systems_examined_and_gaps_opened(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec 3.8: each sweep logs the systems examined and the gaps opened."""
+    add_system(owner_engine, "sys-a", last_received_at=T0)
+    add_system(owner_engine, "sys-b", last_received_at=T0 + timedelta(seconds=600))
+    add_system(owner_engine, "sys-c", last_received_at=T0)
+    fake_clock.advance(901)
+    with caplog.at_level(logging.INFO, logger="worker"):
+        gaps.sweep(app_engine)
+    assert "gap sweep: systems_examined=3 gaps_opened=2" in caplog.text
+
+
+# Spec 3.9 rows and exact entries
+
+
+def test_one_event_per_outage_after_another_1000_seconds(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.9 'One event per outage': advance another 1,000 s; still exactly one open gap."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(900)
+    [event_id] = gaps.sweep(app_engine)
+    fake_clock.advance(1000)
+    assert gaps.sweep(app_engine) == []
+    assert rows(
+        owner_engine, "SELECT event_id, state FROM event WHERE type = 'monitoring_gap'"
+    ) == [{"event_id": event_id, "state": "FLAGGED"}]
+    assert entry_types(owner_engine) == ["GAP_OPENED", "NOTIFICATION_REQUESTED"]
+
+
+def test_a_gap_detected_on_1_september_is_retained_until_3_march(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 3.4: retain_until = detected + six calendar months, at least 183 days. Detected
+    2026-09-01T00:00:00Z: six months is 2027-03-01 (181 days), so 183 days wins: 2027-03-03."""
+    detected = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)
+    fake_clock.set(detected - timedelta(seconds=900))
+    add_system(owner_engine, "sys-42", last_received_at=fake_clock.now())
+    fake_clock.set(detected)
+    gaps.sweep(app_engine)
+    [event] = rows(owner_engine, "SELECT detected_at, retain_until FROM event")
+    assert event == {
+        "detected_at": detected,
+        "retain_until": datetime(2027, 3, 3, 0, 0, 0, tzinfo=UTC),
+    }
+
+
+def test_gap_ledger_entries_have_exact_payload_keys_actor_and_subject(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 2.4: GAP_OPENED {event_id, system_id, last_received_at}; GAP_CLOSED {event_id,
+    system_id, gap_seconds}; NOTIFICATION_REQUESTED {notification_id, event_id,
+    notification_type}. Actor `system`, subject the event id; append last (spec 7)."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(900)
+    [event_id] = gaps.sweep(app_engine)
+    fake_clock.advance(30)
+    ingest_sample(app_engine, "sys-42", fake_clock)
+    entries = rows(
+        owner_engine,
+        "SELECT entry_type, actor_id, subject_id, payload FROM ledger_entry ORDER BY seq",
+    )
+    assert [(e["entry_type"], e["actor_id"], e["subject_id"]) for e in entries] == [
+        ("GAP_OPENED", "system", event_id),
+        ("NOTIFICATION_REQUESTED", "system", event_id),
+        ("GAP_CLOSED", "system", event_id),
+    ]
+    keys = [sorted(e["payload"]) for e in entries]
+    assert keys == [
+        ["event_id", "last_received_at", "system_id"],
+        ["event_id", "notification_id", "notification_type"],
+        ["event_id", "gap_seconds", "system_id"],
+    ]
+    assert entries[0]["payload"]["last_received_at"] == "2026-10-01T09:00:00Z"
+    assert entries[2]["payload"]["gap_seconds"] == 30
+
+
+def test_atomicity_a_failure_after_enqueue_leaves_no_event_and_no_notification(
+    app_engine: Engine,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec 3.9 'Atomicity': force a failure after enqueue; neither the event nor the
+    notification persists, and the ledger is unchanged (spec 7: one transaction)."""
+    add_system(owner_engine, "sys-42", last_received_at=T0)
+    fake_clock.advance(900)
+    real_enqueue = notifications.enqueue
+
+    def enqueue_then_fail(session: Session, event_id: str) -> str:
+        real_enqueue(session, event_id)
+        raise RuntimeError("forced failure after enqueue")
+
+    monkeypatch.setattr(notifications, "enqueue", enqueue_then_fail)
+    assert gaps.sweep(app_engine) == []
+    assert "gap sweep failed: system_id=sys-42 type=RuntimeError" in caplog.text
+    assert rows(owner_engine, "SELECT * FROM event") == []
+    assert rows(owner_engine, "SELECT * FROM harm_field") == []
+    assert rows(owner_engine, "SELECT * FROM notification") == []
+    assert entry_types(owner_engine) == []
+    assert append_lock_is_free(owner_engine)
+
+    monkeypatch.setattr(notifications, "enqueue", real_enqueue)
+    assert len(gaps.sweep(app_engine)) == 1  # retried on the next sweep
+
+
+def test_atomicity_in_a_caller_transaction(
+    app_engine: Engine, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """The same rule for Part 1's ingest: event and enqueue in one transaction that fails."""
+    with Session(app_engine) as session:
+        gaps._insert_gap_event(session, "evt-x", "sys-42", fake_clock.now())
+        notifications.enqueue(session, "evt-x")
+        session.rollback()  # the ingest failed after enqueue
+    assert rows(owner_engine, "SELECT * FROM event") == []
+    assert rows(owner_engine, "SELECT * FROM notification") == []
+    assert entry_types(owner_engine) == []

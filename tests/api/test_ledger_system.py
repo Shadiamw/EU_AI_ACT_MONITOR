@@ -50,7 +50,7 @@ from tests.api.conftest import (
 )
 from tests.api.test_cross_verify import Results, three_results
 from tests.conftest import alembic_config
-from tests.db_helpers import TRIGGER_NAME, trigger_disabled
+from tests.db_helpers import TRIGGER_NAME, insert_event, trigger_disabled
 
 GENESIS = "0" * 64
 # Migration 0002 raises "ledger_entry is append-only: % is not allowed" with TG_OP.
@@ -293,7 +293,7 @@ def wait_for_lock_waiters(holder: Connection, count: int) -> None:
 
 @pytest.fixture(scope="module", autouse=True)
 def fresh_database(owner_engine: Engine) -> Iterator[None]:
-    """Rebuild the schema with migrations 0001 to 0003; clean up after the whole scenario."""
+    """Rebuild the schema with migrations 0001 and 0002; clean up after the whole scenario."""
     get_engine().dispose()
     command.downgrade(alembic_config(), "base")
     command.upgrade(alembic_config(), "head")
@@ -471,15 +471,11 @@ def test_d_a_rolled_back_append_leaves_the_chain_and_its_seq_is_reused(
 def test_e_audit_lists_the_event_and_a_view_appends_one_entry(
     client: ApiClient, owner_engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The events whose entries steps a to d appended, as Part 1's ingest and Part 3's sweeper
+    # write them: the audit endpoint looks events up in Part 1's event table.
     with owner_engine.begin() as conn:
-        for event_id, kind in ((EVENT, "threshold_breach"), (GAP, "monitoring_gap")):
-            conn.execute(
-                text(
-                    "INSERT INTO event (event_id, type, system_id, state, detected_at, harm_fields)"
-                    " VALUES (:id, :kind, 'sys-42', 'FLAGGED', :now, '{}'::jsonb)"
-                ),
-                {"id": event_id, "kind": kind, "now": AUDIT_TIME},
-            )
+        insert_event(conn, EVENT, event_type="threshold_breach", detected_at=AUDIT_TIME)
+        insert_event(conn, GAP, event_type="monitoring_gap", detected_at=AUDIT_TIME)
     fixed_clock(monkeypatch, AUDIT_TIME)
     response = client.get(f"/v1/events/{EVENT}/audit", headers=as_actor("rev-1"))
     assert (response.status_code, response.json()) == (200, EVENT_TRAIL)
@@ -488,8 +484,9 @@ def test_e_audit_lists_the_event_and_a_view_appends_one_entry(
 
     fixed_clock(monkeypatch, VIEW_TIME)
     response = client.get(f"/v1/events/{EVENT}", headers=as_actor("viewer-1"))
+    # Part 1's real endpoint returns the contract Event object (spec 1.6).
     assert response.status_code == 200
-    assert response.json()["event_id"] == EVENT
+    assert (response.json()["event_id"], response.json()["state"]) == (EVENT, "FLAGGED")
 
     rows = owner_rows(owner_engine)
     assert len(rows) == 65

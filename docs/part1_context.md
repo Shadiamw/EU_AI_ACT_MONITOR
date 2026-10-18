@@ -1,5 +1,10 @@
 # Part 1 context and missing directions
 
+**Historical.** This note was written on `main` before `Phase3_Implementation_Spec.docx` was
+available to Part 1. The spec now settles what it lists as missing; Part 1 was reworked to it
+(decisions 116 to 131, [part1_spec_audit.md](part1_spec_audit.md)). The text below is kept
+unchanged as the record.
+
 Reviewed on 2026-10-17: README.md, integration_notes.md, docs/decisions.md,
 the existing application, migrations and test fixtures, and both supplied PDFs:
 
