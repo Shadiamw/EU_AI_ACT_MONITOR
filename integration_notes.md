@@ -1,5 +1,11 @@
 # Integration notes: Part 2 (ledger and audit)
 
+**Part 1 is now implemented.** See [docs/part1_api.md](docs/part1_api.md) for the current
+API, assumptions, migration 0004, fixtures, and platform handoff. Sections below preserve
+the original Part 2/3 handoff context; references to Part 1 stubs and a missing event table
+are historical. Auth now resolves hashed `X-API-Key` credentials; events are looked up in
+the event table; ingestion calls gap closure and notification enqueue atomically.
+
 These notes are for the owners of Part 1 (API), Part 3 (worker) and Part 4 (platform). They say
 what Part 2 provides, what every caller must do, and what each part replaces or checks when its
 code lands. Part 3 is now in this repository too: section 4.6 gives its settled

@@ -1,8 +1,11 @@
 # EU_AI_ACT_MONITOR
 
-Compliance monitoring system. This repository currently implements **Part 2: ledger and audit**
-(the append-only, SHA-256 hash-chained ledger) and **Part 3: the worker** (the gap sweeper and
-notifications, section 8). Parts 1 and 4 are stubbed where Parts 2 and 3 depend on them.
+Compliance monitoring system implementing **Part 1: detection and ingestion (API)**,
+**Part 2: ledger and audit**, and **Part 3: the worker** (gap sweeper and notifications).
+Part 4 deployment, reset, and simulated-clock support remain pending.
+
+See **[docs/part1_api.md](docs/part1_api.md)** for Part 1 endpoints, local setup,
+credentials, persistence, integration details, and assumptions to confirm with the team.
 
 Where to look:
 
@@ -36,7 +39,8 @@ the chain, either with `GET /v1/ledger/verify` or with the standard-library scri
 | Table, grants and UPDATE/DELETE trigger | `migrations/versions/0002_ledger.py` |
 | Standalone verifier | `tools/verify_ledger.py` |
 | The three-entry fixture | `tests/fixtures/fixture_export.json` |
-| Stubs for Parts 1 and 4 (auth, events, errors, sessions, app, clock, migration 0001) | `app/auth.py`, `app/events.py`, `app/errors.py`, `app/db.py`, `app/main.py`, `app/clock.py`, `migrations/versions/0001_platform_stub.py` |
+| Part 1 API, authentication and event reads | `app/ingestion.py`, `app/api/ingestion_routes.py`, `app/auth.py`, `app/events.py` |
+| Remaining platform clock and baseline migration | `app/clock.py`, `migrations/versions/0001_platform_stub.py` |
 
 ## 2. Hash definition
 
@@ -275,6 +279,9 @@ psql "postgresql://postgres:postgres@localhost:5432/postgres" -c "DROP DATABASE 
 psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/bootstrap_roles.sql
 ```
 
+Part 1's tables (metric samples, breach series, API-key digests and threshold
+versions) and its endpoints are described in [docs/part1_api.md](docs/part1_api.md).
+
 ### 5.6 Tests and static checks
 
 ```sh
@@ -306,8 +313,8 @@ At the time of writing the suite collects 747 tests: 532 for Part 2 and 215 for 
 | **Python versions.** The script is written for 3.9 or newer and tested on 3.12 only. | 61, 73 |
 | **What the script will not do.** It does not detect end-of-ledger removal, and gives no exact strings for degenerate seq values. | 16, 59 |
 | **Integration hand-off.** See [integration_notes.md](integration_notes.md). | 71 |
-| **Wrong method is 404.** A wrong HTTP method on a known route returns 404 NOT_FOUND, because the spec has no 405 code. This is still to be confirmed when Part 1 lands. | 27 |
-| **No ASGI server dependency.** uvicorn is not yet a project dependency. It was installed outside the project for the one real-server check. | 50 |
+| **Wrong method is 404.** A wrong HTTP method on a known route returns 404 NOT_FOUND, because the spec has no 405 code. Part 1 retains and tests this behavior. | 27 |
+| **ASGI server.** uvicorn is included in the dev extra; run `python -m uvicorn app.main:app`. | 50 |
 | **Logs.** An unexpected exception, LedgerError included, returns 500 INTERNAL_ERROR. The `api` logger records only the exception's type name, never its message or a traceback. The `ledger` logger never writes a payload value or a stored hash. | 14, 28, 36 |
 
 ## 7. Requirements and acceptance criteria
@@ -411,7 +418,7 @@ constants, not settings.
 
 | Item | Decision |
 |---|---|
-| **Not yet wired to Part 1.** The ingest must call `gaps.close_if_open` (step 6) and `notifications.enqueue` (step 11); `GET /v1/events?type=monitoring_gap` is Part 1's endpoint over its event table. | 93, 101 |
+| **Part 1 integration.** Ingest calls `gaps.close_if_open` and `notifications.enqueue` in its transaction; `GET /v1/events?type=monitoring_gap` lists worker gap events. | 93, 101 |
 | **Stub tables.** `monitored_system`, `sweeper_heartbeat`, `event` and `harm_field` come from stub migrations until Parts 1 and 4 replace them ([integration_notes.md](integration_notes.md), section 10). | 95 |
 | **Webhooks registered after routing miss that notification.** A notification is routed once, to the webhooks subscribed at that moment. One routed to nobody waits for the first webhook. | 94 |
 | **At-least-once delivery.** A result that could not be recorded is retried when its lease runs out. | 94 |

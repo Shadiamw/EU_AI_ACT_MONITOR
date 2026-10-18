@@ -1046,3 +1046,31 @@ and the newer entry wins.
      acceptable http or https URL a 400; before this, such URLs passed `urlsplit`, reached the
      ping and became 500 INTERNAL_ERROR. Decided during the Part 2 + Part 3 integration,
      15 October 2026.
+
+## Part 1 implementation decisions
+
+Written on `main` (commit `5310ae8`) as decisions 93 to 95, before Part 3's integration
+decisions 93 to 107 existed. Renumbered 113 to 115 in the merge into
+`developed-part123merged`, because 93 to 107 are Part 3's and 108 to 112 are used on the
+Part 4 branch `development-deploy`. The text is otherwise unchanged. The Part 1 integration
+decisions further down supersede parts of 113 and 115.
+
+113. **Part 1 proceeds with explicit assumptions.** The user supplied the project discussion
+    confirming ingestion, versioned threshold detection, breach occurrences, evidence capture,
+    harm-field prefilling, and atomic ledger/notification writes as the Phase 3 API scope,
+    then authorized implementation despite the missing exact-algorithm specification.
+    [part1_api.md](part1_api.md) records the implemented choices and rationale: natural-key
+    replay without changing the agreed request body; strict threshold comparison selected
+    by sample time; series ending on newer healthy data; preceding-hour evidence; list
+    pagination and role scope. These choices remain provisional for team confirmation.
+
+114. **Credential lookup ends before handler work.** Auth reads key digests through a short
+    autocommit connection, closed before the handler. This prevents a key lookup from
+    leaving an application transaction open during webhook verification. Business writes
+    still use the request Session and commit explicitly before response.
+
+115. **Additive persistence and explicit demo provisioning.** Revision 0004 extends the
+    existing event table and creates samples plus the minimal key/threshold contracts
+    needed before Part 4 arrives. It grants the application read-only access to keys and
+    thresholds. `python -m tools.seed_part1` provisions published demo fixtures only in
+    ENVIRONMENT=test. Normal startup and migrations never seed those credentials.

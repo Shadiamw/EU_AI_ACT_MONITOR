@@ -1,21 +1,14 @@
-"""STUB for Part 1 (auth): Principal, the principal resolver and require(*roles).
-
-There is no key parsing or hashing here; that stays with Part 1 (docs/decisions.md 29).
-The principal comes from one overridable resolver, `resolve_principal`, whose default returns
-the seeded REVIEWER rev-1 (plan G3). Tests override it through FastAPI's
-`app.dependency_overrides` to act as viewer-1, rev-1, sys-42 or anonymous (None).
-
-`require(*roles)` returns a FastAPI dependency that checks, in order: no principal gives 401
-MISSING_OR_INVALID_KEY, then a role outside `roles` gives 403 FORBIDDEN_ROLE. Handlers run
-their 404 lookups only after it returns.
-"""
+"""API-key authentication. Only SHA-256 digests of high-entropy keys are stored."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Header
+from sqlalchemy import text
 
+from app.db import get_engine
 from app.errors import ApiError
 
 
@@ -26,9 +19,26 @@ class Principal:
     system_id: str | None
 
 
-def resolve_principal() -> Principal | None:
-    """The caller's principal, or None when there is no valid key. Stub: always rev-1."""
-    return Principal(role="REVIEWER", actor_id="rev-1", system_id=None)
+def key_digest(key: str) -> str:
+    return sha256(key.encode("utf-8")).hexdigest()
+
+
+def resolve_principal(
+    x_api_key: Annotated[str | None, Header()] = None,
+) -> Principal | None:
+    """Resolve X-API-Key without exposing or logging the credential."""
+    if not x_api_key or len(x_api_key) > 4096:
+        return None
+    # Finish credential lookup before the handler. In particular, webhook verification
+    # must not inherit an open transaction from authentication.
+    with get_engine().connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        row = connection.execute(
+            text(
+                "SELECT role, actor_id, system_id FROM api_key WHERE key_hash = :digest AND enabled"
+            ),
+            {"digest": key_digest(x_api_key)},
+        ).one_or_none()
+    return None if row is None else Principal(row.role, row.actor_id, row.system_id)
 
 
 def require(*roles: str) -> Callable[..., Principal]:
