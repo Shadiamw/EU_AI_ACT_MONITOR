@@ -30,7 +30,7 @@ def insert_raw_entry(conn: Connection, seq: int, payload: str = "{}") -> None:
     )
 
 
-def test_keys() -> dict[str, tuple[str, str, str | None]]:
+def seeded_keys() -> dict[str, tuple[str, str, str | None]]:
     """actor id -> (key, role, system_id), the three seeded keys from the environment (spec 5)."""
     return {
         "sys-42": (config.ingest_key_sys_42(), "SYSTEM", "sys-42"),
@@ -43,7 +43,7 @@ def install_keys(engine: Engine) -> None:
     """The api_key rows Part 4's seed writes: the SHA-256 digest of each seeded key."""
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM api_key"))
-        for actor, (key, role, system_id) in test_keys().items():
+        for actor, (key, role, system_id) in seeded_keys().items():
             conn.execute(
                 text(
                     "INSERT INTO api_key (key_hash, role, actor_id, system_id)"
@@ -55,7 +55,7 @@ def install_keys(engine: Engine) -> None:
 
 def bearer(actor: str) -> dict[str, str]:
     """The Authorization header for one of the seeded actors."""
-    return {"Authorization": f"Bearer {test_keys()[actor][0]}"}
+    return {"Authorization": f"Bearer {seeded_keys()[actor][0]}"}
 
 
 HARM_FIELDS = (

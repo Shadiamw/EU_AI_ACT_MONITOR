@@ -1,6 +1,7 @@
 """Request logging and counters for the API (spec 1.8; decision 126).
 
-- One JSON log line per request on the `api.request` logger, at INFO (ERROR for a 5xx):
+- One JSON log line per request on the `api.request` logger, at INFO (ERROR for a 5xx other
+  than the stubs' 501):
   ts, level, request_id, actor_id, method, path, status, duration_ms, plus event_id when the
   request is about one event, error_code for an error response and outcome for an ingest.
   The path is logged without its query string. Nothing else from the request is logged: no
@@ -95,7 +96,8 @@ class RequestLogMiddleware:
     @staticmethod
     def _log(scope: Scope, request_id: str, status: int, started: float, body: bytes) -> None:
         state = scope.get("state", {})
-        level = logging.ERROR if status >= 500 else logging.INFO
+        # A 501 from the Phase 3 stubs is the expected answer, not a failure (decision 126).
+        level = logging.ERROR if status >= 500 and status != 501 else logging.INFO
         line: dict[str, Any] = {
             "ts": api_time(clock.now()),
             "level": logging.getLevelName(level),
