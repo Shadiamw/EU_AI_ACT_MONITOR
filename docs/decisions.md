@@ -1074,3 +1074,184 @@ decisions further down supersede parts of 113 and 115.
     needed before Part 4 arrives. It grants the application read-only access to keys and
     thresholds. `python -m tools.seed_part1` provisions published demo fixtures only in
     ENVIRONMENT=test. Normal startup and migrations never seed those credentials.
+
+## Part 1 integration decisions (aligned with the spec)
+
+Branch `developed-part123merged` brings `main` (atharej's Part 1, `5310ae8`) into
+`developed-part23merged` with a real merge, then reworks Part 1 to
+`Phase3_Implementation_Spec.docx` ("the spec"), which was not available when decisions 113 to
+115 were written. Precedence: API contract, then the Part 2 addendum, then the spec, then
+Models 4 and 5. The clause-by-clause check that drove the changes is `docs/part1_spec_audit.md`;
+the tests that prove each rule are listed in `docs/part1_test_map.md`. Decisions 113 to 115 are
+kept as written; where an entry below supersedes one, it says so, and the newer entry wins.
+Decided 17 and 18 October 2026.
+
+| Earlier decision | Now |
+|---|---|
+| 113 (Part 1 assumptions) | Superseded: each assumption is replaced by the spec's rule, or by decisions 116 to 131 where the spec is open |
+| 114 (credential lookup ends before handler work) | Stands; decision 123 keeps the short autocommit connection |
+| 115 (additive persistence, demo provisioning) | Superseded by decisions 127 (schema) and 128 (seed) |
+| 29, 41 (auth stub) and 30, 44 (ledger-based event lookup) | Replaced by Part 1's real auth (decision 123) and the event table lookup; the entries stay as the record of the stubs |
+| 34 (the G2 test-only route) | The stand-in `GET /v1/events/{event_id}` is removed from `tests/api/g2_routes.py`; the real route is Part 1's. The two `/_test/` routes stay in tests |
+
+116. **A duplicate is 200 with the original ids and closes nothing.** Spec 1.4 step 5, as
+     the user decided. The identity is exactly (system_id, metric_name, timestamp), where the
+     timestamp is the instant, so `Z` and `+00:00` forms are the same sample; metric_type and
+     value are not part of it. A duplicate sets `monitored_system.last_received_at` to
+     `clock.now()`, commits and returns 200 with the original `sample_id`, plus the original
+     `flagged_event_id` when that sample had one. A duplicate with a different value is still
+     a duplicate: 200, no 409, and the stored value is kept. It returns before step 6, so it
+     does not call `gaps.close_if_open`: an open gap stays FLAGGED until a new sample arrives.
+     It creates nothing else and appends nothing. Reason: the spec's step order, and the
+     contract has no conflict code. Risks: a sender that resends a changed value under an
+     existing timestamp gets 200 and no sign the value was dropped; a sender that only replays
+     old samples during an outage keeps last_received_at fresh, so the sweeper opens no new gap
+     for that time, while an already open gap stays open. Spec Appendix B lists the 200 for
+     confirmation with the other team. Supersedes the natural-key replay of decision 113
+     (metric_type in the key, 409 on a changed value, last_received_at unchanged).
+
+117. **GET /v1/events is a bare array of summaries that every role can read.** Each item is
+     `{event_id, system_id, type, metric_name, detected_at, state}` (spec 1.6), ordered by
+     detected_at descending, ties broken by event_id ascending (the spec names the tie key,
+     not its direction). Any authenticated role, the SYSTEM key included, sees every event:
+     the contract says "any authenticated role" and names no per-system scope. No
+     `X-Total-Count` or other paging header is sent. The call writes no ledger entry. Spec 1.6
+     and Appendix B say the bare array must be confirmed with the other team. Supersedes the
+     role scope and count header of decision 113.
+
+118. **List filters and paging.** `state` must be one of the four contract states and `type`
+     one of `threshold_breach` or `monitoring_gap`; `since` is an ISO-8601 UTC time (`Z` or
+     `+00:00`; a naive time or another offset is 400, as spec 4 says for every timestamp the
+     API accepts) and selects detected_at ≥ since. `limit` defaults to 50 and `offset` to 0;
+     each must be a whole number written in decimal digits. A negative or non-integer value is
+     400 MALFORMED_BODY; a limit above 200 is capped at 200, not refused (spec 1.6 "max 200",
+     and the user's decision); `limit=0` is allowed and returns `[]`. An unknown `system_id`
+     returns `[]`. Unknown query parameters are ignored. Every refusal is 400 MALFORMED_BODY,
+     the only 400 code the spec defines.
+
+119. **The evidence bundle.** `{"window": {"start": ..., "end": ...}, "samples": [{"metric_name",
+     "value", "timestamp"}, ...]}` (spec 1.5 names `window` and the sample fields, not the
+     window's shape). `end` is the triggering sample's timestamp and `start` is 60 minutes
+     earlier; both ends are inclusive ("up to and including"). Only this system's and this
+     metric's samples, oldest first (ties by sample_id), as stored when the event is created;
+     later arrivals are not added and later series joins do not change it. Values are plain
+     decimal strings with the stored digits and timestamps use the API format, so the bundle
+     holds no float or Decimal and is valid input for Part 2's canonical JSON, which allows
+     integers only among numbers (addendum rule 2). `evidence_sha256` is the lowercase hex
+     SHA-256 of the UTF-8 canonical JSON (keys sorted at every level, separators `,` and `:`,
+     non-ASCII not escaped), so anyone can recompute it from the stored bundle. Supersedes the
+     bare sample list of decision 113.
+
+120. **The newest threshold version is the highest `version`.** Step 7 reads the
+     threshold_version row for (system_id, metric_name) with the largest `version`;
+     `valid_from` is stored but not consulted, and the sample's metric_type does not select
+     the threshold (a mismatch is stored as sent). The event records the version id and limit
+     it was created under and keeps them; a later sample that joins the series is evaluated
+     against the newest version but joins the existing event. Reason: spec 1.4 step 7 says
+     "newest"; Phase 3 has no API to add versions (spec 1.9, known limitations). Supersedes
+     "selected by sample time" in decision 113.
+
+121. **Body validation details.** Spec 1.4 step 2, plus these readings where it is silent: the
+     body must be a JSON object; `system_id` and `metric_name` must be JSON strings, and a
+     string containing U+0000 or a lone surrogate is 400 because PostgreSQL text cannot hold
+     it; `value` must be a JSON number (not a string, boolean or null), finite, with at most
+     100 significant digits and 50 decimal places, so that it is stored exactly; `timestamp`
+     must be a string with a date and a time. Names have no length limit and may be empty
+     (the spec sets none). Unknown extra fields are ignored (spec 1.4). Every failure is 400
+     MALFORMED_BODY with the shared message. Supersedes the length limits and extra-field
+     rejection of decision 113.
+
+122. **Lock order inside the ingest.** The monitored_system row (step 4), then the open
+     breach_series row for the metric, then `gaps.close_if_open` (step 6), which may lock the
+     gap event and appends GAP_CLOSED, taking the ledger lock. Spec 7 puts event rows before the
+     ledger lock, and the series is the ingest's event-side row, so it is locked before step 6
+     rather than at steps 9 and 10. Spec 1.4's step order is otherwise kept: set
+     last_received_at, close the gap, read the threshold, then the writes of steps 9 to 11,
+     with EVENT_FLAGGED appended before `notifications.enqueue` (which appends
+     NOTIFICATION_REQUESTED). The notification row enqueue inserts is new, so no other
+     transaction can hold it. All ingests for a system already serialize on the system row;
+     the series lock keeps spec 7's order explicit.
+
+123. **Bearer auth with a constant-time compare over every stored digest.** The header is
+     `Authorization: Bearer <key>`; the scheme name is case-insensitive (RFC 9110), and the key
+     is one token with no whitespace, at most 4096 characters. Anything else, including
+     `X-API-Key`, is 401 MISSING_OR_INVALID_KEY. The presented key's SHA-256 hex digest is
+     compared with `hmac.compare_digest` against every row of `api_key`, with no early exit,
+     on the short autocommit connection of decision 114, so the time taken does not depend on
+     which key matched or how much of a digest did (spec 1.3, "compare in constant time").
+     The principal is the row's role, actor_id and system_id. `require(*roles)` gives 401,
+     then records the actor id for the request log, then 403 FORBIDDEN_ROLE. Supersedes the
+     `X-API-Key` header and the `enabled` column of decisions 113 and 115.
+
+124. **Exact decimals in responses.** observed_value and threshold_value are written as JSON
+     numbers with exactly the stored digits (0.30 stays `0.30`; a 31-digit value keeps all
+     its digits), by `app/jsonout.py`, never through a float; that writer refuses floats and
+     non-finite numbers. Reason: spec 1.6 "Decimal values serialize as JSON numbers" and spec
+     2 Numbers. A client that reads JSON numbers as binary floats will see 0.3; that is its own
+     parsing. Supersedes the float conversion of decision 113.
+
+125. **The disposition and report stubs.** `POST /v1/events/{event_id}/disposition` (REVIEWER
+     only) and `GET /v1/events/{event_id}/report` (REVIEWER or VIEWER) authenticate, check the
+     role, then return 501 NOT_IMPLEMENTED, without reading the body or looking the event up
+     (spec 1.6). The contract's full behaviour for these endpoints (contract Example 3's
+     RATIONALE_REQUIRED, 404 and 409) belongs to Phases 4 and 5 (spec section 3), so the 501
+     is phasing, not a conflict with the contract.
+
+126. **Observability.** One JSON line per request on the `api.request` logger: `ts`
+     (`clock.now()` in the API format), `level`, `request_id` (a new UUID per request),
+     `actor_id` (null before authentication), `method`, `path` (without the query string),
+     `status`, `duration_ms` (an integer, from a monotonic timer, not the clock), plus
+     `event_id` when the request is about one event, `outcome` for an ingest and `error_code`
+     for an error. Level INFO, and ERROR for a 5xx except the stubs' 501, which is the
+     expected Phase 3 answer and must not count as a failure. Nothing else from the request is
+     logged: no header, body or query value, so never a key. Counters per process, in
+     memory: samples accepted, duplicates, breaches, series joins, and 4xx by error code
+     (`app/observability.py`). Every threshold evaluation is logged at DEBUG on
+     `api.detection` with the version id, comparator, limit, value and outcome (spec 1.8).
+     The web process's log handler is Part 4's; the `api` logger's level follows LOG_LEVEL.
+
+127. **Part 1's schema.** metric_sample, breach_series, event and harm_field are in migration
+     0003, renamed from the stub `0003_detection_stub.py` with the same revision ids (0003
+     revises 0002), and api_key and threshold_version are added to Part 4's stub 0001, as spec
+     4.4 orders them. Columns are exactly spec 1.7 and 4.4. Constraints: the unique
+     (system_id, metric_name, timestamp) on metric_sample; the partial unique index of one open
+     series per metric; occurrence_count ≥ 1; the event state and harm-field status checks;
+     the index on event (detected_at DESC, event_id); the open-gap index; on api_key, a SYSTEM
+     row has a system_id and no other row does; one threshold row per (system_id,
+     metric_name, version). No foreign keys among Part 1's tables, because spec 1.7 names
+     none (Part 3's notification still references event). The application role has normal
+     read and write on every table except the ledger (spec 4.4, pinned), which drops the
+     read-only grant on keys and thresholds of decision 115. main's revision 0004 is folded
+     into 0001 and 0003. Editing migrations is allowed because nothing has been deployed:
+     `development-deploy` creates no AWS resources (its docs/phase3_uncertainties.md says so), and
+     spec 4.4 forbids editing only a deployed migration.
+
+128. **The seed stand-in.** `tools/seed_part1.py`, marked STUB for Part 4, installs the spec's
+     seed fixtures in ENVIRONMENT=test only: sys-42 with SAMPLING_INTERVAL_SECONDS (300) and
+     GAP_TIMEOUT_INTERVALS (3) and last_received_at = now; exactly three api_key rows, the
+     SHA-256 digests of INGEST_KEY_SYS_42, REVIEWER_KEY and VIEWER_KEY; thr-1 accuracy_drift
+     drift gt 0.30 and thr-2 accuracy performance lt 0.70, version 1, valid_from = now; then
+     `ledger.ensure_seed` with `{"systems": ["sys-42"], "threshold_count": "2"}`. It is
+     idempotent and never truncates. Part 4's startup seed and reset replace it (spec 4.6).
+     Supersedes decision 115's published fixed keys (keys now come from the environment, spec
+     5), its 0.80 accuracy limit and its fixed validity date.
+
+129. **A healthy sample closes the open series whatever its timestamp.** Spec 1.4 step 9 has no
+     condition on the sample's timestamp, so a healthy sample timestamped before the breach
+     still ends the series, and a breaching sample timestamped before the series opened still
+     joins it. Risk: a late, out-of-order healthy sample ends a series that is still
+     breaching, and the next breach opens a new event and a second notification. Supersedes
+     "series ending on newer healthy data" in decision 113.
+
+130. **Series times and ids.** breach_series.opened_at and closed_at are `clock.now()`, server
+     time like received_at (spec 1.7 gives the column, not its source). The series id is
+     `ser-` plus a UUID (spec 4 lists no prefix for it). occurrence_count counts every
+     breaching sample of the series, the first included, and each joining sample's event_id
+     is set to the series' event (spec 1.4 step 10).
+
+131. **Part 1 adopts Part 2's errors and session modules.** `app/errors.py` (the contract error
+     body, 404 for unknown routes and wrong methods, 400 for validation, 500 with nothing
+     leaked) is Part 1's errors module as Part 2 wrote it; its STUB mark is removed. Part 2's
+     message constants stay the contract messages. `app/db.py` is kept as it is and stays
+     marked STUB for Part 4, which may add `lock_timeout` and pool settings. Decision 27's
+     wrong-method 404 is confirmed for Part 1's routes.

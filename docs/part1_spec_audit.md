@@ -11,7 +11,7 @@ spec and against the pre-fix Part 3, and it does not run on this branch's schema
 stub has no `metric_sample`, `api_key` or `threshold_version`, and `event` has no
 `harm_fields` column).
 
-Plan items P1 to P17 refer to `part1-23-integration-plan.md`, kept outside this repository. A
+Plan items P1 to P17 refer to the integration plan (part1-23-integration-plan.md), kept outside this repository. A
 finding the plan does not list is a **NEW FINDING** (N1, N2, ...). Every finding is fixed in the
 stage named in the "Stage" column (2 schema, 3 code, 4 tests). The "Proof" column names the test
 that shows the fixed behaviour, in `tests/part1/` unless another path is given. The Proof
@@ -54,7 +54,7 @@ Statuses:
 | SAMPLING_INTERVAL_SECONDS, GAP_TIMEOUT_INTERVALS | Seeded into sys-42 | Not read | FIXED BY PLAN ITEM P13 | 3 | `test_seed.py::test_seed_installs_the_spec_fixtures_from_the_environment` |
 | LOG_LEVEL | Default INFO | Part 1 writes no logs | FIXED BY PLAN ITEM P17 | 3 | `test_observability.py::test_one_json_log_line_per_request` |
 | ENVIRONMENT | `test` enables test-only behaviour | The seed refuses outside `test` | MATCHES | 4 | `test_seed.py::test_seed_refuses_outside_the_test_environment` |
-| DATABASE_URL, DATABASE_ADMIN_URL | App role and owner role | App uses DATABASE_URL; seed uses DATABASE_ADMIN_URL | MATCHES | 4 | `test_ingestion.py::test_application_cannot_provision_or_mutate_credentials_and_thresholds` |
+| DATABASE_URL, DATABASE_ADMIN_URL | App role and owner role | App uses DATABASE_URL; seed uses DATABASE_ADMIN_URL | MATCHES | 4 | `test_seed.py::test_seed_installs_the_spec_fixtures_from_the_environment`, `tests/conftest.py` (both URLs); stage 5: the planned test was dropped, see the Grants row |
 
 ## 3. Shared interfaces (spec section 6, Pinned)
 
@@ -152,14 +152,14 @@ Statuses:
 
 | Clause | Spec requires | Before | Status | Stage | Proof |
 |---|---|---|---|---|---|
-| Migration order | 0001 Platform (api_key, threshold_version), 0003 Detection (metric_sample, breach_series, event, harm_field), 0004 Notifications | Part 1 is a second revision `"0004"` that alters the old `event` table | FIXED BY PLAN ITEM P16 | 0, 2 | `test_schema.py::test_alembic_head_is_0004_after_a_full_rebuild` |
-| metric_sample | sample_id PK; system_id, metric_name, metric_type, value numeric, timestamp, received_at, event_id null; unique (system_id, metric_name, timestamp) | Unique key includes metric_type; extra NOT NULL `threshold_version_id` | FIXED BY PLAN ITEMS P5, P16 | 2 | `test_schema.py::test_part1_tables_have_the_spec_columns` |
-| breach_series | series_id PK; system_id, metric_name, event_id; opened_at, closed_at; occurrence_count from 1; one open series per (system, metric) | Not built (`event.series_open`) | FIXED BY PLAN ITEM P15 | 2 | `test_schema.py::test_part1_tables_have_the_spec_columns` |
+| Migration order | 0001 Platform (api_key, threshold_version), 0003 Detection (metric_sample, breach_series, event, harm_field), 0004 Notifications | Part 1 is a second revision `"0004"` that alters the old `event` table | FIXED BY PLAN ITEM P16 | 0, 2 | `test_schema.py::test_alembic_chain_is_0001_to_0004_with_one_head`, `test_schema.py::test_database_is_at_head_0004` |
+| metric_sample | sample_id PK; system_id, metric_name, metric_type, value numeric, timestamp, received_at, event_id null; unique (system_id, metric_name, timestamp) | Unique key includes metric_type; extra NOT NULL `threshold_version_id` | FIXED BY PLAN ITEMS P5, P16 | 2 | `worker/test_schema.py::test_stub_and_part3_tables_have_the_spec_columns[metric_sample]`, `test_schema.py::test_one_sample_per_system_metric_and_timestamp` |
+| breach_series | series_id PK; system_id, metric_name, event_id; opened_at, closed_at; occurrence_count from 1; one open series per (system, metric) | Not built (`event.series_open`) | FIXED BY PLAN ITEM P15 | 2 | `worker/test_schema.py::test_stub_and_part3_tables_have_the_spec_columns[breach_series]`, `test_schema.py::test_at_most_one_open_series_per_metric` |
 | event | spec 1.7 columns; index (detected_at desc, event_id); one open gap per system | The 0003 stub already has them; main's 0004 added `metric_type`, `series_open`, `disposition`, `revisions` | MATCHES (stub kept); N2 for the extra columns | 2 | `tests/worker/test_schema.py` |
 | harm_field | (event_id, field_key) PK; status, evidence, confirmed_by, confirmed_at | The 0003 stub has it; Part 1 code does not use it | FIXED BY PLAN ITEM P13 | 3 | `test_ingestion.py::test_new_event_content` |
-| api_key | key_hash PK, role, actor_id, system_id null | Has an extra `enabled` column | FIXED BY PLAN ITEM P16 | 2 | `test_schema.py::test_part1_tables_have_the_spec_columns` |
-| threshold_version | threshold_version_id PK, system_id, metric_name, metric_type, comparator gt/lt, limit_value, version, valid_from | `threshold_value`, `effective_at`, no `version` | FIXED BY PLAN ITEM P15 | 2 | `test_schema.py::test_part1_tables_have_the_spec_columns` |
-| Grants | App role: normal read and write except the ledger | api_key and threshold_version SELECT only; metric_sample no DELETE | MATCHES (stricter is kept for keys and thresholds) | 4 | `test_ingestion.py::test_application_cannot_provision_or_mutate_credentials_and_thresholds` |
+| api_key | key_hash PK, role, actor_id, system_id null | Has an extra `enabled` column | FIXED BY PLAN ITEM P16 | 2 | `worker/test_schema.py::test_stub_and_part3_tables_have_the_spec_columns[api_key]` |
+| threshold_version | threshold_version_id PK, system_id, metric_name, metric_type, comparator gt/lt, limit_value, version, valid_from | `threshold_value`, `effective_at`, no `version` | FIXED BY PLAN ITEM P15 | 2 | `worker/test_schema.py::test_stub_and_part3_tables_have_the_spec_columns[threshold_version]`, `test_ingestion.py::test_newest_threshold_version_is_used` |
+| Grants | App role: normal read and write except the ledger | api_key and threshold_version SELECT only; metric_sample no DELETE | MATCHES (stricter is kept for keys and thresholds) | 4 | Stage 5 note: this status was wrong. Spec 4.4 pins normal read and write, and Part 3's `worker/test_schema.py::test_application_role_has_normal_read_write_outside_the_ledger` requires it, so stage 2 grants full read and write on every non-ledger table and the planned test was dropped (decision 127) |
 
 ## 11. Spec 1.8 Observability
 

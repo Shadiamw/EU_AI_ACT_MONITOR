@@ -1,10 +1,10 @@
-# Integration notes: Part 2 (ledger and audit)
+# Integration notes: Part 2 (ledger and audit), with Parts 1 and 3
 
-**Part 1 is now implemented.** See [docs/part1_api.md](docs/part1_api.md) for the current
-API, assumptions, migration 0004, fixtures, and platform handoff. Sections below preserve
-the original Part 2/3 handoff context; references to Part 1 stubs and a missing event table
-are historical. Auth now resolves hashed `X-API-Key` credentials; events are looked up in
-the event table; ingestion calls gap closure and notification enqueue atomically.
+**Parts 1, 2 and 3 are integrated on `developed-part123merged`.** Part 1 is built to the spec:
+[docs/part1_api.md](docs/part1_api.md) describes it, and section 3.9 below says what changed in
+Part 1 and why. Section 3.1 is kept as the record of the Part 1 stubs, all now replaced.
+Section 5.12 lists what Part 4 must do when it lands, and section 10 the stubs that remain,
+all Part 4's.
 
 These notes are for the owners of Part 1 (API), Part 3 (worker) and Part 4 (platform). They say
 what Part 2 provides, what every caller must do, and what each part replaces or checks when its
@@ -178,6 +178,9 @@ call, every ingest that flags, and every worker append. Part 4 sets the timeout 
 
 ### 3.1 Stubs to replace
 
+Done: every row below was replaced by Part 1 on `developed-part123merged`, keeping the "Keep"
+column (decisions 123 and 131; section 3.9). The table is kept as the record.
+
 | File | What it stubs | Replace with | Keep |
 |---|---|---|---|
 | `app/errors.py` | `ApiError` and the global handlers: 404 and 405 become 404 NOT_FOUND, 422 becomes 400 MALFORMED_BODY, and a middleware turns any other exception into 500 INTERNAL_ERROR (decisions 27, 28, 36, 37) | Part 1's errors module, `errors.ApiError(status, error_code, message)` plus handlers (spec, 'Shared interfaces between parts (Pinned)') | The contract error body; LedgerError becomes 500 with nothing leaked (decision 28) |
@@ -277,6 +280,23 @@ spec has no code for 405 (decision 27;
 ### 3.8 Checks to run after swapping each stub
 
 Commands are listed in section 8, Part 1.
+
+### 3.9 What Part 1 provides, and what changed
+
+- `auth.require(*roles)` returns `Principal(role, actor_id, system_id)` from a real
+  `Authorization: Bearer <key>` header: 401, then 403 (decision 123). Tests that choose the
+  caller still override `app.auth.resolve_principal` (section 3.1); tests that need a real key
+  use `bearer(actor)` from `tests/db_helpers.py` after the seed or `install_keys`.
+- `events.exists` and the real `GET /v1/events/{event_id}` read the `event` table, and the
+  detail is the contract Event object. Tests that build the ledger by hand also insert the
+  event row (`insert_event` in `tests/db_helpers.py`).
+- The ingest appends at most GAP_CLOSED, EVENT_FLAGGED and NOTIFICATION_REQUESTED, in that
+  order (section 3.4), and locks the open breach series before `gaps.close_if_open`
+  (decision 122).
+- Wrong method on a known route stays 404 NOT_FOUND (decision 27, confirmed in decision 131).
+
+What changed from atharej's first Part 1 (`5310ae8`), and why, is the table "What changed in
+Part 1 and why" in [docs/part1_api.md](docs/part1_api.md).
 
 ## 4. Part 3 (worker owner)
 
@@ -441,9 +461,9 @@ For Part 4 (platform):
 
 - Part 4 owns migration 0001. Here it is a stub with revision id `"0001"`
   (`migrations/versions/0001_platform_stub.py`). It gives 0002 its parent and creates only the
-  two Part 4 tables Part 3 uses, `monitored_system` and `sweeper_heartbeat` (section 10;
-  decision 95). The chain is 0001, 0002, 0003 (Part 1's Detection, a stub here) and 0004
-  (Part 3's Notifications), with head `0004` (spec 4.4).
+  Part 4 tables Parts 1 and 3 use: `monitored_system`, `sweeper_heartbeat`, `api_key` and
+  `threshold_version` (section 10; decisions 95 and 127). The chain is 0001, 0002, 0003 (Part
+  1's Detection) and 0004 (Part 3's Notifications), with head `0004` (spec 4.4).
 - 0002 expects:
   - revision `"0001"` as its parent;
   - both roles to exist already;
@@ -599,6 +619,29 @@ docker start ledger-pg
   of entries from the end (addendum rule 12; decision 16). `head_seq` and `head_hash` are not
   in the verify response (decision 33).
 
+### 5.12 Part 4 hand-off from the Part 1 integration
+
+1. **Logging.** Keep the `httpx` and `httpcore` loggers at WARNING or higher. httpx logs each
+   request's full URL at INFO, and a webhook URL can carry a secret; `app/webhooks.py` holds
+   both at WARNING (decision 106), and Part 4's logging configuration must not lower them. Do not turn on
+   PostgreSQL statement logging (`log_statement`, `log_min_duration_statement` with
+   parameters) and do not set SQLAlchemy `echo`: both would write key digests, payloads and
+   webhook URLs to the logs. The `api.request` line format is decision 126.
+2. **Body size limit.** Nothing in the app limits the request body. Set one at the load
+   balancer or server (Uvicorn has none by default), for example 64 KiB for every route.
+3. **lock_timeout or statement_timeout** at connection level (section 5.5). A timeout inside
+   the ingest becomes 500 INTERNAL_ERROR and rolls everything back.
+4. **The clock.** The request log's `ts` and every ingest call `clock.now()`. With the real
+   test-environment clock, which reads `clock_state` on each call (spec 4.5), each request
+   reads it a few times more.
+5. **Seed and reset.** Replace `tools/seed_part1.py` with the startup seed and
+   `POST /v1/test/reset` (spec 4.6). Reset must also truncate metric_sample, breach_series,
+   event, harm_field, api_key and threshold_version, and reseed the keys from the
+   environment. Then replace the PENDING steps in `tests/part1/test_smoke.py` with the real
+   endpoints.
+6. **Merge style.** Bring this branch into main with a merge commit, not a squash or a
+   rebase, so atharej's Part 1 commit `5310ae8` and the Part 2 and Part 3 history stay in it.
+
 ## 6. The standalone verifier
 
 ### Usage
@@ -718,9 +761,13 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 747 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 931 tests.
 
 ### Part 1
+
+Done on `developed-part123merged`: steps 1 to 9 hold, with the full suite passing. The
+in-process run of the spec section 9 smoke test is
+`tests/part1/test_smoke.py::test_spec_section_9_smoke_in_process`.
 
 1. Replace `app/errors.py`. Run `.venv/bin/pytest tests/api/test_errors_roles.py`. Expect all
    pass, with only the message constants in `tests/api/conftest.py` updated if Part 1's
@@ -823,12 +870,12 @@ confirm:
    (section 5.2). Part 4.
 9. Whether the real `clock.now()` uses a second connection inside `append` (section 5.8).
    Part 4.
-10. The Part 2 endpoint tests depend on the auth override, the ledger-based event stub and the
-    exact error messages (section 3.1). Part 1.
+10. Settled: the Part 2 endpoint tests keep the auth override and the exact error messages;
+    the ledger-based event stub is gone and the fixtures insert event rows (section 3.9).
 
 Raised by the Part 2 and Part 3 integration (decisions 93 to 105):
 
-11. Part 1's real 0003 must keep the spec 1.7 names the gap sweeper's SQL uses: the `event`
+11. Settled (decision 127): Part 1's real 0003 keeps the spec 1.7 names the gap sweeper's SQL uses: the `event`
     and `harm_field` columns, `ck_event_state`, and the partial unique index on
     `event(system_id)` for open gaps. The stub's `harm_field` has no foreign key to `event`,
     because spec 1.7 names none (section 10). Part 1.
@@ -841,30 +888,34 @@ Raised by the Part 2 and Part 3 integration (decisions 93 to 105):
 14. Outside the test environment, a refused webhook URL is 400 MALFORMED_BODY, because the
     spec names no code for it. The private-address check runs at registration, not again at
     delivery (decisions 98 and 99). All parts.
-15. Two spec 3.9 rows need Part 1's ingest and are not tested here: "Duplicate resets silence"
-    and "Wrong sender clock". Part 1.
+15. Settled: the two spec 3.9 rows that need Part 1's ingest, "Duplicate resets silence" and
+    "Wrong sender clock", are tested through the real ingest in
+    `tests/worker/test_gaps_via_ingest.py`.
 
-## 10. Stubs to replace when Part 1 and Part 4 land
+Raised by the Part 1 integration (decisions 116 to 131), for the other team or Part 4:
 
-Each stub below is marked `STUB` in its first line. Replacing one should need no change to
-Part 2 or Part 3 code, as long as the "Keep" column holds. After each replacement, run the
-checks named for it, then the full suite, `ruff check .`, `ruff format --check .` and `mypy`
-(section 5.10).
+16. Confirm with the other team (spec Appendix B): a duplicate is 200 with the original ids
+    and does not close a gap (decision 116); GET /v1/events is a bare array that every role can
+    read, with limit capped at 200 (decisions 117 and 118).
+17. The Part 4 hand-off items in section 5.12.
 
-| File | Owner | What the stub contains | Replaced by | Keep | Re-run |
-|---|---|---|---|---|---|
-| `migrations/versions/0001_platform_stub.py` | Part 4 | Revision `"0001"`. Only `monitored_system` (`system_id` text PK, `sampling_interval_s` int, `gap_timeout_intervals` int, `last_received_at` timestamptz, all NOT NULL) and `sweeper_heartbeat` (`singleton` boolean PK, default true, check `ck_sweeper_heartbeat_single_row`; `last_ran_at` timestamptz NOT NULL). Grants SELECT, INSERT, UPDATE, DELETE to the user in DATABASE_URL; nothing to PUBLIC | Part 4's real 0001: `clock_state`, `api_key`, `monitored_system`, `threshold_version`, `sweeper_heartbeat`, roles (spec 4.4) | Revision id `"0001"`; the two tables' names, columns and single-row rule; normal read and write for the application role | `alembic downgrade base` then `upgrade head` (expect `0004 (head)`); `tests/worker/test_schema.py` (add the new tables to its expected list); `tests/test_schema_permissions.py`; `tests/worker/` |
-| `migrations/versions/0003_detection_stub.py` | Part 1 | Revision `"0003"`, revises `"0002"`. Only `event` (all spec 1.7 columns, check `ck_event_state`, index `ix_event_detected_at_event_id` on `(detected_at DESC, event_id)`, partial unique index `uq_event_one_open_gap_per_system`) and `harm_field` (PK `(event_id, field_key)`, check `ck_harm_field_status`, no foreign key). Grants as above | Part 1's real 0003: `metric_sample`, `breach_series`, `event`, `harm_field` and their indexes (spec 4.4) | Revision `"0003"` revising `"0002"`, so 0004 still applies; the spec 1.7 names; the open-gap index | Same as above; `tests/worker/test_gaps.py`; `tests/api/test_ledger_system.py` |
-| `app/clock.py` | Part 4 | `now()` and `wall_now()`, both real UTC time | The real clock: real time plus `clock_state.offset_seconds` in test (spec 4.5) | `now()` timezone-aware; `wall_now()` with no offset, for the heartbeat; callers patch `app.clock.now` | `tests/test_append.py`, `tests/api/test_audit.py`, `tests/worker/test_clock_rule.py`, `tests/worker/test_gaps.py::test_sweep_writes_the_wall_clock_heartbeat` |
-| `tests/sql/bootstrap_roles.sql` | Part 4 | Creates `monitor_owner`, `monitor_app` and the `monitor_test` database; grants USAGE on `public` | Part 4's role setup (section 5.2) | Neither role a superuser; the app role is not the migration role | `tests/test_schema_permissions.py`; `tests/worker/test_schema.py` |
-| `app/auth.py` | Part 1 | `resolve_principal()` (always rev-1) and `require(*roles)` | Part 1's key auth | `require(*roles)` returns `Principal(role, actor_id, system_id)`; 401, then 403, then the body | `tests/api/test_errors_roles.py`; `tests/worker/test_webhooks.py::test_no_principal_is_401_and_a_system_key_is_403`; `tests/worker/test_webhooks.py::test_auth_is_checked_before_the_body` |
-| `app/errors.py` | Part 1 | `ApiError` and the handlers (section 3.1) | Part 1's errors module | The contract body; 422 from FastAPI becomes 400 MALFORMED_BODY | `tests/api/test_errors_roles.py`; `tests/worker/test_webhooks.py` |
-| `app/db.py` | Part 1 or 4 | The application-role engine and `get_session` | Real session handling | READ COMMITTED; no commit in teardown | `tests/api/test_transactions.py`; `tests/worker/test_webhooks.py` |
-| `app/events.py` | Part 1 | `exists()`, ledger-based (decision 30) | A lookup on the real `event` table | Same signature | `tests/api/test_audit.py` |
-| `app/main.py` | Part 1 | `create_app()` with the ledger and webhook routers | Part 1's app | Mounts `app.api.ledger_routes.router` and `app.api.webhook_routes.router` | `tests/api/test_errors_roles.py::test_the_real_app_does_not_mount_the_test_only_routes`; `tests/worker/test_webhooks.py::test_the_real_app_mounts_the_webhook_route` |
-| `tests/worker/conftest.py` (`add_system`, `add_event`, `WORKER_TABLES`) | Parts 1 and 4 | Test helpers that insert a `monitored_system` row and an `event` row as the owner, and truncate the stub and Part 3 tables | Part 4's seed and reset, Part 1's ingest | The column values the tests assume (sys-42, 300 s, 3 intervals) | `tests/worker/` |
+## 10. Stubs to replace when Part 4 lands
 
-The tests in `tests/worker/test_schema.py` pin the stub columns exactly. When a real
-migration adds columns or tables, extend `EXPECTED_COLUMNS` there with the new ones from the
-spec; do not remove the ones Part 3 uses.
+Part 1's stubs are all replaced (section 3.1). What remains is Part 4's. Each stub below is
+marked `STUB` in its first line. Replacing one should need no change to Part 1, 2 or 3 code, as
+long as the "Keep" column holds. After each replacement, run the checks named for it, then the
+full suite, `ruff check .`, `ruff format --check .` and `mypy` (section 5.10).
 
+| File | What the stub contains | Replaced by | Keep | Re-run |
+|---|---|---|---|---|
+| `migrations/versions/0001_platform_stub.py` | Revision `"0001"`. `monitored_system`, `sweeper_heartbeat` (single row, decision 95), `api_key` (key_hash PK; role SYSTEM, REVIEWER or VIEWER; actor_id; system_id set exactly for SYSTEM) and `threshold_version` (spec 4.4 columns; comparator gt or lt; unique (system_id, metric_name, version)). Grants SELECT, INSERT, UPDATE, DELETE to the user in DATABASE_URL; nothing to PUBLIC | Part 4's real 0001, adding `clock_state` and the roles (spec 4.4) | Revision id `"0001"`; the four tables' names, columns and constraints; normal read and write for the application role | `alembic downgrade base` then `upgrade head` (expect `0004 (head)`); `tests/worker/test_schema.py`; `tests/part1/test_schema.py`; `tests/test_schema_permissions.py` |
+| `app/clock.py` | `now()` and `wall_now()`, both real UTC time | The real clock: real time plus `clock_state.offset_seconds` in test (spec 4.5) | `now()` timezone-aware; `wall_now()` with no offset, for the heartbeat; callers patch `app.clock.now` | `tests/test_append.py`, `tests/api/test_audit.py`, `tests/worker/test_clock_rule.py`, `tests/worker/test_gaps.py::test_sweep_writes_the_wall_clock_heartbeat` |
+| `app/db.py` | The application-role engine and `get_session` (Part 1 uses it as it is; decision 131) | Part 4's session settings, if any (`lock_timeout`, pool sizes) | READ COMMITTED; no commit in teardown | `tests/api/test_transactions.py`; `tests/worker/test_webhooks.py` |
+| `tools/seed_part1.py` | The spec's seed fixtures from the environment, ENVIRONMENT=test only (decision 128) | Part 4's startup seed and `POST /v1/test/reset` (spec 4.6) | The fixtures exactly; keys only as digests; SEED only on an empty ledger | `tests/part1/test_seed.py`; then switch `tests/part1/conftest.py` to reset |
+| `tests/part1/test_smoke.py` (steps 1 and 4) | Reset and clock advance done in process, marked PENDING | Calls to `POST /v1/test/reset` and `POST /v1/test/clock/advance` | The five steps and their expected results (spec 9) | The test itself, then Part 4's real smoke script |
+| `tests/sql/bootstrap_roles.sql` | Creates `monitor_owner`, `monitor_app` and the `monitor_test` database; grants USAGE on `public` | Part 4's role setup (section 5.2) | Neither role a superuser; the app role is not the migration role | `tests/test_schema_permissions.py`; `tests/worker/test_schema.py` |
+| `tests/worker/conftest.py` (`add_system`, `add_event`, `WORKER_TABLES`) | Test helpers that insert a `monitored_system` row and an `event` row as the owner | Part 4's seed and reset; Part 1's ingest is already real | The column values the tests assume (sys-42, 300 s, 3 intervals) | `tests/worker/` |
+
+The tests in `tests/worker/test_schema.py` pin the columns exactly. When a real migration adds
+columns or tables, extend `EXPECTED_COLUMNS` there with the new ones from the spec; do not
+remove the ones Parts 1 and 3 use.
