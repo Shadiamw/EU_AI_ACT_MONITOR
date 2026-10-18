@@ -16,13 +16,13 @@ from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 from starlette.types import ASGIApp
 
-from app import ledger
+from app import clock, ledger
 from app.auth import Principal, resolve_principal
 from app.db import get_engine
 from app.ledger.canonical import Payload
 from app.main import create_app
 from tests.api import g2_routes
-from tests.db_helpers import TRIGGER_NAME, trigger_disabled
+from tests.db_helpers import TRIGGER_NAME, insert_event, trigger_disabled
 
 PRINCIPALS = {
     "viewer-1": Principal(role="VIEWER", actor_id="viewer-1", system_id=None),
@@ -37,6 +37,22 @@ MALFORMED = {"error_code": "MALFORMED_BODY", "message": "the request is malforme
 INTERNAL = {"error_code": "INTERNAL_ERROR", "message": "an internal error occurred"}
 
 SEED_PAYLOAD: Payload = {"systems": ["sys-42"], "threshold_count": "2"}
+
+# The contract Event object's keys (data schema, Example 2).
+EVENT_KEYS = {
+    "event_id",
+    "system_id",
+    "type",
+    "metric_name",
+    "observed_value",
+    "threshold_value",
+    "detected_at",
+    "state",
+    "disposition",
+    "deadline_utc",
+    "revisions",
+    "harm_fields",
+}
 
 
 def header_principal(
@@ -124,8 +140,12 @@ def seed(app_engine: Engine) -> None:
 
 
 def flag_event(app_engine: Engine, event_id: str) -> ledger.LedgerEntry:
-    """EVENT_FLAGGED and NOTIFICATION_REQUESTED in one transaction, as Part 1's ingest does."""
+    """The event row, EVENT_FLAGGED and NOTIFICATION_REQUESTED in one transaction, as Part 1's
+    ingest does. The event is in Part 1's event table, where the audit endpoint looks it up."""
     with Session(app_engine) as session:
+        insert_event(
+            session.connection(), event_id, event_type="threshold_breach", detected_at=clock.now()
+        )
         flagged = ledger.append(
             session,
             "EVENT_FLAGGED",

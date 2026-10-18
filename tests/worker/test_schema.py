@@ -1,8 +1,9 @@
 """Schema for Part 3 and the stub tables it uses (spec 1.7, 3.7, 4.4).
 
-Expected names and types are copied from the spec's tables: 1.7 (event, harm_field), 3.7
-(webhook, notification, notification_delivery, sweeper_heartbeat) and 4.4 (monitored_system,
-migration order, roles).
+Expected names and types are copied from the spec's tables: 1.7 (event, harm_field, and Part
+1's metric_sample and breach_series), 3.7 (webhook, notification, notification_delivery,
+sweeper_heartbeat) and 4.4 (monitored_system, api_key, threshold_version, migration order,
+roles).
 """
 
 from typing import Any
@@ -25,7 +26,41 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     },
     # spec 3.7: last_ran_at; `singleton` keeps it to one row (decision 95)
     "sweeper_heartbeat": {"singleton": "boolean", "last_ran_at": TIMESTAMPTZ},
-    # spec 1.7 (Part 1, the 0003 stub)
+    # spec 4.5: offset_seconds; `singleton` keeps it to one row (decision 133)
+    "clock_state": {"singleton": "boolean", "offset_seconds": "bigint"},
+    # spec 4.4 (Part 4, the 0001 stub; used by Part 1)
+    "api_key": {"key_hash": "text", "role": "text", "actor_id": "text", "system_id": "text"},
+    "threshold_version": {
+        "threshold_version_id": "text",
+        "system_id": "text",
+        "metric_name": "text",
+        "metric_type": "text",
+        "comparator": "text",
+        "limit_value": "numeric",
+        "version": "integer",
+        "valid_from": TIMESTAMPTZ,
+    },
+    # spec 1.7 (Part 1, migration 0003)
+    "metric_sample": {
+        "sample_id": "text",
+        "system_id": "text",
+        "metric_name": "text",
+        "metric_type": "text",
+        "value": "numeric",
+        "timestamp": TIMESTAMPTZ,
+        "received_at": TIMESTAMPTZ,
+        "event_id": "text",
+    },
+    "breach_series": {
+        "series_id": "text",
+        "system_id": "text",
+        "metric_name": "text",
+        "event_id": "text",
+        "opened_at": TIMESTAMPTZ,
+        "closed_at": TIMESTAMPTZ,
+        "occurrence_count": "integer",
+    },
+    # spec 1.7 (Part 1, migration 0003; unchanged from the stub Part 3 was built on)
     "event": {
         "event_id": "text",
         "system_id": "text",
@@ -104,7 +139,8 @@ def test_the_schema_has_exactly_the_ledger_stub_and_part3_tables(owner_engine: E
             " ORDER BY table_name",
         )
     ]
-    # No monitoring_gap (plan C4), no metric_sample or breach_series (Part 1's, not needed).
+    # No monitoring_gap (plan C4). Part 1's metric_sample and breach_series and Part 4's
+    # api_key and threshold_version are in EXPECTED_COLUMNS since Part 1 landed.
     assert tables == sorted([*NON_LEDGER_TABLES, "ledger_entry", "alembic_version"])
 
 
@@ -204,7 +240,11 @@ def test_sweeper_heartbeat_holds_one_row(owner_engine: Engine) -> None:
 def test_application_role_has_normal_read_write_outside_the_ledger(
     owner_engine: Engine, table: str
 ) -> None:
-    """Spec 4.4: normal read/write on every table except the ledger; PUBLIC has nothing."""
+    """Spec 4.4: normal read/write on every table except the ledger; PUBLIC has nothing.
+
+    clock_state is SELECT-only for the application role: only reset and clock advance write it
+    (decision 133).
+    """
 
     def privileges(grantee: str) -> list[Any]:
         return sorted(
@@ -218,5 +258,8 @@ def test_application_role_has_normal_read_write_outside_the_ledger(
             )
         )
 
-    assert privileges("monitor_app") == ["DELETE", "INSERT", "SELECT", "UPDATE"]
+    if table == "clock_state":
+        assert privileges("monitor_app") == ["SELECT"]
+    else:
+        assert privileges("monitor_app") == ["DELETE", "INSERT", "SELECT", "UPDATE"]
     assert privileges("PUBLIC") == []

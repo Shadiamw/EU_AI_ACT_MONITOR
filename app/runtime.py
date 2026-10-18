@@ -1,8 +1,9 @@
 """Container start-up (decision 109).
 
-`prepare` waits for PostgreSQL, migrates as the owner and seeds the ledger.
+`prepare` waits for PostgreSQL, migrates as the owner and installs the seed fixtures.
 `api` and `worker` wait until that migration has reached the script head, seed again
-(a second call appends nothing) and then become the server or the worker process.
+(a second call appends nothing when the fixtures are already present) and then become the
+server or the worker process.
 """
 
 import os
@@ -17,15 +18,11 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from app import config, platform
 from app.config import database_admin_url
-from app.db import get_engine
-from app.ledger.canonical import Payload
-from app.ledger.service import ensure_seed
+from tools.seed_part1 import seed as install_seed
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Addendum rule 7, the same payload the tests seed (integration_notes.md 5.4).
-SEED_PAYLOAD: Payload = {"systems": ["sys-42"], "threshold_count": "2"}
 
 
 def _alembic_config() -> Config:
@@ -87,9 +84,17 @@ def wait_for_head(timeout_s: float = 120) -> None:
 
 
 def seed() -> None:
-    with Session(get_engine()) as session:
-        ensure_seed(session, SEED_PAYLOAD)
-        session.commit()
+    """Install the Part 1/4 fixtures as the owner. Requires ENVIRONMENT=test (decision 128)."""
+    if not config.is_test_environment():
+        raise RuntimeError("container seed requires ENVIRONMENT=test")
+    engine = _admin_engine()
+    try:
+        with Session(engine) as session:
+            install_seed(session)
+            session.commit()
+        platform.set_offset_seconds(0)
+    finally:
+        engine.dispose()
 
 
 def prepare() -> None:

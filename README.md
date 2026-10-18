@@ -1,15 +1,21 @@
 # EU_AI_ACT_MONITOR
 
-Compliance monitoring system. This repository currently implements **Part 2: ledger and audit**
-(the append-only, SHA-256 hash-chained ledger) and **Part 3: the worker** (the gap sweeper and
-notifications, section 8). Parts 1 and 4 are stubbed where Parts 2 and 3 depend on them.
+Compliance monitoring system implementing **Part 1: detection and ingestion (API)**,
+**Part 2: ledger and audit**, **Part 3: the worker** (gap sweeper and notifications), and
+**Part 4 platform** (`/healthz`, test reset and clock advance, CI and the Docker image).
+All of Parts 1 to 3 are built to `Phase3_Implementation_Spec.docx`.
+
+See **[docs/part1_api.md](docs/part1_api.md)** for Part 1: endpoints, local setup, behaviour,
+and what changed from its first version and why.
 
 Where to look:
 
 - **This README:** what the ledger is, how to check it, how to run everything, and its known
   limits; section 8 covers the worker.
-- **[integration_notes.md](integration_notes.md):** what Parts 1, 3 and 4 must do when they call
-  the ledger or replace a stub.
+- **[integration_notes.md](integration_notes.md):** what each part calls and provides, and what
+  Part 4 must do when it replaces a stub (sections 5.12 and 10).
+- **[docs/part1_test_map.md](docs/part1_test_map.md):** which test proves each Part 1 rule of
+  the spec, and what happened to the first Part 1 tests.
 - **[docs/decisions.md](docs/decisions.md):** every settled decision, with its reason. "Decision
   N" below means entry N there.
 - **[docs/ac06_storage_evidence.md](docs/ac06_storage_evidence.md):** the storage-layer evidence
@@ -36,7 +42,8 @@ the chain, either with `GET /v1/ledger/verify` or with the standard-library scri
 | Table, grants and UPDATE/DELETE trigger | `migrations/versions/0002_ledger.py` |
 | Standalone verifier | `tools/verify_ledger.py` |
 | The three-entry fixture | `tests/fixtures/fixture_export.json` |
-| Stubs for Parts 1 and 4 (auth, events, errors, sessions, app, clock, migration 0001) | `app/auth.py`, `app/events.py`, `app/errors.py`, `app/db.py`, `app/main.py`, `app/clock.py`, `migrations/versions/0001_platform_stub.py` |
+| Part 1 API, authentication and event reads | `app/ingestion.py`, `app/api/ingestion_routes.py`, `app/auth.py`, `app/events.py` |
+| Part 4 stand-ins (STUB): clock, sessions, baseline migration, seed fixtures | `app/clock.py`, `app/db.py`, `migrations/versions/0001_platform_stub.py`, `tools/seed_part1.py` |
 
 ## 2. Hash definition
 
@@ -252,6 +259,10 @@ export DATABASE_ADMIN_URL=postgresql+psycopg://monitor_owner:monitor_owner@local
 export ENVIRONMENT=test
 ```
 
+The three seeded keys (spec 5) are also required by the app: `INGEST_KEY_SYS_42`,
+`REVIEWER_KEY` and `VIEWER_KEY`. The test suite sets test-only values for them in
+`tests/conftest.py`; set your own anywhere else.
+
 ### 5.5 Migrations
 
 ```sh
@@ -259,8 +270,8 @@ export ENVIRONMENT=test
 .venv/bin/alembic current           # expect: 0004 (head)
 ```
 
-The chain follows spec 4.4: 0001 Platform (a stub for Part 4), 0002 Ledger, 0003 Detection (a
-stub for Part 1) and 0004 Notifications (Part 3, section 8). Migration 0002 grants ledger
+The chain follows spec 4.4: 0001 Platform (a stub for Part 4), 0002 Ledger, 0003 Detection
+(Part 1) and 0004 Notifications (Part 3, section 8). Migration 0002 grants ledger
 privileges to the user named in `DATABASE_URL`. It refuses to run if that user is the role
 running the migration. The stubs are listed in
 [integration_notes.md](integration_notes.md), section 10.
@@ -275,6 +286,11 @@ psql "postgresql://postgres:postgres@localhost:5432/postgres" -c "DROP DATABASE 
 psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/bootstrap_roles.sql
 ```
 
+Part 1's tables (metric samples, breach series, events and harm fields in 0003; API-key digests
+and threshold versions in the 0001 stub) and its endpoints are described in
+[docs/part1_api.md](docs/part1_api.md). To load the spec's seed fixtures by hand, run
+`ENVIRONMENT=test .venv/bin/python -m tools.seed_part1` after the migrations (decision 128).
+
 ### 5.6 Tests and static checks
 
 ```sh
@@ -288,8 +304,9 @@ and pull request, against PostgreSQL 16. After pytest, `tools/check_acceptance.p
 the AC-02, AC-04, AC-06 and AC-15 tests in that run to have passed. AC-12 is not a Phase 3
 test (section 8.2). A second job builds the image and waits until `GET /healthz` returns 200.
 
-The suite is the Part 2 tests, the Part 3 tests in `tests/worker/`, and the deployment tests
-in `tests/api/test_health.py` and `tests/test_lock_timeout.py`.
+At the time of writing the suite collects 947 tests: 532 for Part 2, 229 for Part 3 in
+`tests/worker/` and 186 for Part 1 in `tests/part1/`, plus the deployment tests in
+`tests/api/test_health.py`, `tests/api/test_platform.py` and `tests/test_lock_timeout.py`.
 
 ## 6. Known limits and operating notes
 
@@ -311,7 +328,7 @@ in `tests/api/test_health.py` and `tests/test_lock_timeout.py`.
 | **Python versions.** The script is written for 3.9 or newer and tested on 3.12 only. | 61, 73 |
 | **What the script will not do.** It does not detect end-of-ledger removal, and gives no exact strings for degenerate seq values. | 16, 59 |
 | **Integration hand-off.** See [integration_notes.md](integration_notes.md). | 71 |
-| **Wrong method is 404.** A wrong HTTP method on a known route returns 404 NOT_FOUND, because the spec has no 405 code. This is still to be confirmed when Part 1 lands. | 27 |
+| **Wrong method is 404.** A wrong HTTP method on a known route returns 404 NOT_FOUND, because the spec has no 405 code. Part 1 retains and tests this behavior. | 27 |
 | **uvicorn is the server.** `python -m app.runtime api` execs it. Decision 50 recorded the earlier real-server check, before it was a dependency. | 50, 109 |
 | **Logs.** An unexpected exception, LedgerError included, returns 500 INTERNAL_ERROR. The `api` logger records only the exception's type name, never its message or a traceback. The `ledger` logger never writes a payload value or a stored hash. | 14, 28, 36 |
 
@@ -354,7 +371,7 @@ effect at the next sweep or pass. Only the sweeper heartbeat uses real time
 | `retain_until`, the API time format and ids | `app/formats.py` |
 | Settings | `app/config.py` |
 | Tables `webhook`, `notification`, `notification_delivery` | `migrations/versions/0004_notifications.py` |
-| Stubs: `monitored_system` and `sweeper_heartbeat` (Part 4); `event` and `harm_field` (Part 1) | `migrations/versions/0001_platform_stub.py`, `migrations/versions/0003_detection_stub.py` |
+| `monitored_system` and `sweeper_heartbeat` (Part 4's stub); `event` and `harm_field` (Part 1) | `migrations/versions/0001_platform_stub.py`, `migrations/versions/0003_detection.py` |
 | Tests | `tests/worker/` |
 
 ### 8.1 Behaviour
@@ -416,22 +433,26 @@ constants, not settings.
 
 | Item | Decision |
 |---|---|
-| **Not yet wired to Part 1.** The ingest must call `gaps.close_if_open` (step 6) and `notifications.enqueue` (step 11); `GET /v1/events?type=monitoring_gap` is Part 1's endpoint over its event table. | 93, 101 |
-| **Stub tables.** `monitored_system`, `sweeper_heartbeat`, `event` and `harm_field` come from stub migrations until Parts 1 and 4 replace them ([integration_notes.md](integration_notes.md), section 10). | 95 |
+| **Part 1 integration.** Ingest calls `gaps.close_if_open` and `notifications.enqueue` in its transaction; `GET /v1/events?type=monitoring_gap` lists worker gap events. | 93, 101 |
+| **Stub tables.** `monitored_system` and `sweeper_heartbeat` come from Part 4's stub migration 0001 until Part 4 replaces it ([integration_notes.md](integration_notes.md), section 10). `event` and `harm_field` are Part 1's real 0003. | 95, 127 |
 | **Webhooks registered after routing miss that notification.** A notification is routed once, to the webhooks subscribed at that moment. One routed to nobody waits for the first webhook. | 94 |
 | **At-least-once delivery.** A result that could not be recorded is retried when its lease runs out. | 94 |
 | **Webhook URLs are not checked for secrets.** Any http or https URL is stored as received and shown in the export; avoiding secrets in it is recommended. | 98 |
 | **Address check at registration only.** Outside the test environment, a host that later resolves to a private address is not re-checked at delivery. | 99 |
 | **Reminders (REQ-11)** are accepted as a webhook type but not generated: they depend on Phase 4 deadlines. | 89 |
-| **Two spec 3.9 rows need Part 1's ingest:** "Duplicate resets silence" and "Wrong sender clock". | 105 |
+| **The two spec 3.9 rows that need Part 1's ingest**, "Duplicate resets silence" and "Wrong sender clock", are tested through the real ingest in `tests/worker/test_gaps_via_ingest.py`. | 105, 116 |
 
 ## 9. Deployment
 
-`docker compose up --build` starts PostgreSQL 16, migrates, seeds the ledger, and runs the
-API on port 8000 and the worker. `GET /healthz` returns the three worker values from
-`worker.health_values` (decision 111). The role script runs once, as the database superuser,
-the first time the volume is created. `docker compose down -v` drops that volume.
+`docker compose up --build` starts PostgreSQL 16, migrates, seeds sys-42 and the three API
+keys, and runs the API on port 8000 and the worker. `GET /healthz` returns the three worker
+values from `worker.health_values` (decision 111). In `ENVIRONMENT=test`,
+`POST /v1/test/reset` and `POST /v1/test/clock/advance` are available for the Pod demo
+(decision 133). The role script runs once, as the database superuser, the first time the
+volume is created. `docker compose down -v` drops that volume.
 
-The passwords in the compose file are the local test passwords from section 5.4. AWS is not
-created from this repository. What is still open, including the Evidently report format, is
-in [docs/phase3_uncertainties.md](docs/phase3_uncertainties.md).
+A one-command walkthrough of ingest → webhook → gap → verify is in
+[`tools/demo_showcase.sh`](tools/demo_showcase.sh). The passwords and keys in the compose
+file are the local test values from section 5.4 and `tests/conftest.py`. AWS is not created
+from this repository. What is still open, including the Evidently report format, is in
+[docs/phase3_uncertainties.md](docs/phase3_uncertainties.md).

@@ -20,6 +20,22 @@ def database_admin_url() -> str:
     return _required("DATABASE_ADMIN_URL")
 
 
+def ingest_key_sys_42() -> str:
+    """INGEST_KEY_SYS_42 (required): the seeded SYSTEM key for sys-42. Only its SHA-256 digest
+    is stored (spec 1.3, 5). Read by the seed, never logged."""
+    return _required("INGEST_KEY_SYS_42")
+
+
+def reviewer_key() -> str:
+    """REVIEWER_KEY (required): the seeded REVIEWER key for rev-1."""
+    return _required("REVIEWER_KEY")
+
+
+def viewer_key() -> str:
+    """VIEWER_KEY (required): the seeded VIEWER key for viewer-1."""
+    return _required("VIEWER_KEY")
+
+
 # Part 3 (worker) settings, from spec 5 'Configuration (environment variables)'. Each is read on
 # every call so tests can change the environment.
 
