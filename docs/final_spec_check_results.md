@@ -476,3 +476,131 @@ Every one of these was found in zero files. The only URL in any log is uvicorn's
 - When listing /mnt/project-files I saw only the names of the forbidden directories. README.md mentions `docs/part1_test_map.md` and `docs/part3_spec_audit.md` by name; I did not open them. I did not read `integration_notes.md` and did not run `git` in EU_AI_ACT_MONITOR.
 - The repo was not modified, and the test suite was not run.
 - I read [CODE] rows only after snapshotting the live results (`probe/results_live_before_code_reading.json`). The p14 production rerun (E299, E60) and the re-interpretation of E25/E61 came after some code reading; see `probe_results.md`.
+
+## Re-probe after the fixes (head 1dd6a3f)
+
+The checker re-ran the F1 to F4 rows, the log greps and the concurrency bursts against fresh web and worker processes started the README way. Every re-probed row is MATCH; no new finding. Its report follows verbatim.
+
+### Re-probe results: branch head 1dd6a3f (fixes for F1 to F4)
+
+Target: `/home/claude/specprobe/repo`, the coordinator's copy of head 1dd6a3f. I did not edit it. I used HTTP and read-only psql only, and did not run the test suite.
+
+#### Setup
+
+**Environment recovery.** The sandbox VM had restarted after the rate-limit stop. The Docker daemon was down and its pid file was stale. I removed `/var/run/docker.pid`, restarted `dockerd`, and ran `docker start ledger-pg` (PG16 on localhost:5434). The roles monitor_owner and monitor_app were intact. No web, worker or receiver process survived the restart. After the first attempt I stopped everything that was left, and confirmed ports 8000 and 8001 were closed.
+
+**First attempt.** It ran before the restart and is archived in `probe/reprobe/attempt1/`. It gave the same verdicts as the fresh runs below. It double-sent one sample because the script crashed and was re-run, which raised the duplicates counter by one.
+
+**Fresh runs.** Each run dropped and recreated `monitor_probe`, ran `alembic upgrade head`, seeded with the launcher, then started fresh web and worker processes (`probe/fresh.sh`). The web process was started through the launcher: `run_with_offset.py web` calls `uvicorn.run("app.main:app")`, which is the README command `python -m uvicorn app.main:app` with the time offset added. Other settings were ENVIRONMENT=test, my own keys, SWEEP_INTERVAL_SECONDS=2 and DELIVERY_POLL_SECONDS=1.
+
+| Run | LOG_LEVEL | Script | Logs |
+|---|---|---|---|
+| r01_info | INFO | `probe/r01_logs.py INFO` | `probe/logs/r01_info.{web,worker,seed,migrate}.log` |
+| r01_debug | DEBUG | `probe/r01_logs.py DEBUG` | `probe/logs/r01_debug.*.log` |
+| r08_debug | DEBUG | `probe/r08_concurrency.py` (the p08 bursts plus a log-integrity check) | `probe/logs/r08_debug.*.log` |
+| r09_500 | DEBUG | A web process on port 8001 started without DATABASE_URL, to see the 500 log line. My keys were in its environment. | `probe/logs/r09_500.web.log` |
+
+**Workload in each r01 run:**
+- The check-order matrix: 3 endpoints × 5 callers × 4 bodies, plus the SYSTEM_MISMATCH pair and the unknown-id GETs.
+- Six webhook registrations: a query-string URL, a credentials URL, a fragment URL, a URL that answers the ping then returns 500, a dead URL (422) and an ftp URL (400).
+- Nine samples: healthy, duplicate, breach, series join, performance healthy, performance breach, no threshold, healthy, and a post-gap recovery sample.
+- Reads: list with filters, detail, audit, report and disposition stubs, export, verify, an unknown route, DELETE, and GET /metrics.
+- Deliveries, and retries of the webhook that returns 500.
+- A gap: the clock was advanced 1000 s, then a sample closed the gap.
+
+Each r01 run issued 101 HTTP requests of its own, plus one readiness `curl` from fresh.sh.
+
+Raw evidence:
+- Per-run analysis: `probe/reprobe/r01_{info,debug}_analysis.json`
+- Order matrices: `probe/reprobe/r01_{info,debug}_order.json`
+- Verdicts: `probe/reprobe/results_{INFO,DEBUG,concurrency}.json`
+- Concurrency: `probe/reprobe/r08_summary.json`, `probe/reprobe/r08_log_check.json`, `probe/reprobe/r08_export*.json`
+- Log grep: `probe/reprobe/log_grep_reprobe.txt`
+- Request and response bodies: `probe/raw/http.jsonl`
+
+#### Per-row results
+
+| Row | Expectation | New observed result (both LOG_LEVEL runs unless noted) | Verdict |
+|---|---|---|---|
+| E52 | POST /v1/webhooks follows 401, then 403, then 400: no key + bad body → 401; SYSTEM key + bad body → 403 FORBIDDEN_ROLE; VIEWER + bad body → 400; 422 only after a valid body. | Bodies tested: `{bad`, `[]`, empty, and schema-invalid JSON. No key → 401 MISSING_OR_INVALID_KEY for all 4. Wrong key → 401 for all 4. SYSTEM key → 403 FORBIDDEN_ROLE for all 4. VIEWER or REVIEWER → 400 MALFORMED_BODY for all 4. A valid body with a dead receiver → 422 WEBHOOK_UNVERIFIED; a valid body with a live receiver → 201. Log evidence: `{"…","actor_id":null,"method":"POST","path":"/v1/webhooks","status":401,…,"error_code":"MISSING_OR_INVALID_KEY"}` and `{"…","actor_id":"sys-42",…,"status":403,…,"error_code":"FORBIDDEN_ROLE"}`. | **MATCH** (F1 fixed) |
+| E51 | POST /v1/metrics follows 401, then 403, then 400, then SYSTEM_MISMATCH. | Same matrix. No key or wrong key → 401 for all 4. VIEWER or REVIEWER → 403 FORBIDDEN_ROLE. SYSTEM → 400 for all 4. SYSTEM + `system_id` sys-99 + bad value → 400. SYSTEM + sys-99 + valid body → 403 `{"error_code":"SYSTEM_MISMATCH","message":"the key does not match system_id"}`. | **MATCH** (unchanged) |
+| E53 | Role is checked before the event lookup, and stubs check role before the body. | Disposition on an unknown id, same 4 bodies: none or wrong key → 401; SYSTEM or VIEWER → 403; REVIEWER → 501 NOT_IMPLEMENTED. GET of an unknown detail and of an unknown audit: none or wrong → 401, SYSTEM → 403, VIEWER → 404. | **MATCH** (SPEC-SILENT reading, consistent) |
+| E193 | One JSON log line per request with ts, level, request_id, actor_id, method, path, status, duration_ms, plus event_id when relevant. | See [E193 detail](#e193-detail) below. One JSON line per request in every run, with all eight required keys; event_id is present on breach, series-join and detail lines but missing on some event-scoped lines. | **MATCH** (F2 fixed; event_id gaps noted) |
+| E194 | Counters are logged or exposed: samples accepted, duplicates, breaches, series joins, 4xx by code. | See [E194 detail](#e194-detail) below. A JSON counters line carries all five counter kinds, and the totals add up in the r01 and concurrency runs. GET /metrics still returns 404; the spec's "Log counters (or metrics)" is met by logging. | **MATCH** (F3 fixed) |
+| E195 | With LOG_LEVEL=DEBUG, every threshold evaluation outcome is logged with the threshold version id. | See [E195 detail](#e195-detail) below. At DEBUG there is exactly one line per evaluation, with the version id, and none at INFO. | **MATCH** (F4 fixed) |
+| E101 | Keys are never logged, not even partly. | See [log grep](#log-grep-and-e101-e102) below. None of the three keys, their 6-character fragments or their SHA-256 values appears in any log. | **MATCH** (now meaningful: the web process logs every request) |
+| E102 | Webhook URLs never appear in logs. | See [log grep](#log-grep-and-e101-e102) below. No receiver host, port, path, query string, credentials, fragment or ftp URL appears in any log, including POST /v1/webhooks lines and the worker delivery lines. | **MATCH** |
+| E25 | A 500 is generic; it is logged without a stack trace. | r09_500 (no DATABASE_URL): the body is `{"error_code":"INTERNAL_ERROR","message":"an internal error occurred"}`. The log holds a plain line `ERROR [api] unhandled exception: type=RuntimeError` plus a JSON line `{"ts":"…","level":"ERROR","request_id":"…","actor_id":null,"method":"GET","path":"/v1/events","status":500,"duration_ms":1,"error_code":"INTERNAL_ERROR"}`. There is no traceback, no key and no URL. | **MATCH** (extra check) |
+| E83 | 20 concurrent distinct non-breaching ingests all succeed with no 5xx. | 20 × 201, 20 rows, ledger +0, verify valid. | **MATCH** |
+| E84 | 20 concurrent identical ingests give one row. | 1 × 201 and 19 × 200, all with one identical body, 1 row, ledger +0. | **MATCH** |
+| E85 | 20 concurrent identical breaching ingests give one event. | 1 × 201 and 19 × 200 with the same flagged_event_id, 1 event. The ledger gained exactly EVENT_FLAGGED and NOTIFICATION_REQUESTED. | **MATCH** |
+| E86 | 20 concurrent distinct breaching ingests form one series. | 20 × 201, one flagged_event_id, occurrence_count 20, 1 notification. The ledger gained exactly EVENT_FLAGGED and NOTIFICATION_REQUESTED. | **MATCH** |
+| E87 | 20 concurrent detail GETs each record a view. | 20 × 200 and +20 EVENT_VIEWED; seq 1..25 contiguous. | **MATCH** |
+| E230 / chain | The chain stays contiguous and verifiable. | seq 1..25 with no duplicate prev_hash. After all bursts and one more sample, server verify returns `{"valid":true,"entries_checked":25,"first_mismatch":null}`. `tools/verify_ledger.py` run with `python3 -I` on the export returns the same, with rc 0. There were 0 responses of 5xx in all bursts. | **MATCH** |
+
+Counts: 16 rows re-probed (including the extra E25 check), all MATCH. There are no FINDINGS.
+
+### E193 detail
+
+- **One line per request.** Every run logged exactly one JSON request line per request: 102 lines for 101 requests plus the readiness curl in each r01 run, and 115 for 114 plus 1 in the concurrency run.
+- **Matching.** The multiset of (method, path, status) matched exactly. No request was missing, none was duplicated, and every request_id was unique.
+- **Keys and format.** All eight required keys were present on every line. ts is ISO UTC ending in Z. duration_ms is a non-negative integer.
+- **Level.** level is INFO for 2xx, 4xx and 501, and ERROR for 500 (see E25).
+- **actor_id.** It is null on 401 lines, sys-42 on ingest lines, and viewer-1 or rev-1 on read lines.
+- **event_id present on:** breach and series-join ingest lines, and detail 200 lines.
+- Evidence: `{"ts":"2026-10-18T05:57:51.851412Z","level":"INFO","request_id":"bc548fca…","actor_id":"sys-42","method":"POST","path":"/v1/metrics","status":201,"duration_ms":27,"event_id":"evt-8ffdf6de…","outcome":"breach"}`.
+- **event_id missing on:**
+  - GET …/{id}/audit at 200 and at 404;
+  - report and disposition stub lines for a real event;
+  - the sample that closed a gap.
+- **Concurrency.** Under 100 concurrent requests, no line was interleaved or unparseable.
+
+### E194 detail
+
+- **Format.** A JSON counters line is written each time a counter changes: `{"ts":…,"level":"INFO","counters":{…}}`.
+- **Final totals, r01 runs:** `"4xx:MISSING_OR_INVALID_KEY":29,"4xx:FORBIDDEN_ROLE":22,"4xx:MALFORMED_BODY":15,"4xx:SYSTEM_MISMATCH":1,"4xx:NOT_FOUND":5,"4xx:WEBHOOK_UNVERIFIED":1,"samples_accepted":8,"duplicates":1,"breaches":2,"series_joins":1`.
+- **Final totals, concurrency run:** `samples_accepted 44, duplicates 38, breaches 2, series_joins 20`.
+- **Checks.** These equal the requests sent, the 4xx totals equal the 4xx request lines (73), and the values never decrease.
+
+### E195 detail
+
+- **At LOG_LEVEL=DEBUG:** exactly one line per evaluation. That is 7 in r01, the 7 samples that had a threshold and were not duplicates. In r08 it is 44, the 44 accepted samples.
+- **No line for:** duplicates, or the metric that has no threshold.
+- Example: `DEBUG [api.detection] threshold evaluation: sample_id=smp-a34bdaca… system_id=sys-42 metric_name=accuracy_drift threshold_version_id=thr-1 comparator=gt limit=0.30 value=0.34 breached=True`.
+- **Exact value.** A sample of 0.300000000000000000001 is logged exactly: `value=0.300000000000000000001 breached=True`.
+- **At LOG_LEVEL=INFO:** 0 evaluation lines, as expected.
+
+### Log grep and E101/E102
+
+- **Scope.** 13 files: web, worker, seed and migrate logs from the 3 fresh runs, plus the r09 web log. 1,120 lines in all.
+- **Search terms, all with 0 hits:**
+  - the three full keys;
+  - all 6-character fragments of each key (17, 15 and 16 fragments);
+  - each key's SHA-256: full, first 16 and first 8 hex characters;
+  - "bearer" and "authorization", in any case;
+  - the wrong key.
+- **Webhook terms, also all with 0 hits:**
+  - receiver addresses 127.0.0.1:9401, :9402 and :9409;
+  - the paths /hook, /cred, /frag, /fail, /dead and /order;
+  - query values team=x, probeQS123, probeQS456 and probeDEAD1;
+  - credentials probeuser and probeSECRETpw;
+  - fragment fragPROBE77, and probeFTPhost / ftp://.
+- **Only URLs found.** The only URLs in any log are uvicorn's startup lines, `http://127.0.0.1:8000` and `:8001`.
+- **Request lines carry no query string.** The JSON `path` never includes it.
+- Evidence: `probe/reprobe/log_grep_reprobe.txt`.
+
+#### New observations (not spec violations)
+
+1. **Two lines per request.** uvicorn's plain-text access line (`INFO:     127.0.0.1:… "GET /v1/events?since=… HTTP/1.1" 200 OK`) is still printed alongside the JSON line. The spec asks for one JSON line, and that holds, but a log pipeline sees two lines per request. The uvicorn line includes the query string. Our API's query strings carry no secrets.
+2. **event_id is inconsistent.** It is missing from audit lines (200 and 404), from stub lines for real events, and from the gap-closing ingest. It is present on detail 404 lines, which echo the unknown id `evt-unknown`. The spec's "when relevant" is not defined further.
+3. **Counters are snapshots.** Each line holds the full cumulative snapshot, one line per increment: a breach or series-join request writes two counter lines. That is about one counter line per request (85 counter lines for 102 requests), so the volume is roughly double. The counters are per process and in memory. A counters line can appear before the request line it belongs to.
+4. **Mixed formats.** The debug evaluation lines and the `ERROR [api] unhandled exception: type=…` lines are plain text, not JSON. The spec requires JSON only for the request line. Worker lines are also plain text (`INFO [worker] delivery attempt: notification_id=… webhook_id=… attempt=… status=… duration_ms=…`). Worker lines carry ids only, never URLs.
+5. **Log `ts` follows the simulated clock.** In r01_debug the log file was last written at real time 05:58:14Z, but the last request line has `"ts":"2026-10-18T06:14:41Z"`, after +1115 s of simulated advance. This is consistent with the spec's rule that time comes only from `clock.now()`, but log times will not line up with wall-clock time in test runs that advance the clock.
+6. **Extra keys.** Ingest lines add `outcome` (healthy, duplicate, breach, series_join or stored) and error lines add `error_code`. Both are extra keys, and harmless.
+7. **No DB → 401 without a key.** With DATABASE_URL unset (r09), a request without a key still gets 401 rather than 500, and actor_id is null on 500 lines even when a valid key was sent. This fits the earlier E61 observation that missing configuration fails per request, not at startup.
+
+#### Shutdown
+
+- The web and worker processes are stopped, the r09 web process on port 8001 was killed, and ports 8000 and 8001 do not answer. The receivers were threads inside the probe scripts and ended with them.
+- The PG16 container `ledger-pg` on port 5434 is still running.
+- Running the app creates `__pycache__` folders inside the repo; I made no other change there.
