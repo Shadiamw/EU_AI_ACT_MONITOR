@@ -52,24 +52,33 @@ def test_detail_is_the_contract_event_shape_and_records_a_view(
     assert trail[-1]["actor_id"] == "viewer-1"
 
 
-def test_detail_decimals_are_exact_json_numbers(client: ApiClient) -> None:
+@pytest.mark.parametrize(
+    ("value", "metric_name", "metric_type", "limit"),
+    [
+        ("0.340000000000000000000000000001", "accuracy_drift", "drift", "0.30"),
+        ("0.1234567890123456789", "accuracy", "performance", "0.70"),
+    ],
+)
+def test_detail_decimals_are_exact_json_numbers(
+    client: ApiClient, value: str, metric_name: str, metric_type: str, limit: str
+) -> None:
     content = json.dumps(
         {
             "system_id": "sys-42",
-            "metric_name": "accuracy_drift",
-            "metric_type": "drift",
+            "metric_name": metric_name,
+            "metric_type": metric_type,
             "value": "VALUE",
             "timestamp": "2026-09-27T10:05:00Z",
         }
-    ).replace('"VALUE"', "0.340000000000000000000000000001")
+    ).replace('"VALUE"', value)
     event_id = post_raw(client, content).json()["flagged_event_id"]
     text = get(client, f"/v1/events/{event_id}").text
     # Numbers, not strings, with every digit (spec 1.6; decision 124).
-    assert '"observed_value":0.340000000000000000000000000001' in text.replace(" ", "")
-    assert '"threshold_value":0.30' in text.replace(" ", "")
+    assert f'"observed_value":{value},' in text.replace(" ", "")
+    assert f'"threshold_value":{limit},' in text.replace(" ", "")
     parsed = json.loads(text, parse_float=Decimal)
-    assert parsed["observed_value"] == Decimal("0.340000000000000000000000000001")
-    assert parsed["threshold_value"] == Decimal("0.30")
+    assert parsed["observed_value"] == Decimal(value)
+    assert parsed["threshold_value"] == Decimal(limit)
 
 
 def test_list_returns_summaries_newest_first(client: ApiClient) -> None:

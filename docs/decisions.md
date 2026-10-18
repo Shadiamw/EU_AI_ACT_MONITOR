@@ -1102,8 +1102,10 @@ Decided 17 and 18 October 2026.
      `flagged_event_id` when that sample had one. A duplicate with a different value is still
      a duplicate: 200, no 409, and the stored value is kept. It returns before step 6, so it
      does not call `gaps.close_if_open`: an open gap stays FLAGGED until a new sample arrives.
-     It creates nothing else and appends nothing. Reason: the spec's step order, and the
-     contract has no conflict code. Risks: a sender that resends a changed value under an
+     It creates nothing else and appends nothing. Reason: the contract lists only 201 for a
+     created sample and says nothing about duplicates, so the spec decides, and step 5 returns
+     before step 6. Risks: a client that insists on 201 for a duplicate (flipping the status is
+     one line in `app/ingestion.py`); a sender that resends a changed value under an
      existing timestamp gets 200 and no sign the value was dropped; a sender that only replays
      old samples during an outage keeps last_received_at fresh, so the sweeper opens no new gap
      for that time, while an already open gap stays open. Spec Appendix B lists the 200 for
