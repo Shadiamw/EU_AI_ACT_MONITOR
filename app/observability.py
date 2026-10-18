@@ -7,16 +7,20 @@
   The path is logged without its query string. Nothing else from the request is logged: no
   header (so never a key), no body (so never a webhook URL), no query value.
 - Counters, kept in memory per process and readable with `counter_values()`: samples
-  accepted, duplicates, breaches, series joins, and 4xx responses by error code. The ingest
-  outcome on the log line makes the same counts recoverable from the logs.
+  accepted, duplicates, breaches, series joins, and 4xx responses by error code. Each change
+  is logged as one JSON line `{ts, level, counters}` with the process's current totals on the
+  `api.counters` logger, at INFO.
 - Threshold evaluations are logged at DEBUG on `api.detection` by app/ingestion.py.
 
-The web process's log handler is Part 4's (the server's logging configuration); the `api`
-logger's level follows LOG_LEVEL (app/main.py).
+`configure_logging` (called by app/main.py) gives the `api` logger its own stream handler and
+sets its level from LOG_LEVEL, so the lines reach the server's output without any server log
+configuration (decision 132). Records still propagate, so a root handler that Part 4 adds sees
+them too; Part 4 then removes this handler (integration_notes.md 5.12).
 """
 
 import json
 import logging
+import sys
 import threading
 import time
 import uuid
@@ -30,6 +34,7 @@ from app import clock
 from app.formats import api_time
 
 logger = logging.getLogger("api.request")
+counters_logger = logging.getLogger("api.counters")
 
 SAMPLES_ACCEPTED = "samples_accepted"
 DUPLICATES = "duplicates"
@@ -43,6 +48,9 @@ _lock = threading.Lock()
 def count(name: str) -> None:
     with _lock:
         _counters[name] += 1
+        totals = dict(_counters)
+    line = {"ts": api_time(clock.now()), "level": "INFO", "counters": totals}
+    counters_logger.info(json.dumps(line, separators=(",", ":")))
 
 
 def counter_values() -> dict[str, int]:
@@ -54,6 +62,27 @@ def counter_values() -> dict[str, int]:
 def reset_counters() -> None:
     with _lock:
         _counters.clear()
+
+
+class _ApiFormatter(logging.Formatter):
+    """JSON lines as they are; any other line with its level and logger name."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        if message.startswith("{"):
+            return message
+        return f"{record.levelname} [{record.name}] {message}"
+
+
+def configure_logging(level: str) -> None:
+    """Attach one stream handler to the `api` logger (once per process) and set its level."""
+    api_logger = logging.getLogger("api")
+    api_logger.setLevel(level)
+    if not any(getattr(h, "_api_handler", False) for h in api_logger.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(_ApiFormatter())
+        handler._api_handler = True  # type: ignore[attr-defined]
+        api_logger.addHandler(handler)
 
 
 def note(request: Request, **fields: str) -> None:

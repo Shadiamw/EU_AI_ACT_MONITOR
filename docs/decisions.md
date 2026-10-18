@@ -1257,3 +1257,19 @@ Decided 17 and 18 October 2026.
      message constants stay the contract messages. `app/db.py` is kept as it is and stays
      marked STUB for Part 4, which may add `lock_timeout` and pool settings. Decision 27's
      wrong-method 404 is confirmed for Part 1's routes.
+
+132. **The `api` logs reach the server's output; counters are logged.** The final spec check
+     (docs/final_spec_check_results.md, F2 to F4) started the app the README way and found
+     that the spec 1.8 lines never left the process: the `api` logger had no handler, so
+     Python printed only WARNING and above, and the counters were kept in memory only.
+     `observability.configure_logging`, called by `create_app`, now gives the `api` logger one
+     stream handler on stderr (JSON lines as they are; other lines as `LEVEL [logger]
+     message`) and its LOG_LEVEL. Records still propagate, so a root handler sees them too.
+     "Log counters (or metrics)" is read as a log line: each counter change writes one JSON
+     line `{ts, level: "INFO", counters: {...}}` with the process's current totals on
+     `api.counters`. Risk: if Part 4 adds a root handler without removing this one, each line
+     is written twice; integration_notes.md 5.12 says to remove it. The same check found
+     (F1) that POST /v1/webhooks read its body before the key and role check, so `{bad` got
+     400 instead of 401 or 403; the body is now parsed in a dependency after `require`, as
+     POST /v1/metrics does (spec 4, order of checks). That is a fix to the spec, not a new
+     reading.

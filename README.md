@@ -300,8 +300,8 @@ and threshold versions in the 0001 stub) and its endpoints are described in
 .venv/bin/mypy              # strict; checks app, migrations, tests and tools
 ```
 
-At the time of writing the suite collects 932 tests: 532 for Part 2, 229 for Part 3 in
-`tests/worker/` and 171 for Part 1 in `tests/part1/`. All pass on the Docker setup and on a
+At the time of writing the suite collects 947 tests: 532 for Part 2, 229 for Part 3 in
+`tests/worker/` and 186 for Part 1 in `tests/part1/`. All pass on the Docker setup and on a
 native PostgreSQL 16 server.
 
 ## 6. Known limits and operating notes

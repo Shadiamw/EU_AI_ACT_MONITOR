@@ -236,3 +236,32 @@ def test_auth_matrix_on_ingest(client: ApiClient, owner_engine: Engine) -> None:
     assert set(mismatch.json()) == {"error_code", "message"}
     assert mismatch.json()["error_code"] == "SYSTEM_MISMATCH"
     assert rows(owner_engine, "SELECT * FROM metric_sample") == []
+
+
+# Spec 4, order of checks: 401, then 403, then body validation (400). Final spec check F1: the
+# body must not be read before the key and the role are checked, even when it is not JSON.
+@pytest.mark.parametrize(
+    ("path", "caller", "status", "error_code"),
+    [
+        ("/v1/webhooks", None, 401, "MISSING_OR_INVALID_KEY"),
+        ("/v1/webhooks", "wrong", 401, "MISSING_OR_INVALID_KEY"),
+        ("/v1/webhooks", "sys-42", 403, "FORBIDDEN_ROLE"),
+        ("/v1/webhooks", "viewer-1", 400, "MALFORMED_BODY"),
+        ("/v1/webhooks", "rev-1", 400, "MALFORMED_BODY"),
+        ("/v1/metrics", None, 401, "MISSING_OR_INVALID_KEY"),
+        ("/v1/metrics", "viewer-1", 403, "FORBIDDEN_ROLE"),
+        ("/v1/metrics", "sys-42", 400, "MALFORMED_BODY"),
+        ("/v1/events/evt-none/disposition", None, 401, "MISSING_OR_INVALID_KEY"),
+        ("/v1/events/evt-none/disposition", "viewer-1", 403, "FORBIDDEN_ROLE"),
+    ],
+)
+def test_an_unparseable_body_is_checked_after_the_key_and_role(
+    client: ApiClient, path: str, caller: str | None, status: int, error_code: str
+) -> None:
+    headers = {"Content-Type": "application/json"}
+    if caller == "wrong":
+        headers["Authorization"] = "Bearer not-a-real-key"
+    elif caller is not None:
+        headers.update(bearer(caller))
+    response = client.request("POST", path, content="{bad", headers=headers)
+    assert (response.status_code, response.json()["error_code"]) == (status, error_code)

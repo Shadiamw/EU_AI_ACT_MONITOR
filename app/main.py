@@ -4,8 +4,6 @@ The test-only routes (POST /v1/test/clock/advance, POST /v1/test/reset) and /hea
 and are not mounted here yet.
 """
 
-import logging
-
 from fastapi import FastAPI
 
 from app import config, errors, observability
@@ -21,7 +19,7 @@ def create_app() -> FastAPI:
     errors.install(app)
     # Outermost, so the request log line also covers the 500 body from errors.install.
     app.add_middleware(observability.RequestLogMiddleware)
-    logging.getLogger("api").setLevel(config.log_level())
+    observability.configure_logging(config.log_level())
     return app
 
 

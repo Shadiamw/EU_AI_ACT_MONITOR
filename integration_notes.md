@@ -626,7 +626,7 @@ docker start ledger-pg
    both at WARNING (decision 106), and Part 4's logging configuration must not lower them. Do not turn on
    PostgreSQL statement logging (`log_statement`, `log_min_duration_statement` with
    parameters) and do not set SQLAlchemy `echo`: both would write key digests, payloads and
-   webhook URLs to the logs. The `api.request` line format is decision 126.
+   webhook URLs to the logs. The `api.request` line format is decision 126. `create_app` attaches its own stderr handler to the `api` logger (decision 132); if Part 4's logging configuration adds a root handler, remove that one so lines are not written twice.
 2. **Body size limit.** Nothing in the app limits the request body. Set one at the load
    balancer or server (Uvicorn has none by default), for example 64 KiB for every route.
 3. **lock_timeout or statement_timeout** at connection level (section 5.5). A timeout inside
@@ -761,7 +761,7 @@ Verify and export take no lock and never wait for appends (decisions 17 and 32).
 ## 8. Integration checklists
 
 Run all commands from the repository root with the environment from section 5.10. "Full suite"
-means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 932 tests.
+means `.venv/bin/pytest`, which must pass with no failures or errors. Today it runs 947 tests.
 
 ### Part 1
 
