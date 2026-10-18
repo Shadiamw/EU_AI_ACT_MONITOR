@@ -22,9 +22,11 @@ primary_region = "iad"
 [http_service]
   internal_port = 8000
   force_https = true
+  # Idle-stop to save free-trial allowance. Before a demo: ./scripts/fly-wake.sh
+  # After a demo: ./scripts/fly-sleep.sh
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
   processes = ["api"]
 
   [[http_service.checks]]
@@ -32,10 +34,17 @@ primary_region = "iad"
     timeout = "5s"
     grace_period = "30s"
     method = "GET"
-    path = "/healthz"
+    # /healthz can return 503 when the sweeper is stale; Fly treats that as down.
+    path = "/livez"
 
 [deploy]
   release_command = "prepare"
+
+# Keep processes running after crashes/stops (worker has no HTTP service, so it
+# otherwise idle-stops and /healthz goes stale).
+[[restart]]
+  policy = "always"
+  retries = 10
 
 [[vm]]
   size = "shared-cpu-1x"

@@ -13,6 +13,12 @@ from app import config, db, worker
 router = APIRouter()
 
 
+@router.get("/livez")
+def livez() -> JSONResponse:
+    """Process liveness for cloud load balancers. Always 200 if the API process is up."""
+    return JSONResponse({"ok": True})
+
+
 @router.get("/healthz")
 def healthz() -> JSONResponse:
     values = worker.health_values(db.get_engine())

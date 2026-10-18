@@ -461,6 +461,9 @@ Postgres, the worker, or pytest.
 Postgres. Public API: `https://eu-ai-act-monitor-api.fly.dev`. Point Vercel
 `API_BASE_URL` at that URL so the UI is fully cloud-hosted (no laptop tunnel).
 
+To save free-trial allowance, machines are stopped when idle. Before a demo:
+`./scripts/fly-wake.sh` (waits until `/healthz` is 200). After: `./scripts/fly-sleep.sh`.
+
 A one-command walkthrough of ingest → webhook → gap → verify is in
 [`tools/demo_showcase.sh`](tools/demo_showcase.sh). The passwords and keys in the compose
 file are the local test values from section 5.4 and `tests/conftest.py`. AWS is not created
