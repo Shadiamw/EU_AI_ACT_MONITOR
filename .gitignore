@@ -10,3 +10,5 @@ build/
 test-results.xml
 web/
 .vercel/
+.vercel
+.env*
