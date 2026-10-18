@@ -24,3 +24,5 @@ def healthz() -> JSONResponse:
     age = values.sweeper_last_ran_seconds_ago
     stale = age is not None and age > 3 * config.sweep_interval_seconds()
     return JSONResponse(body, status_code=503 if stale else 200)
+
+
