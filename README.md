@@ -454,9 +454,12 @@ test suite). `GET /healthz` returns the three worker values from `worker.health_
 volume is created. `docker compose down -v` drops that volume.
 
 The same UI can be hosted on **Vercel** (`vercel.json` builds `web/` from `app/static`).
-Set `API_BASE_URL` to a publicly reachable API (Docker behind a tunnel, or any host running
-compose). Vercel only serves the static console; it does not run Postgres, the worker, or
-pytest.
+Set `API_BASE_URL` to the public API. Vercel only serves the static console; it does not run
+Postgres, the worker, or pytest.
+
+**Cloud (Fly.io):** `fly.toml` + `./scripts/deploy-fly.sh` deploy the API, worker, and
+Postgres. Public API: `https://eu-ai-act-monitor-api.fly.dev`. Point Vercel
+`API_BASE_URL` at that URL so the UI is fully cloud-hosted (no laptop tunnel).
 
 A one-command walkthrough of ingest → webhook → gap → verify is in
 [`tools/demo_showcase.sh`](tools/demo_showcase.sh). The passwords and keys in the compose

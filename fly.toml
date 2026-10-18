@@ -1,0 +1,48 @@
+# Fly.io: API (public) + worker. Postgres is a separate Fly Postgres app attached as secrets.
+# Deploy: ./scripts/deploy-fly.sh
+
+app = "eu-ai-act-monitor-api"
+primary_region = "iad"
+
+[build]
+
+[env]
+  ENVIRONMENT = "test"
+  LOCK_TIMEOUT = "5s"
+  LOG_LEVEL = "INFO"
+  CORS_ORIGINS = "*"
+  INGEST_KEY_SYS_42 = "test-ingest-key-sys-42-0d6f1c2e9b8a4f37"
+  REVIEWER_KEY = "test-reviewer-key-rev-1-5a7e3b9c1d2f4086"
+  VIEWER_KEY = "test-viewer-key-viewer-1-8c4d2e6f0a1b3957"
+
+[processes]
+  api = "api"
+  worker = "worker"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["api"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/healthz"
+
+[deploy]
+  release_command = "prepare"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["api"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["worker"]
