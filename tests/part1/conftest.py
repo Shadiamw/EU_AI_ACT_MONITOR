@@ -32,7 +32,13 @@ T0 = datetime(2026, 9, 27, 10, 5, tzinfo=UTC)
 
 # Tables the root conftest does not empty (Part 3's webhook, truncated with the delivery rows
 # that reference it), and the system rows the seed writes.
-OTHER_TABLES = ("notification_delivery", "webhook", "sweeper_heartbeat", "monitored_system")
+OTHER_TABLES = (
+    "notification_delivery",
+    "webhook",
+    "sweeper_heartbeat",
+    "monitored_system",
+    "clock_state",
+)
 
 # Contract Example 1, request body.
 EXAMPLE_1 = {

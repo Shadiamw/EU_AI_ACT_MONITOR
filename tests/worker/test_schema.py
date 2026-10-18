@@ -26,6 +26,8 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     },
     # spec 3.7: last_ran_at; `singleton` keeps it to one row (decision 95)
     "sweeper_heartbeat": {"singleton": "boolean", "last_ran_at": TIMESTAMPTZ},
+    # spec 4.5: offset_seconds; `singleton` keeps it to one row (decision 133)
+    "clock_state": {"singleton": "boolean", "offset_seconds": "bigint"},
     # spec 4.4 (Part 4, the 0001 stub; used by Part 1)
     "api_key": {"key_hash": "text", "role": "text", "actor_id": "text", "system_id": "text"},
     "threshold_version": {
@@ -238,7 +240,11 @@ def test_sweeper_heartbeat_holds_one_row(owner_engine: Engine) -> None:
 def test_application_role_has_normal_read_write_outside_the_ledger(
     owner_engine: Engine, table: str
 ) -> None:
-    """Spec 4.4: normal read/write on every table except the ledger; PUBLIC has nothing."""
+    """Spec 4.4: normal read/write on every table except the ledger; PUBLIC has nothing.
+
+    clock_state is SELECT-only for the application role: only reset and clock advance write it
+    (decision 133).
+    """
 
     def privileges(grantee: str) -> list[Any]:
         return sorted(
@@ -252,5 +258,8 @@ def test_application_role_has_normal_read_write_outside_the_ledger(
             )
         )
 
-    assert privileges("monitor_app") == ["DELETE", "INSERT", "SELECT", "UPDATE"]
+    if table == "clock_state":
+        assert privileges("monitor_app") == ["SELECT"]
+    else:
+        assert privileges("monitor_app") == ["DELETE", "INSERT", "SELECT", "UPDATE"]
     assert privileges("PUBLIC") == []

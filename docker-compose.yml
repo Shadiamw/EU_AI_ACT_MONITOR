@@ -1,0 +1,78 @@
+# One API process, one worker, PostgreSQL 16. ENVIRONMENT=test so the Pod demo can use
+# POST /v1/test/reset and POST /v1/test/clock/advance (docs/phase3_uncertainties.md).
+# The role script runs once, as the superuser, the first time the data volume is created.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    command: ["postgres", "-c", "max_connections=200"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./tests/sql/bootstrap_roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    # Host mapping optional: published as 5433 so a local Postgres on 5432 does not block
+    # `compose up`. API and worker reach this service as hostname `postgres` on the compose
+    # network; they do not need the host port.
+    ports:
+      - "5433:5432"
+
+  migrate:
+    build: .
+    command: ["prepare"]
+    environment: &app_env
+      DATABASE_URL: postgresql+psycopg://monitor_app:monitor_app@postgres:5432/monitor_test
+      DATABASE_ADMIN_URL: postgresql+psycopg://monitor_owner:monitor_owner@postgres:5432/monitor_test
+      ENVIRONMENT: test
+      LOCK_TIMEOUT: 5s
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # So the Vercel-hosted UI can call this API from another origin.
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+
+      # Same test-only keys as tests/conftest.py. Only digests are stored.
+      INGEST_KEY_SYS_42: test-ingest-key-sys-42-0d6f1c2e9b8a4f37
+      REVIEWER_KEY: test-reviewer-key-rev-1-5a7e3b9c1d2f4086
+      VIEWER_KEY: test-viewer-key-viewer-1-8c4d2e6f0a1b3957
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    command: ["api"]
+    environment: *app_env
+    # So a webhook on the host (tools/demo_showcase.sh) is reachable from the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["worker"]
+    environment: *app_env
+    # The image healthcheck calls /healthz, which only the API process serves.
+    # `docker compose up --wait` fails a long-running service that has no healthcheck,
+    # so this one only checks that the worker process is still alive.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

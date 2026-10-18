@@ -1,26 +1,25 @@
-"""STUB for Part 4: platform tables.
+"""Part 4 platform tables (spec 4.4).
 
-Part 4 owns migration 0001 (spec 4.4: clock_state, api_key, monitored_system, threshold_version,
-sweeper_heartbeat, database roles). Until Part 4's real 0001 replaces this file, it creates only
-the four Part 4 tables that Parts 1, 2 and 3 use, with the spec 4.4 names and columns:
+Creates the Part 4 tables Parts 1, 2 and 3 use, with the spec 4.4 names and columns:
 
-- monitored_system: one row per monitored system. Part 4's seed and reset insert it (sys-42:
+- monitored_system: one row per monitored system. Seed and reset insert it (sys-42:
   sampling_interval_s 300, gap_timeout_intervals 3, last_received_at = seed time). Part 1's
   ingest updates last_received_at; the gap sweeper reads it.
 - sweeper_heartbeat: a single row holding the real (wall-clock) time of the last sweep. The
-  worker writes it; Part 4's health endpoint reads it. The boolean key `singleton` keeps it to
-  one row (the spec names only last_ran_at; decision 95).
+  worker writes it; /healthz reads it. The boolean key `singleton` keeps it to one row
+  (decision 95).
 - api_key: one row per seeded credential, holding only the SHA-256 hex digest of the key (spec
   1.3, 4.4). Part 1's auth reads it.
 - threshold_version: the versioned threshold limits Part 1's ingest compares against (spec 1.4
   step 7, 4.4). A new limit is a new row with a higher version.
+- clock_state: a single row holding offset_seconds for the test environment (spec 4.5;
+  decision 133). The application role may only SELECT; reset and clock advance write as the
+  owner.
 
-clock_state stays with Part 4: the clock is still the real-time stub (app/clock.py).
-
-The database roles are created by tests/sql/bootstrap_roles.sql until Part 4 lands. The
-application role (the user in DATABASE_URL) gets normal read and write on all four tables
-(spec 4.4, Pinned: everything except the ledger). The application code never writes api_key or
-threshold_version; Part 4's seed and reset do, as the owner (decision 127).
+The database roles are created by tests/sql/bootstrap_roles.sql (open item 8). The application
+role gets normal read and write on every table except the ledger and clock_state (SELECT only
+on clock_state). The application code never writes api_key or threshold_version; seed and
+reset do, as the owner (decision 127).
 
 Revision ID: 0001
 Revises:
@@ -41,7 +40,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _ROLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
-TABLES = ("monitored_system", "sweeper_heartbeat", "api_key", "threshold_version")
+TABLES = ("monitored_system", "sweeper_heartbeat", "api_key", "threshold_version", "clock_state")
+WRITE_TABLES = ("monitored_system", "sweeper_heartbeat", "api_key", "threshold_version")
 ROLES = ("SYSTEM", "REVIEWER", "VIEWER")
 COMPARATORS = ("gt", "lt")
 
@@ -103,9 +103,17 @@ def upgrade() -> None:
             "system_id", "metric_name", "version", name="uq_threshold_version_version"
         ),
     )
-    for table in TABLES:
+    op.create_table(
+        "clock_state",
+        sa.Column("singleton", sa.Boolean, primary_key=True, server_default=sa.true()),
+        sa.Column("offset_seconds", sa.BigInteger, nullable=False, server_default="0"),
+        sa.CheckConstraint("singleton", name="ck_clock_state_single_row"),
+    )
+    for table in WRITE_TABLES:
         op.execute(f"REVOKE ALL ON TABLE {table} FROM PUBLIC")
         op.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} TO "{app_role}"')
+    op.execute("REVOKE ALL ON TABLE clock_state FROM PUBLIC")
+    op.execute(f'GRANT SELECT ON TABLE clock_state TO "{app_role}"')
 
 
 def downgrade() -> None:

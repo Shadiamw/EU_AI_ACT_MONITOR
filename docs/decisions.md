@@ -1047,6 +1047,54 @@ and the newer entry wins.
      ping and became 500 INTERNAL_ERROR. Decided during the Part 2 + Part 3 integration,
      15 October 2026.
 
+108. **CI runs the full suite and names every Phase 3 acceptance criterion.**
+     `.github/workflows/ci.yml` runs on every push and pull request. The test job starts
+     PostgreSQL 16, runs `tests/sql/bootstrap_roles.sql`, then `ruff check`, `ruff format
+     --check`, `mypy` and `pytest`. `tools/check_acceptance.py` reads that run's JUnit file and
+     requires the AC-02, AC-04, AC-06 and AC-15 tests to have passed. AC-12 is not required
+     (decision 89). A second job builds the image and starts `docker compose` until
+     `GET /healthz` returns 200. Reason: integration checklist item 8, and the deployment
+     owner's job is to support every acceptance criterion by running it.
+
+109. **The deployable unit is one image and two processes.** `Dockerfile` is Python 3.12, runs
+     as a non-root user, and includes uvicorn (section 5.7 of integration_notes.md, which
+     decision 50 had left out). `python -m app.runtime prepare` waits for PostgreSQL, runs
+     `alembic upgrade head` as the owner and calls `ensure_seed` with the addendum rule 7
+     payload `{"systems": ["sys-42"], "threshold_count": "2"}`. `api` and `worker` wait until
+     the migrated revision is the script head, seed again (a second call appends nothing) and
+     then exec uvicorn or the worker. `docker-compose.yml` is the local and single-host
+     shape: postgres:16 with `max_connections=200`, one API and one worker. Roles are created
+     by `tests/sql/bootstrap_roles.sql` as the superuser, once, because `monitor_owner` has no
+     CREATEROLE (open item 8). Those passwords are the README's local and CI passwords, not
+     production secrets. Reason: one image can be the API or the worker, and a migration role
+     without CREATEROLE cannot create the roles spec 4.4 puts in 0001.
+
+110. **`LOCK_TIMEOUT` is the application connection's lock_timeout.** When it is set,
+     `app/db.py` passes it as libpq `options=-c lock_timeout=...`. The value must be a
+     positive integer plus `ms`, `s` or `min`, so it cannot carry a second setting. Compose
+     sets `5s`. The test suite does not set it: the concurrency tests hold the append lock
+     until every caller is waiting, which can take longer than 5 seconds (decision 80). A
+     wait that runs out is SQLSTATE 55P03 and, in the API, 500 INTERNAL_ERROR (decision 36).
+     Reason: decision 10, without making the lock-wait tests time out.
+
+111. **`GET /healthz`.** No authentication. The body is exactly
+     `sweeper_last_ran_seconds_ago`, `pending_deliveries` and
+     `oldest_pending_delivery_seconds` from `worker.health_values` (decision 97). Status 200
+     when the sweeper has not run yet, or last ran within `3 * SWEEP_INTERVAL_SECONDS`.
+     Status 503, with the same body, when the last sweep is older than that. A database
+     error is 500 INTERNAL_ERROR, like any other exception. Reason: spec 4.6 names the fields
+     and leaves the 503 rule to Part 4. Three missed sweep intervals is the threshold, and a
+     fresh process is not failed before its first sweep.
+
+112. **AWS and the Evidently format are recorded, not invented.**
+     `docs/phase3_uncertainties.md`. This repository creates no cloud resources. The image
+     and the compose file are what RDS PostgreSQL 16 and two processes would run. There is
+     no Evidently parser: ingest is Part 1, and the only metric document the ledger already
+     stores is the EVENT_FLAGGED payload in the README worked example, with non-integer
+     numbers as decimal strings. CI does not accept an Evidently report as input. Reason:
+     the deployment part owns these Phase 3 uncertainties, and neither was decided by Parts
+     2 or 3.
+
 ## Part 1 implementation decisions
 
 Written on `main` (commit `5310ae8`) as decisions 93 to 95, before Part 3's integration
@@ -1273,3 +1321,14 @@ Decided 17 and 18 October 2026.
      400 instead of 401 or 403; the body is now parsed in a dependency after `require`, as
      POST /v1/metrics does (spec 4, order of checks). That is a fix to the spec, not a new
      reading.
+
+133. **Test reset, clock advance and clock_state.** Migration 0001 adds `clock_state`
+     (`singleton` boolean PK, `offset_seconds` bigint). The application role may only SELECT;
+     `POST /v1/test/reset` and `POST /v1/test/clock/advance` write as the owner. Outside
+     `ENVIRONMENT=test` both routes are 404. Reset truncates the Part 1, 2 and 3 tables plus
+     `clock_state`, reinstalls `tools.seed_part1.seed`, and sets the offset to 0. Advance
+     adds whole seconds to the offset, then calls `gaps.sweep` and `notifications.deliver_due`
+     once each (spec 4.6). `clock.now()` in test is wall time plus the offset, read on its
+     own connection (open item 9); outside test it is wall time with no database read.
+     `wall_now()` stays real UTC. Reason: the Pod showcase cannot wait 15 real minutes for a
+     gap, and the smoke test of spec section 9 needs these two endpoints.

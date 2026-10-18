@@ -1,40 +1,38 @@
-"""The integration smoke test of spec section 9, in process, for Parts 1 to 3 together.
+"""The integration smoke test of spec section 9, over the real HTTP API.
 
-Part 4 owns the real smoke test: one script, run in CI and against the deployed service. Two
-of its steps call Part 4 endpoints that do not exist yet. Until they land, this test does
-their work in process; each such step is marked PENDING with the endpoint it waits for:
-
-- Step 1, POST /v1/test/reset (PENDING): the `seeded` fixture truncates the tables and runs
-  the seed stand-in (tools/seed_part1.py), which appends SEED.
-- Step 4, POST /v1/test/clock/advance (PENDING): the fake clock moves 900 s, then
-  gaps.sweep and notifications.deliver_due run once each, as spec 4.6 says the endpoint does.
-
-Every other step goes through the real HTTP API with real Bearer keys, and the verifier runs
-as a separate process, as the other team would run it.
+Part 4's reset and clock-advance endpoints are used for steps 1 and 4. The verifier runs as
+a separate process, as another team would run it. The fake clock is not used: advance moves
+clock_state.offset_seconds, and clock.now() reads it (decision 133).
 """
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
-from sqlalchemy import Engine
+import pytest
 
-from app import gaps, notifications
+from app.main import create_app
 from tests.api.conftest import ApiClient
 from tests.db_helpers import bearer
 from tests.part1.conftest import EXAMPLE_1, get
 from tests.script_helpers import run_subprocess
-from tests.worker.conftest import FakeClock, Receiver
+from tests.worker.conftest import Receiver
 
 
-def test_spec_section_9_smoke_in_process(
-    client: ApiClient,
-    app_engine: Engine,
-    fake_clock: FakeClock,
+@pytest.fixture
+def live_client() -> Iterator[ApiClient]:
+    with ApiClient(create_app()) as api_client:
+        yield api_client
+
+
+def test_spec_section_9_smoke(
+    live_client: ApiClient,
     receiver: Receiver,
     tmp_path: Path,
 ) -> None:
-    # 1. Reset (PENDING: POST /v1/test/reset; done by the fixture). The ledger is valid with
-    #    one entry, SEED.
+    client = live_client
+    # 1. Reset. The ledger is valid with one entry, SEED.
+    assert client.request("POST", "/v1/test/reset").json() == {"ok": True}
     assert get(client, "/v1/ledger/verify").json() == {
         "valid": True,
         "entries_checked": 1,
@@ -42,8 +40,8 @@ def test_spec_section_9_smoke_in_process(
     }
     assert [e["entry_type"] for e in get(client, "/v1/ledger/export").json()] == ["SEED"]
 
-    # 2. Register a webhook; accuracy_drift = 0.34 returns 201 with a flagged_event_id; the
-    #    webhook receives one flag_notification for that event.
+    # 2. Register a webhook; accuracy_drift = 0.34 returns 201 with a flagged_event_id.
+    #    Advance 1 s so the delivery pass in clock/advance sends the notification (spec 4.6).
     registered = client.request(
         "POST",
         "/v1/webhooks",
@@ -52,10 +50,19 @@ def test_spec_section_9_smoke_in_process(
     )
     assert registered.status_code == 201
     pings = len(receiver.calls)
-    response = client.request("POST", "/v1/metrics", headers=bearer("sys-42"), json=EXAMPLE_1)
+    # Use a timestamp at "now" so the sample is accepted under the live clock.
+    from app import clock
+
+    sample = {
+        **EXAMPLE_1,
+        "timestamp": clock.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    response = client.request("POST", "/v1/metrics", headers=bearer("sys-42"), json=sample)
     assert response.status_code == 201
     event_id = response.json()["flagged_event_id"]
-    assert notifications.deliver_due(app_engine) == 1
+    delivered = client.request("POST", "/v1/test/clock/advance", json={"seconds": 1})
+    assert delivered.status_code == 200
+    assert delivered.json()["deliveries"] == 1
     deliveries = receiver.calls[pings:]
     assert [(c.body["notification_type"], c.body["event_id"]) for c in deliveries] == [
         ("flag_notification", event_id)
@@ -72,11 +79,13 @@ def test_spec_section_9_smoke_in_process(
         "EVENT_VIEWED",
     ]
 
-    # 4. Advance 900 s with no samples (PENDING: POST /v1/test/clock/advance): a
-    #    monitoring_gap event appears and a second webhook call arrives.
-    fake_clock.advance(900)
-    [gap_id] = gaps.sweep(app_engine)
-    assert notifications.deliver_due(app_engine) == 1
+    # 4. Advance 900 s more with no samples: a monitoring_gap event appears and a second
+    #    webhook call arrives.
+    advanced = client.request("POST", "/v1/test/clock/advance", json={"seconds": 900})
+    assert advanced.status_code == 200
+    assert len(advanced.json()["gaps_opened"]) == 1
+    gap_id = advanced.json()["gaps_opened"][0]
+    assert advanced.json()["deliveries"] >= 1
     gaps_listed = get(client, "/v1/events?type=monitoring_gap").json()
     assert [item["event_id"] for item in gaps_listed] == [gap_id]
     deliveries = receiver.calls[pings:]
@@ -94,12 +103,15 @@ def test_spec_section_9_smoke_in_process(
     assert run.code == 0
     assert run.result == {"valid": True, "entries_checked": len(export), "first_mismatch": None}
 
-    # SEED, WEBHOOK_REGISTERED, then EVENT_FLAGGED (spec 2.4).
     [flagged] = [e for e in export if e["entry_type"] == "EVENT_FLAGGED"]
     assert flagged["seq"] == 3
     flagged["payload"]["observed_value"] = "0.35"
-    tampered = tmp_path / "tampered.json"
-    tampered.write_text(json.dumps(export), encoding="utf-8")
-    run = run_subprocess([str(tampered)])
-    assert run.code != 0
-    assert run.result == {"valid": False, "entries_checked": 3, "first_mismatch": "3"}
+    dirty = tmp_path / "tampered.json"
+    dirty.write_text(json.dumps(export), encoding="utf-8")
+    bad = run_subprocess([str(dirty)])
+    assert bad.code == 1
+    assert bad.result == {
+        "valid": False,
+        "entries_checked": 3,
+        "first_mismatch": "3",
+    }
