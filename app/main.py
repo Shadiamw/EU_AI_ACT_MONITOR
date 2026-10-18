@@ -1,9 +1,15 @@
-"""Application factory for the ingestion, event, ledger and webhook APIs."""
+"""Application factory: the ingestion, event, ledger, webhook and Phase 3 stub APIs.
+
+The test-only routes (POST /v1/test/clock/advance, POST /v1/test/reset) and /healthz are Part 4's
+and are not mounted here yet.
+"""
+
+import logging
 
 from fastapi import FastAPI
 
-from app import errors
-from app.api import ingestion_routes, ledger_routes, webhook_routes
+from app import config, errors, observability
+from app.api import ingestion_routes, ledger_routes, stub_routes, webhook_routes
 
 
 def create_app() -> FastAPI:
@@ -11,7 +17,11 @@ def create_app() -> FastAPI:
     app.include_router(ingestion_routes.router)
     app.include_router(ledger_routes.router)
     app.include_router(webhook_routes.router)
+    app.include_router(stub_routes.router)
     errors.install(app)
+    # Outermost, so the request log line also covers the 500 body from errors.install.
+    app.add_middleware(observability.RequestLogMiddleware)
+    logging.getLogger("api").setLevel(config.log_level())
     return app
 
 

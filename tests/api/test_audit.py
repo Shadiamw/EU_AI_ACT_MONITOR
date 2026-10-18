@@ -13,6 +13,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from app import clock
 from tests.api.conftest import (
+    EVENT_KEYS,
     NOT_FOUND,
     ApiClient,
     append_committed,
@@ -39,7 +40,9 @@ def audit(client: ApiClient, event_id: str, actor: str = "viewer-1") -> list[dic
 def view(client: ApiClient, event_id: str, actor: str) -> None:
     response = client.get(f"/v1/events/{event_id}", headers=as_actor(actor))
     assert response.status_code == 200, response.text
-    assert response.json() == {"event_id": event_id}
+    # Part 1's real endpoint returns the contract Event object (spec 1.6).
+    assert response.json()["event_id"] == event_id
+    assert set(response.json()) == EVENT_KEYS
 
 
 def stored_timestamp(owner_engine: Engine, seq: int) -> str:

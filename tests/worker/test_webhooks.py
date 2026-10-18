@@ -23,6 +23,7 @@ from tests.api.conftest import (
     as_actor,
     build_app,
 )
+from tests.db_helpers import bearer, install_keys
 from tests.worker.conftest import (
     FakeClock,
     Receiver,
@@ -425,13 +426,19 @@ def test_wrong_method_is_404(client: ApiClient) -> None:
     assert response.status_code == 404
 
 
-def test_the_real_app_mounts_the_webhook_route(receiver: Receiver, fake_clock: FakeClock) -> None:
+def test_the_real_app_mounts_the_webhook_route(
+    receiver: Receiver, fake_clock: FakeClock, owner_engine: Engine
+) -> None:
     from app.main import create_app
 
+    # Part 1's key auth replaced the stub resolver (always rev-1): the reviewer's seeded key.
+    install_keys(owner_engine)
     with ApiClient(create_app()) as real_client:
-        # The stub resolver in app/auth.py is always rev-1.
         response = real_client.request(
-            "POST", "/v1/webhooks", json={"url": receiver.url, "event_types": ["reminder"]}
+            "POST",
+            "/v1/webhooks",
+            headers=bearer("rev-1"),
+            json={"url": receiver.url, "event_types": ["reminder"]},
         )
     assert response.status_code == 201
 

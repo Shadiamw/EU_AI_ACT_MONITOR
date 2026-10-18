@@ -26,6 +26,7 @@ from tests.api.conftest import (
     flag_event,
     owner_rows,
 )
+from tests.db_helpers import bearer, install_keys
 
 SECRET = "SECRET-payload-value-4419"
 ENDPOINTS = ["/v1/events/evt-a/audit", "/v1/ledger/export", "/v1/ledger/verify"]
@@ -68,10 +69,12 @@ def test_reviewer_and_viewer_are_allowed(
 
 def test_the_default_stub_principal_is_rev_1(app_engine: Engine, owner_engine: Engine) -> None:
     flag_event(app_engine, "evt-a")
+    install_keys(owner_engine)
     with ApiClient(build_app(override_principal=False)) as client:
-        response = client.get("/v1/events/evt-a/audit")
-    # With no override, the stub resolver returns REVIEWER rev-1 (plan G3), so the call is
-    # allowed and its AUDIT_VIEWED names rev-1.
+        response = client.get("/v1/events/evt-a/audit", headers=bearer("rev-1"))
+    # The stub resolver (always rev-1, plan G3) was replaced by Part 1's key auth. With no
+    # override, the real resolver turns the seeded reviewer key into REVIEWER rev-1, so the
+    # call is allowed and its AUDIT_VIEWED names rev-1.
     assert response.status_code == 200
     audit_rows = [r for r in owner_rows(owner_engine) if r["entry_type"] == "AUDIT_VIEWED"]
     assert [r["actor_id"] for r in audit_rows] == ["rev-1"]
@@ -187,14 +190,20 @@ def test_the_real_app_does_not_mount_the_test_only_routes(
     from app.main import create_app
 
     flag_event(app_engine, "evt-a")
+    install_keys(owner_engine)
     before = owner_rows(owner_engine)
     with ApiClient(create_app()) as client:
-        # The event exists, but GET /v1/events/{id} belongs to Part 1 and is mounted only in
-        # the tests (decision 34): the real app treats it as an unknown route and logs nothing.
-        for path in ("/v1/events/evt-a", "/_test/typed", "/_test/session-info"):
-            response = client.get(path)
+        # The test-only routes (decision 34) are unknown routes in the real app.
+        for path in ("/_test/typed", "/_test/session-info"):
+            response = client.get(path, headers=bearer("viewer-1"))
             assert (response.status_code, response.json()) == (404, NOT_FOUND)
         # The three Part 2 endpoints are mounted.
         for path in ENDPOINTS:
-            assert client.get(path).status_code == 200
-    assert [r["entry_type"] for r in owner_rows(owner_engine)][len(before) :] == ["AUDIT_VIEWED"]
+            assert client.get(path, headers=bearer("viewer-1")).status_code == 200
+        # GET /v1/events/{id} was test-only until Part 1 landed; it is now Part 1's real
+        # endpoint, mounted by the real app, and its view is logged (spec 1.6).
+        assert client.get("/v1/events/evt-a", headers=bearer("viewer-1")).status_code == 200
+    assert [r["entry_type"] for r in owner_rows(owner_engine)][len(before) :] == [
+        "AUDIT_VIEWED",
+        "EVENT_VIEWED",
+    ]
