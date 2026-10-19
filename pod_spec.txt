@@ -1,0 +1,68 @@
+POST /v1/metrics — ingest a metric sample
+
+Purpose / REQs: REQ-01, REQ-03
+Auth: system key matching system_id
+Request: { system_id, metric_name, metric_type: "performance"|"drift", value, timestamp }
+Success: 201 with the stored sample; if value breaches the configured threshold, response also includes { "flagged_event_id": "<uuid>" }
+Errors: 400 malformed body, 401 bad/missing key, 403 key's system_id doesn't match body
+State change: may create a new event in FLAGGED state
+
+GET /v1/events — list events (drives REQ-02 gap detection too, since gaps appear here with no ingest call)
+
+Purpose / REQs: REQ-02, REQ-03
+Auth: any authenticated role
+Request: query params system_id, state, type (threshold_breach|monitoring_gap), since
+Success: 200, paginated array of Event summaries
+Errors: 401
+
+GET /v1/events/{event_id} — event detail
+
+Purpose / REQs: REQ-03, REQ-07, REQ-09, REQ-10, REQ-15
+Success: 200, full Event object (see 5.2) including detected_at, deadline_utc if assigned, harm-field confirmation status, and revision history
+Errors: 404 unknown id
+Side effect: this GET is itself logged per REQ-14 (viewer identity + timestamp)
+
+POST /v1/events/{event_id}/disposition — reviewer records or revises severity
+
+Purpose / REQs: REQ-07, REQ-08a, REQ-08b, REQ-09, REQ-10, REQ-13
+Auth: reviewer role required
+Request: { tier: "DEATH"|"CRITICAL_INFRASTRUCTURE_OR_WIDESPREAD"|"OTHER_SERIOUS"|"NOT_SERIOUS", rationale, harm_fields: {...} } — rationale required iff tier == NOT_SERIOUS; all four harm fields must be CONFIRMED or NOT_APPLICABLE
+Success: 200, updated Event with computed deadline_utc (absent for NOT_SERIOUS)
+Errors: 400 missing rationale on NOT_SERIOUS, 403 non-reviewer, 404 unknown event, 409 harm fields not all confirmed, 409 attempted deadline extension without logged rationale (REQ-10)
+State change: FLAGGED/UNDER_REVIEW → DISPOSITIONED (serious tiers) or CLOSED (NOT_SERIOUS); repeat calls append a revision (REQ-09) rather than overwrite
+
+GET /v1/events/{event_id}/report — assembled submission-ready report
+
+Purpose / REQs: REQ-08a, REQ-12
+Success: 200, Report object
+Errors: 409 if no disposition recorded yet (enforces REQ-08a), 404 unknown event
+
+GET /v1/events/{event_id}/audit — access/change log for one event
+
+Purpose / REQs: REQ-14
+Success: 200, array of { actor_id, action, timestamp }
+
+GET /v1/ledger/export and GET /v1/ledger/verify — independent chain verification
+
+Purpose / REQs: REQ-06
+export: 200, raw ledger entries + hashes for the other team to reverify offline
+verify: 200, { valid: bool, entries_checked, first_mismatch: null|<entry_id> } — runs the same check server-side
+Supports the Q4.3 plan (CI logs + signed chain report + external rerun)
+
+POST /v1/webhooks — register a URL for notification delivery
+
+Purpose / REQs: REQ-04, REQ-11 (lets the other team observe notification timing without access to internals)
+Request: { url, event_types: ["flag_notification","reminder"] }
+Success: 201, { webhook_id }
+Errors: 422 if url doesn't respond 2xx on a verification ping
+
+POST /v1/test/clock/advance (test environment only — 404 in production)
+
+Purpose: makes REQ-05, REQ-10, REQ-11 testable without real wall-clock waits
+Request: { seconds: <int> }
+Success: 200, { simulated_time }
+
+POST /v1/test/reset (test environment only)
+
+Purpose: clean state between test runs
+Success: 204, all events/metrics cleared, baseline fixtures reseeded
