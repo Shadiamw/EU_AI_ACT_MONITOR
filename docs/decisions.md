@@ -1359,6 +1359,52 @@ Decided 17 and 18 October 2026.
      hold a lone surrogate, so storing it would fail as a 500 after the checks had passed.
      Length counts code points, so a character outside the BMP counts once.
 
+155. **The evidence template is one line with plain decimal strings (Phase 4 spec 1.3).** The
+     two parts the spec prints on separate lines are joined with one space, and one space
+     separates the sentence from the context text. Observed and threshold values are written
+     with `format(value, 'f')`, so they keep their stored digits (0.30, never 0.3 or 3E-1), the
+     same strings as the EVENT_FLAGGED payload; the time uses the API format.
+
+156. **Evidence length counts code points, and any string within it is accepted as given
+     (Phase 4 spec 1.5).** 2,000 code points is accepted and 2,001 is 400, whatever the UTF-8 or
+     UTF-16 size; an empty or all-space evidence is not malformed and is stored unchanged.
+
+157. **The review start is one conditional UPDATE (Phase 4 spec 1.4, D3).**
+     `review.start_if_reviewer` returns False for any role but REVIEWER before any SQL, and
+     otherwise runs `UPDATE event SET state = 'UNDER_REVIEW' WHERE event_id = … AND type =
+     'threshold_breach' AND state = 'FLAGGED' RETURNING event_id`. At READ COMMITTED a parallel
+     view waits for the first one's commit and then matches nothing, so twenty parallel
+     reviewer views start the review once.
+
+158. **CONFIRMED with null evidence over an earlier override restores the pre-fill and counts as
+     a change (Phase 4 spec 1.5).** The stored evidence goes back to `prefill_evidence`, and the
+     field gets the caller as `confirmed_by` and `now` as `confirmed_at`, because its stored
+     evidence differs.
+
+159. **`harm_context.context_text` is NOT NULL (Phase 4 spec 1.7).** A field with nothing to say
+     has no row, which the pre-fill already turns into null evidence, so a null text row would
+     only be a second way to say the same thing.
+
+160. **`harm_context` is read without a lock (Phase 4 spec 1.3).** It is changed only by
+     migration or seed, never by the API or the worker, so the pre-fill reads it with a plain
+     SELECT inside the ingest transaction and takes no row lock.
+
+161. **REVIEW_STARTED is appended by the event-detail route, after EVENT_VIEWED (Phase 4 spec
+     1.4, Addendum rule 4).** `start_if_reviewer` appends nothing; when it reports a start, the
+     route appends REVIEW_STARTED with `{"event_id", "prior_state": "FLAGGED", "new_state":
+     "UNDER_REVIEW"}` after `audit.record_view`, in the same transaction, so a failed view
+     rolls back the state change and both entries.
+
+162. **Log lines and commits (Phase 4 spec 1.8).** The review-start INFO line is written after
+     the route's commit, so it is never logged for a start that was rolled back. The
+     field-change INFO lines are written inside the caller's transaction by
+     `apply_harm_fields`, before Part 2 commits.
+
+163. **apply_harm_fields locks in field_key order and reports in contract order (Phase 4 spec
+     1.2 and 1.5).** The four harm_field rows are locked with one `SELECT … ORDER BY field_key
+     FOR UPDATE`, after the caller's event lock; the changed keys it returns and its log lines
+     follow the contract's order of the four fields.
+
 ## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)
 
 ## Part 3 decisions (Phase 4 escalations and reminders; numbers 194 to 213)

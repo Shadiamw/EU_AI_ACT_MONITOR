@@ -466,43 +466,136 @@ from this repository. What is still open, including the Evidently report format,
 
 ## 10. Phase 4 Part 1: review and harm fields
 
-OWNER NOTES, delete this block when your section is written.
+Part 1 of Phase 4 adds the human review of a flagged breach event: the four harm fields are
+pre-filled at flag time, a reviewer's first view starts the review, and a disposition's harm
+decisions are validated and written. It is built on branch `phase4-part1-review` from the base
+commit 4d1487e. Decisions 154 to 163 in [docs/decisions.md](docs/decisions.md) record the
+choices the specification left open.
 
-Branch name: phase4-part1-review.
+### 10.1 What Part 1 does
 
-Stubs replaced: every function in app/review.py (prefill_harm_fields, start_if_reviewer,
-parse_harm_fields, require_complete, apply_harm_fields; the dataclasses and the two exceptions
-keep their shape), and the placeholder migration 0005_review.py.
+| Behavior | What happens | Spec |
+| --- | --- | --- |
+| Pre-fill at flag time | Ingest step 11 calls `review.prefill_harm_fields` for every new breach event. For each of the four keys, in contract order, a `harm_context` row for (system, key) gives the field the template text below as both `evidence` and `prefill_evidence`; no row gives null for both. Every field is PREFILLED_PENDING_CONFIRMATION with no confirmer, and no tier is written (INV-3). Gap events keep four NOT_APPLICABLE fields with null evidence. The EVENT_FLAGGED payload is unchanged. | 1.3 |
+| Review start | A REVIEWER's GET /v1/events/{id} of a FLAGGED threshold_breach event moves it to UNDER_REVIEW, once, and the route appends EVENT_VIEWED then REVIEW_STARTED in the same transaction. Viewers, other states and gap events change nothing (INV-12). | 1.4, D3 |
+| Validation of harm fields | `parse_harm_fields` turns a request's `harm_fields` into decisions, raising 400 MALFORMED_BODY for a malformed shape; `require_complete` raises 409 HARM_FIELDS_UNCONFIRMED unless all four keys are present and each is CONFIRMED or NOT_APPLICABLE. Both are pure. | 1.5, Addendum rule 2 |
+| apply_harm_fields | Writes complete decisions to the four rows. CONFIRMED with text stores the text, CONFIRMED with null stores the pre-fill, NOT_APPLICABLE stores the text or null. Only a field whose status or stored evidence changes gets the caller as `confirmed_by` and `now` as `confirmed_at`. Returns the changed keys. | 1.5 |
+| Event detail | GET /v1/events/{id} keeps the contract's Event shape and order, takes `disposition`, `revisions` and `deadline_utc` from `dispositions.summary`, and never shows `prefill_evidence`. | 1.6 |
+| Schema | Migration 0005 adds `harm_context` (SELECT only for the app role) and `harm_field.prefill_evidence`. | 1.7 |
+| Logging | On `api.review`: one DEBUG line per pre-fill with the event id and counts, one INFO line per changed harm field with the key and the two statuses, one INFO line per review start. No line carries evidence or context text. | 1.8 |
 
-Slots filled: the Phase 4 Part 1 slot in tests/worker/test_schema.py (harm_context,
-harm_field.prefill_evidence); decisions 154 to 173 under their heading in docs/decisions.md;
-this section.
+### 10.2 Where the code lives
 
-Files owned (Phase 4 Addendum 9.6): app/review.py, app/events.py (except the base commit's
-wiring), app/ingestion.py (step 11 only), the event-detail route, migration 0005, tests/part1
-additions, and the Phase 3 tests below.
+| What | Where |
+| --- | --- |
+| Pre-fill, review start, parsing, completeness, writing | `app/review.py` |
+| The pre-fill call in ingest step 11 | `app/ingestion.py` |
+| The review start and REVIEW_STARTED in the event-detail route | `app/api/ingestion_routes.py`, `get_event` |
+| The Event detail (summary fields from Part 2) | `app/events.py`, `detail` |
+| `harm_context` and `prefill_evidence` | `migrations/versions/0005_review.py` |
+| Decisions 154 to 163 | `docs/decisions.md`, Part 1 decisions |
+| Tests | `tests/part1/test_review_*.py`, and the Phase 3 tests in 10.6 |
 
-Phase 3 tests changed (9.10): tests/part1/test_ingestion.py Example 1 detail and
-test_new_event_content;
-tests/api/test_transactions.py::test_concurrent_audits_and_views_keep_a_clean_chain;
-tests/api/test_cross_verify.py::test_live_export_through_the_api_verifies;
-tests/api/test_audit.py::test_views_appear_in_the_audit_in_seq_order_after_the_earlier_entries;
-tests/worker/test_gaps.py::test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields.
+### 10.3 The evidence template
 
-Tests to mark integration (rule 10): the validation matrix's writes-nothing-and-appends-nothing
-half; the AC-07 confirmation record; evidence override through the API; a revision touches only
-changed fields through the API; AC-17.
+The template is one line. Values are plain decimal strings with their stored digits, the word
+is `above` for gt and `below` for lt, the time is in the API format, and one space separates
+the sentence from the context text (decision 155):
 
-Merge order: phase4-integration is created from main when the first part is ready; the parts
-merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
-4 Addendum 9.2).
+`{metric_name} = {observed_value} is {above|below} the limit {threshold_value} (threshold {threshold_version_id}) at {detected_at}. {context_text}`
 
-Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
-why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
-you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
-which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+For AC-07 (seeded sys-42, `fundamental_rights_infringement`, accuracy 0.61 against the 0.70
+limit of thr-2 at 2026-10-05T09:00:00Z) the stored evidence is:
 
-END OF OWNER NOTES.
+`accuracy = 0.61 is below the limit 0.70 (threshold thr-2) at 2026-10-05T09:00:00Z. sys-42 makes automated decisions about natural persons, so degraded performance can infringe their fundamental rights (Art. 3(49)(c)).`
+
+The other three fields of that event have null evidence.
+
+### 10.4 Running the tests
+
+With the test database of section 5 running:
+
+| Run | Command | Result on this branch |
+| --- | --- | --- |
+| Part 1's review tests | `.venv/bin/pytest tests/part1/test_review_*.py` | 114 passed, 44 skipped |
+| The whole suite | `.venv/bin/pytest` | 1076 passed, 44 skipped |
+| The integration-marked tests | `.venv/bin/pytest --run-integration -m integration` | 44 items, all fail at Part 2's 501 stub |
+| List the integration-marked tests | `.venv/bin/pytest --collect-only -q -m integration` | 44 of 1120 collected |
+
+The 44 integration items are the five functions of `tests/part1/test_review_integration.py`.
+They need Part 2's real POST /v1/events/{id}/disposition and pass only once Parts 1 and 2 are
+merged:
+
+| Test | Items | Needs |
+| --- | --- | --- |
+| `test_rejected_harm_fields_write_nothing_and_append_nothing` | 40 | Part 2's disposition route calling `parse_harm_fields` and `require_complete` before any write |
+| `test_ac07_confirmation_record_through_the_api` | 1 | Part 2's route calling `apply_harm_fields` with `now` = assigned_at |
+| `test_an_evidence_override_through_the_api_keeps_the_prefill` | 1 | as above, and revisions |
+| `test_a_revision_through_the_api_touches_only_the_changed_field` | 1 | as above, and revisions |
+| `test_ac17_detection_time_and_assignment_anchored_deadline` | 1 | Part 2's real deadlines (DEATH 10 days, `DEADLINE_CALENDAR=calendar_days`) |
+
+### 10.5 Facts for Parts 2 and 3
+
+The dataclasses in `app/review.py` are frozen and keep the base commit's shape:
+
+| Type | Fields |
+| --- | --- |
+| `PrefillFacts` | `metric_name: str`, `observed_value: Decimal`, `threshold_value: Decimal`, `comparator: str` (gt or lt), `threshold_version_id: str`, `detected_at: datetime` |
+| `HarmFieldDecision` | `status: str`, `evidence: str or None` (None both for null and for an omitted evidence) |
+| `ParsedHarmFields` | `complete: bool`, `fields: Mapping[str, HarmFieldDecision]` (the keys sent, in contract order, any of the three statuses) |
+| `HarmDecisions` | `fields: Mapping[str, HarmFieldDecision]` (all four keys, in contract order, each CONFIRMED or NOT_APPLICABLE) |
+
+The two exceptions and their exact response bodies:
+
+| Exception | Raised by | Status and body |
+| --- | --- | --- |
+| `HarmFieldsMalformed` | `parse_harm_fields` | 400 `{"error_code":"MALFORMED_BODY","message":"the request is malformed"}` |
+| `HarmFieldsUnconfirmed` | `require_complete` | 409 `{"error_code":"HARM_FIELDS_UNCONFIRMED","message":"all four harm fields must be CONFIRMED or NOT_APPLICABLE"}` |
+
+What the disposition route (Part 2) and the report (Part 3) can rely on:
+
+- `parse_harm_fields(raw)` takes None for BOTH an absent and a null `harm_fields`: pass
+  `body.get("harm_fields")`. An empty object `{}` is 409, not 400. Every value is checked
+  before completeness, so a malformed value is 400 even when keys are missing.
+- The disposition route must take `harm_fields` as RAW JSON, with no required field and no
+  content validation in its request model. Otherwise an absent `harm_fields` would become a
+  400 instead of the 409 the spec pins.
+- `apply_harm_fields(session, event_id, principal, decisions, now)` expects the event row
+  already locked by the caller. Its `now` becomes `confirmed_at`: pass the disposition's
+  assigned_at. It appends nothing to the ledger and writes nothing to the event row. It
+  returns the changed keys in contract order (it locks the four rows in field_key order).
+- `start_if_reviewer` appends nothing. The event-detail route appends EVENT_VIEWED then
+  REVIEW_STARTED. Part 2 does not call `start_if_reviewer`.
+- `dispositions.summary(session, event_id)` must return the contract's Event form
+  `{disposition, revisions, deadline_utc}` with times as API strings. events.detail places
+  these three values as given; `tests/part1/test_review_detail.py` pins this with contract
+  Example 2's values.
+- G2 is decision 154: evidence containing U+0000 or a lone surrogate is 400 MALFORMED_BODY,
+  because PostgreSQL cannot store it.
+- Evidence length counts code points: 2,000 is accepted and 2,001 is 400 (decision 156).
+- CONFIRMED with null over an earlier override puts the pre-fill back and counts as a change
+  (decision 158).
+
+### 10.6 Phase 3 tests changed (Addendum 9.10)
+
+| Test | Why |
+| --- | --- |
+| `tests/part1/test_ingestion.py`, the two contract Example 1 tests | the rights field is now pre-filled |
+| `tests/api/test_transactions.py::test_concurrent_audits_and_views_keep_a_clean_chain` | a reviewer view appends REVIEW_STARTED once |
+| `tests/api/test_cross_verify.py::test_live_export_through_the_api_verifies` | 13 entries instead of 12, one REVIEW_STARTED |
+| `tests/api/test_audit.py::test_views_appear_in_the_audit_in_seq_order_after_the_earlier_entries` | the views follow REVIEW_STARTED at seq 10 and 11 |
+| `tests/worker/test_gaps.py::test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields` | gap fields have a null `prefill_evidence` |
+| `tests/worker/test_schema.py`, the Phase 4 Part 1 slot | `harm_context` and `prefill_evidence` |
+
+### 10.7 Known limitations
+
+| Limitation | Decision |
+| --- | --- |
+| **The downgrade test runs other parts' downgrades.** The (b) test that downgrades to 0004 and back runs Parts 2 and 3's real downgrades once they are merged. | |
+| **A reviewer's view starts the review.** A reviewer's GET of a FLAGGED breach event starts the review (D3), so passive reads must use the viewer key. | 157, 161 |
+| **Field-change log lines come before the commit.** `apply_harm_fields` writes its INFO lines inside Part 2's transaction, so a rolled-back disposition can leave lines for changes that were not committed. | 162 |
+| **docs/part1_api.md is stale.** It still describes the Phase 3 harm fields (null evidence, no pre-fill) and the event detail without the review start; Part 1 does not update it. | |
+| **AC-17 assumes the default calendar.** The integration test expects deadline = assigned_at + 10 days, which holds only for `DEADLINE_CALENDAR=calendar_days`. | |
 
 ## 11. Phase 4 Part 2: dispositions and deadlines
 
