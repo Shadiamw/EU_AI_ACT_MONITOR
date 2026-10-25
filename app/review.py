@@ -1,14 +1,19 @@
 """Review (Phase 4 Part 1): harm-field pre-fill at flag time, the review start and the
 harm-field decisions of a disposition call (Phase 4 spec 1.3 to 1.5, Addendum rules 2 and 4).
 
-STUB for Phase 4 Part 1: written by the Phase 4 base commit with the behavior of spec section
-11 (Addendum rule 2 for parse_harm_fields and require_complete). Part 1 replaces every function
-body in this module. The signatures, PrefillFacts, HarmFieldDecision, ParsedHarmFields,
-HarmDecisions and the two exceptions keep their shape, because Parts 2 and 3 build against them.
+prefill_harm_fields is real (spec 1.3). The other four functions are still the STUBs of the
+Phase 4 base commit, with the behavior of spec section 11 (Addendum rule 2 for parse_harm_fields
+and require_complete); Part 1 replaces them. The signatures, PrefillFacts, HarmFieldDecision,
+ParsedHarmFields, HarmDecisions and the two exceptions keep their shape, because Parts 2 and 3
+build against them.
 
 Callers own transactions; nothing here commits.
+
+Logging: the pre-fill writes one DEBUG line on `api.review` with the event id and the counts of
+pre-filled and blank fields, never the evidence or the context text.
 """
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +26,13 @@ from sqlalchemy.orm import Session
 from app.auth import Principal
 from app.errors import ApiError
 from app.events import HARM_FIELDS
+from app.formats import api_time
+
+review_logger = logging.getLogger("api.review")
+
+# Spec 1.3: the comparator word of the evidence template.
+COMPARATOR_WORDS = {"gt": "above", "lt": "below"}
+PENDING = "PREFILLED_PENDING_CONFIRMATION"
 
 UNCONFIRMED_MESSAGE = "all four harm fields must be CONFIRMED or NOT_APPLICABLE"
 
@@ -82,19 +94,56 @@ class HarmDecisions:
     fields: Mapping[str, HarmFieldDecision]
 
 
+def evidence_text(facts: PrefillFacts, context_text: str) -> str:
+    """The pinned evidence template of spec 1.3, as one line: values as plain decimal strings
+    (the same strings as the EVENT_FLAGGED payload), the time in the API format, one space
+    before the context text."""
+    return (
+        f"{facts.metric_name} = {format(facts.observed_value, 'f')} is"
+        f" {COMPARATOR_WORDS[facts.comparator]} the limit {format(facts.threshold_value, 'f')}"
+        f" (threshold {facts.threshold_version_id}) at {api_time(facts.detected_at)}."
+        f" {context_text}"
+    )
+
+
 def prefill_harm_fields(
     session: Session, event_id: str, system_id: str, facts: PrefillFacts
 ) -> None:
-    """Insert the four harm fields of a new breach event (spec 1.3).
+    """Insert the four harm fields of a new breach event (spec 1.3), in contract order.
 
-    STUB for Phase 4 Part 1: the Phase 3 behavior, four PREFILLED_PENDING_CONFIRMATION rows with
-    null evidence; system_id and facts are not read yet."""
+    harm_context is read once for the system. A field with a context row gets the template text
+    as both evidence and prefill_evidence; a field without one gets null for both, so nothing is
+    guessed (AC-07). Every field is PREFILLED_PENDING_CONFIRMATION with no confirmer: the
+    pre-fill never confirms a field or sets a tier (INV-3)."""
+    contexts: dict[str, str] = {
+        row.field_key: row.context_text
+        for row in session.execute(
+            text("SELECT field_key, context_text FROM harm_context WHERE system_id = :system_id"),
+            {"system_id": system_id},
+        )
+    }
+    fields = [
+        {
+            "event_id": event_id,
+            "field_key": key,
+            "status": PENDING,
+            "evidence": evidence_text(facts, contexts[key]) if key in contexts else None,
+        }
+        for key in HARM_FIELDS
+    ]
     session.execute(
         text(
-            "INSERT INTO harm_field (event_id, field_key, status)"
-            " VALUES (:event_id, :field_key, 'PREFILLED_PENDING_CONFIRMATION')"
+            "INSERT INTO harm_field (event_id, field_key, status, evidence, prefill_evidence)"
+            " VALUES (:event_id, :field_key, :status, :evidence, :evidence)"
         ),
-        [{"event_id": event_id, "field_key": key} for key in HARM_FIELDS],
+        fields,
+    )
+    prefilled = sum(1 for field in fields if field["evidence"] is not None)
+    review_logger.debug(
+        "prefill: event_id=%s prefilled=%d blank=%d",
+        event_id,
+        prefilled,
+        len(fields) - prefilled,
     )
 
 

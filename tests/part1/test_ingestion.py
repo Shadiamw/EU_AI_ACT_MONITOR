@@ -32,6 +32,14 @@ PREFILLED = {
     "confirmed_by": None,
     "confirmed_at": None,
 }
+# Phase 4 spec 1.3: Example 1's rights field is pre-filled from the seeded sys-42 context row.
+# Typed out from the contract's Example 1 values and the spec 1.3 template.
+RIGHTS = "fundamental_rights_infringement"
+EXAMPLE_1_EVIDENCE = (
+    "accuracy_drift = 0.34 is above the limit 0.30 (threshold thr-1) at 2026-09-27T10:05:00Z."
+    " sys-42 makes automated decisions about natural persons, so degraded performance can"
+    " infringe their fundamental rights (Art. 3(49)(c))."
+)
 NOT_APPLICABLE = {
     "status": "NOT_APPLICABLE",
     "evidence": None,
@@ -93,7 +101,10 @@ def test_contract_example_1_flags_and_detail_shows_the_breach(
         "disposition": None,
         "deadline_utc": None,
         "revisions": [],
-        "harm_fields": {key: PREFILLED for key in HARM_FIELDS},
+        "harm_fields": {
+            key: {**PREFILLED, "evidence": EXAMPLE_1_EVIDENCE} if key == RIGHTS else PREFILLED
+            for key in HARM_FIELDS
+        },
     }
 
 
@@ -470,10 +481,18 @@ def test_new_event_content(client: ApiClient, owner_engine: Engine, fake_clock: 
     }
     harm = rows(
         owner_engine,
-        "SELECT field_key, status, evidence, confirmed_by, confirmed_at FROM harm_field"
-        " ORDER BY field_key",
+        "SELECT field_key, status, evidence, confirmed_by, confirmed_at, prefill_evidence"
+        " FROM harm_field ORDER BY field_key",
     )
-    assert harm == [{"field_key": key, **PREFILLED} for key in sorted(HARM_FIELDS)]
+    assert harm == [
+        {
+            "field_key": key,
+            **PREFILLED,
+            "evidence": EXAMPLE_1_EVIDENCE if key == RIGHTS else None,
+            "prefill_evidence": EXAMPLE_1_EVIDENCE if key == RIGHTS else None,
+        }
+        for key in sorted(HARM_FIELDS)
+    ]
     assert rows(
         owner_engine,
         "SELECT system_id, metric_name, event_id, opened_at, closed_at, occurrence_count"
