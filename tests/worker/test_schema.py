@@ -110,6 +110,27 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     },
 }
 
+# Phase 4 slots (Phase 4 Addendum 9.1). Each part adds the tables its migration creates, as
+# EXPECTED_COLUMNS["table"] = {...}, and the columns it adds to existing tables, as
+# EXPECTED_COLUMNS["table"]["column"] = "type", on its own lines between its two markers.
+# Phase 4 Part 1 slot (migration 0005).
+# End of the Phase 4 Part 1 slot.
+
+# Phase 4 Part 2 slot (migration 0006).
+# End of the Phase 4 Part 2 slot.
+
+# Phase 4 Part 3 slot (migration 0007).
+# End of the Phase 4 Part 3 slot.
+
+# The application role's privileges where they are not normal read and write (spec 4.4). A table
+# is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
+# migration does not create yet is inert.
+GRANT_EXCEPTIONS: dict[str, list[str]] = {
+    "clock_state": ["SELECT"],  # only reset and clock advance write it (decision 133)
+    "harm_context": ["SELECT"],  # Phase 4 spec 1.7: changed only by migration or seed
+    "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
+}
+
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)
 
 
@@ -243,7 +264,8 @@ def test_application_role_has_normal_read_write_outside_the_ledger(
 ) -> None:
     """Spec 4.4: normal read/write on every table except the ledger; PUBLIC has nothing.
 
-    clock_state is SELECT-only for the application role: only reset and clock advance write it
+    The tables in GRANT_EXCEPTIONS have the privileges listed there instead: clock_state is
+    SELECT-only for the application role because only reset and clock advance write it
     (decision 133).
     """
 
@@ -259,8 +281,6 @@ def test_application_role_has_normal_read_write_outside_the_ledger(
             )
         )
 
-    if table == "clock_state":
-        assert privileges("monitor_app") == ["SELECT"]
-    else:
-        assert privileges("monitor_app") == ["DELETE", "INSERT", "SELECT", "UPDATE"]
+    expected = GRANT_EXCEPTIONS.get(table, ["DELETE", "INSERT", "SELECT", "UPDATE"])
+    assert privileges("monitor_app") == expected
     assert privileges("PUBLIC") == []

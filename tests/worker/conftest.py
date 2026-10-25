@@ -6,12 +6,12 @@
   test clock does (spec, 'Clock (Pinned)').
 - `receiver` is a real HTTP server on 127.0.0.1 that records every webhook call and answers
   with the statuses the test queues. A test can run a check inside the call with `during`.
+  It lives in the root tests/conftest.py, so tests outside tests/worker can use it (Phase 4
+  Addendum 9.1); Call, Receiver and receiver are re-exported here, so imports from this
+  module keep working.
 """
 
-import json
-import threading
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -21,6 +21,9 @@ from sqlalchemy import Engine, text
 
 from app import clock
 from app.platform import with_phase4_tables
+from tests.conftest import Call as Call
+from tests.conftest import Receiver as Receiver
+from tests.conftest import receiver as receiver
 
 WORKER_TABLES = (
     "notification_delivery",
@@ -61,55 +64,6 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     fake = FakeClock(T0)
     monkeypatch.setattr(clock, "now", fake.now)
     return fake
-
-
-@dataclass
-class Call:
-    path: str
-    body: Any
-    observed: Any = None  # what `during` returned inside this call
-
-
-@dataclass
-class Receiver:
-    url: str
-    calls: list[Call] = field(default_factory=list)
-    statuses: list[int] = field(default_factory=list)  # answered in order, then default
-    default_status: int = 200
-    during: Callable[[], Any] | None = None
-
-    def next_status(self) -> int:
-        return self.statuses.pop(0) if self.statuses else self.default_status
-
-
-@pytest.fixture
-def receiver() -> Iterator[Receiver]:
-    state: Receiver
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length) or b"null")
-            observed = state.during() if state.during is not None else None
-            state.calls.append(Call(self.path, body, observed))
-            status = state.next_status()
-            self.send_response(status)
-            if 300 <= status < 400:
-                self.send_header("Location", "http://127.0.0.1:9/elsewhere")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def log_message(self, format: str, *args: Any) -> None:
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    state = Receiver(url=f"http://127.0.0.1:{server.server_port}/hook")
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield state
-    server.shutdown()
-    server.server_close()
-    thread.join()
 
 
 def closed_port_url() -> str:

@@ -112,3 +112,13 @@ def cors_origins() -> list[str]:
     if raw.strip() == "*":
         return ["*"]
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+# Phase 4 slots (Phase 4 Addendum 9.1). Each owner writes its settings between its own two
+# marker lines, and edits nothing else in this file.
+
+# Phase 4 Part 2 slot: DEADLINE_CALENDAR and DEADLINE_HOLIDAYS (Phase 4 spec 8).
+# End of the Phase 4 Part 2 slot.
+
+# Phase 4 Part 3 slot: ESCALATION_PERCENTAGES (Phase 4 spec 8).
+# End of the Phase 4 Part 3 slot.

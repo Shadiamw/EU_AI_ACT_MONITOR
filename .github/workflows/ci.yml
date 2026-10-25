@@ -39,8 +39,16 @@ jobs:
         run: ruff check . && ruff format --check . && mypy
       - name: Tests
         run: pytest --junitxml=test-results.xml
-      - name: Every Phase 3 acceptance criterion passed
-        run: python tools/check_acceptance.py test-results.xml
+      # Phase 4 Addendum 9.5: the integration-marked tests, the acceptance gate and the image
+      # job's acceptance runner and demo run only on main, on phase4-integration and on pull
+      # requests into main. The gate reads the flagged run's own JUnit file, because it counts
+      # a skipped test as not passed.
+      - name: Tests, including integration
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        run: pytest --run-integration --junitxml=test-results-integration.xml
+      - name: Every acceptance criterion passed
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        run: python tools/check_acceptance.py test-results-integration.xml
 
   image:
     runs-on: ubuntu-latest
@@ -50,6 +58,24 @@ jobs:
         run: docker compose up -d --build --wait
       - name: Health
         run: curl --fail --silent --show-error http://127.0.0.1:8000/healthz
+      # Part 4 writes the HTTP acceptance runner (tests/acceptance) and tools/demo_phase4.py
+      # (Phase 4 spec 4.8 and 12) and completes these two steps; until then they say so.
+      - name: HTTP acceptance runner
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        run: |
+          if [ -d tests/acceptance ]; then
+            BASE_URL=http://127.0.0.1:8000 pytest tests/acceptance
+          else
+            echo "tests/acceptance does not exist yet (Phase 4 Part 4)"
+          fi
+      - name: Phase 4 demo
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        run: |
+          if [ -f tools/demo_phase4.py ]; then
+            BASE_URL=http://127.0.0.1:8000 python tools/demo_phase4.py
+          else
+            echo "tools/demo_phase4.py does not exist yet (Phase 4 Part 4)"
+          fi
       - name: Stop
         if: always()
         run: docker compose down -v

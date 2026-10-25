@@ -463,3 +463,155 @@ A one-command walkthrough of ingest → webhook → gap → verify is in
 file are the local test values from section 5.4 and `tests/conftest.py`. AWS is not created
 from this repository. What is still open, including the Evidently report format, is in
 [docs/phase3_uncertainties.md](docs/phase3_uncertainties.md).
+
+## 10. Phase 4 Part 1: review and harm fields
+
+OWNER NOTES, delete this block when your section is written.
+
+Branch name: phase4-part1-review.
+
+Stubs replaced: every function in app/review.py (prefill_harm_fields, start_if_reviewer,
+parse_harm_fields, require_complete, apply_harm_fields; the dataclasses and the two exceptions
+keep their shape), and the placeholder migration 0005_review.py.
+
+Slots filled: the Phase 4 Part 1 slot in tests/worker/test_schema.py (harm_context,
+harm_field.prefill_evidence); decisions 154 to 173 under their heading in docs/decisions.md;
+this section.
+
+Files owned (Phase 4 Addendum 9.6): app/review.py, app/events.py (except the base commit's
+wiring), app/ingestion.py (step 11 only), the event-detail route, migration 0005, tests/part1
+additions, and the Phase 3 tests below.
+
+Phase 3 tests changed (9.10): tests/part1/test_ingestion.py Example 1 detail and
+test_new_event_content;
+tests/api/test_transactions.py::test_concurrent_audits_and_views_keep_a_clean_chain;
+tests/api/test_cross_verify.py::test_live_export_through_the_api_verifies;
+tests/api/test_audit.py::test_views_appear_in_the_audit_in_seq_order_after_the_earlier_entries;
+tests/worker/test_gaps.py::test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields.
+
+Tests to mark integration (rule 10): the validation matrix's writes-nothing-and-appends-nothing
+half; the AC-07 confirmation record; evidence override through the API; a revision touches only
+changed fields through the API; AC-17.
+
+Merge order: phase4-integration is created from main when the first part is ready; the parts
+merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
+4 Addendum 9.2).
+
+Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
+why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
+you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
+which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+
+END OF OWNER NOTES.
+
+## 11. Phase 4 Part 2: dispositions and deadlines
+
+OWNER NOTES, delete this block when your section is written.
+
+Branch name: chosen by the owner (for example phase4-part2-dispositions).
+
+Stubs replaced: dispositions.summary in app/dispositions.py; deadlines.compute and
+deadlines.current_calendar in app/deadlines.py; app/api/stub_routes.py (deleted); the
+placeholder migration 0006_dispositions.py.
+
+Slots filled: the Phase 4 Part 2 slot in app/config.py (DEADLINE_CALENDAR, DEADLINE_HOLIDAYS);
+the Phase 4 Part 2 slot in tests/worker/test_schema.py; decisions 174 to 193 under their
+heading in docs/decisions.md; this section.
+
+Files owned (Phase 4 Addendum 9.6): app/dispositions.py, app/deadlines.py, the disposition and
+report routes, the deletion of app/api/stub_routes.py, every router include or removal in
+app/main.py except Part 4's test-router line, migration 0006, and the Phase 3 stub tests below.
+
+Phase 3 tests changed (9.10): tests/part1/test_auth.py (ROUTES and STUBS); the stub tests in
+tests/part1/test_events_api.py; the 501 half of
+tests/part1/test_observability.py::test_a_stub_501_is_logged_at_info_and_a_500_at_error.
+
+Tests to mark integration (rule 10): AC-09 no escalation rows; the D2 revisions that check
+reminders are CANCELLED and re-planned; the rule 1 cases that check reminders.
+
+Merge order: phase4-integration is created from main when the first part is ready; the parts
+merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
+4 Addendum 9.2).
+
+Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
+why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
+you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
+which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+
+END OF OWNER NOTES.
+
+## 12. Phase 4 Part 3: escalations and reminders
+
+OWNER NOTES, delete this block when your section is written.
+
+Branch name: chosen by the owner (for example phase4-part3-escalations).
+
+Stubs replaced: escalations.plan and escalations.fire_due in app/escalations.py (instant is
+already real); the ignored escalation_pct and notification_id parameters of
+notifications.enqueue; HealthValues.overdue_escalations, fixed at 0; the placeholder migration
+0007_escalations.py.
+
+Slots filled: the Phase 4 Part 3 slot in app/config.py (ESCALATION_PERCENTAGES); the Phase 4
+Part 3 slot in tests/worker/test_schema.py (escalation, notification.escalation_pct); decisions
+194 to 213 under their heading in docs/decisions.md; this section.
+
+Files owned (Phase 4 Addendum 9.6): app/escalations.py (except instant), app/notifications.py,
+app/webhooks.py, app/worker.py, worker.health_values, migration 0007, and
+tests/worker/test_schema.py::test_notification_references_the_event_once.
+
+Phase 3 tests changed (9.10):
+tests/worker/test_schema.py::test_notification_references_the_event_once (partial unique
+indexes instead of uq_notification_event).
+
+Tests to mark integration (rule 10): the stricter and looser revisions through the API (Model 5
+Ex-1 timing); NOT_SERIOUS then reopen through the API; no duplicates, and worker against clock
+advance, through the clock-advance endpoint.
+
+Merge order: phase4-integration is created from main when the first part is ready; the parts
+merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
+4 Addendum 9.2).
+
+Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
+why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
+you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
+which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+
+END OF OWNER NOTES.
+
+## 13. Phase 4 Part 4: platform
+
+OWNER NOTES, delete this block when your section is written.
+
+Branch name: chosen by the owner (for example phase4-part4-platform).
+
+Stubs replaced: none from the base commit. Part 4 extends REQUIRED in tools/check_acceptance.py
+on its own branch, and writes the HTTP acceptance runner (tests/acceptance),
+tools/demo_phase4.py and the Model 5 fixtures that the CI steps conditioned by the base commit
+run.
+
+Slots filled: decisions 134 to 153 under their heading in docs/decisions.md (134 is the base
+commit's); this section.
+
+Files owned (Phase 4 Addendum 9.6): app/platform.py, the test routes, app/runtime.py,
+app/suite_runner.py, /healthz, app/static, tools/ (including the guarded seed row's data),
+tests/acceptance, tests/fixtures/phase4, CI, the deployment files, tests/api/test_platform.py,
+tests/part1/test_smoke.py, docs/models.
+
+Phase 3 tests changed (9.10): tests/api/test_platform.py and tests/part1/test_smoke.py (204 on
+reset, the clock body, keys, zero allowed, gap events through GET
+/v1/events?type=monitoring_gap).
+
+Tests to mark integration (rule 10): /healthz with the real overdue_escalations; the seed row
+against the real table; the acceptance runner, the Model 5 fixtures, the demo script and the
+console panel.
+
+Merge order: phase4-integration is created from main when the first part is ready; the parts
+merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
+4 Addendum 9.2).
+
+Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
+why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
+you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
+which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+
+END OF OWNER NOTES.

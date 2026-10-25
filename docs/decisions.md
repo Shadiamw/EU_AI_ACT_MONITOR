@@ -1348,3 +1348,11 @@ Decided 17 and 18 October 2026.
      cannot turn a branch red with no code change. `started_at`'s
      `default_factory=time.time` (`app/suite_runner.py:45`) is left as it is: the clock-rule
      test does not flag it and the addendum names only line 102.
+
+## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
+
+## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)
+
+## Part 3 decisions (Phase 4 escalations and reminders; numbers 194 to 213)
+
+## Integration decisions (Phase 4 integration; numbers 214 to 233)
