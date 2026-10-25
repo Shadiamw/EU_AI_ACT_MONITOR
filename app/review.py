@@ -1,16 +1,18 @@
 """Review (Phase 4 Part 1): harm-field pre-fill at flag time, the review start and the
 harm-field decisions of a disposition call (Phase 4 spec 1.3 to 1.5, Addendum rules 2 and 4).
 
-prefill_harm_fields is real (spec 1.3). The other four functions are still the STUBs of the
-Phase 4 base commit, with the behavior of spec section 11 (Addendum rule 2 for parse_harm_fields
-and require_complete); Part 1 replaces them. The signatures, PrefillFacts, HarmFieldDecision,
-ParsedHarmFields, HarmDecisions and the two exceptions keep their shape, because Parts 2 and 3
-build against them.
+prefill_harm_fields (spec 1.3), parse_harm_fields, require_complete and apply_harm_fields (spec
+1.5, Addendum rule 2) are real. start_if_reviewer is still the STUB of the Phase 4 base commit,
+with the behavior of spec section 11; Part 1 replaces it. The signatures, PrefillFacts,
+HarmFieldDecision, ParsedHarmFields, HarmDecisions and the two exceptions keep their shape,
+because Parts 2 and 3 build against them. parse_harm_fields and require_complete are pure
+(Addendum rule 8).
 
 Callers own transactions; nothing here commits.
 
-Logging: the pre-fill writes one DEBUG line on `api.review` with the event id and the counts of
-pre-filled and blank fields, never the evidence or the context text.
+Logging, on `api.review`, never with the evidence or the context text: the pre-fill writes one
+DEBUG line with the event id and the counts of pre-filled and blank fields; apply_harm_fields
+writes one INFO line per changed field with the event id, the key and the old and new status.
 """
 
 import logging
@@ -33,6 +35,11 @@ review_logger = logging.getLogger("api.review")
 # Spec 1.3: the comparator word of the evidence template.
 COMPARATOR_WORDS = {"gt": "above", "lt": "below"}
 PENDING = "PREFILLED_PENDING_CONFIRMATION"
+CONFIRMED = "CONFIRMED"
+NOT_APPLICABLE = "NOT_APPLICABLE"
+STATUSES = (PENDING, CONFIRMED, NOT_APPLICABLE)
+# Spec 1.5: the longest evidence text a request may send.
+EVIDENCE_MAX_LENGTH = 2000
 
 UNCONFIRMED_MESSAGE = "all four harm fields must be CONFIRMED or NOT_APPLICABLE"
 
@@ -155,28 +162,52 @@ def start_if_reviewer(session: Session, principal: Principal, event_id: str) -> 
     return False
 
 
+def _is_malformed(value: Any) -> bool:
+    """Whether one value of harm_fields is malformed (spec 1.5, first row): not an object, a key
+    other than status or evidence, status missing or not one of the three, or evidence that is
+    neither null nor a string of at most 2,000 characters without U+0000 or a lone surrogate
+    (Part 1 decision G2: PostgreSQL cannot store one). Length counts code points."""
+    if not isinstance(value, dict) or not set(value) <= {"status", "evidence"}:
+        return True
+    status = value.get("status")
+    if not isinstance(status, str) or status not in STATUSES:
+        return True
+    evidence = value.get("evidence")
+    if evidence is None:
+        return False
+    if not isinstance(evidence, str) or len(evidence) > EVIDENCE_MAX_LENGTH:
+        return True
+    return any(char == "\x00" or "\ud800" <= char <= "\udfff" for char in evidence)
+
+
 def parse_harm_fields(raw: Any) -> ParsedHarmFields:
     """Read the request's harm_fields (Addendum rule 2). Raises HarmFieldsMalformed for the
-    malformed inputs of spec 1.5; absent, missing or pending fields only make it incomplete.
-
-    STUB for Phase 4 Part 1: accepts any object with the four keys and marks it complete."""
-    if not isinstance(raw, dict) or set(raw) != set(HARM_FIELDS):
+    malformed inputs of spec 1.5, checked on every value before completeness, so 400 wins over
+    409. Absent or null harm_fields, a missing key or a pending status only make the result
+    incomplete. Pure: no database, no clock."""
+    if raw is None:
+        return ParsedHarmFields(complete=False, fields={})
+    if not isinstance(raw, dict) or not set(raw) <= set(HARM_FIELDS):
         raise HarmFieldsMalformed()
-    return ParsedHarmFields(
-        complete=True,
-        fields={
-            key: HarmFieldDecision(status=raw[key]["status"], evidence=raw[key].get("evidence"))
-            for key in HARM_FIELDS
-        },
+    if any(_is_malformed(value) for value in raw.values()):
+        raise HarmFieldsMalformed()
+    fields = {
+        key: HarmFieldDecision(status=raw[key]["status"], evidence=raw[key].get("evidence"))
+        for key in HARM_FIELDS
+        if key in raw
+    }
+    complete = len(fields) == len(HARM_FIELDS) and all(
+        decision.status != PENDING for decision in fields.values()
     )
+    return ParsedHarmFields(complete=complete, fields=fields)
 
 
 def require_complete(parsed: ParsedHarmFields) -> HarmDecisions:
     """The decisions of a complete request; raises HarmFieldsUnconfirmed otherwise (Addendum
-    rule 2).
-
-    STUB for Phase 4 Part 1: returns the decisions."""
-    return HarmDecisions(fields=parsed.fields)
+    rule 2). Pure."""
+    if not parsed.complete:
+        raise HarmFieldsUnconfirmed()
+    return HarmDecisions(fields=dict(parsed.fields))
 
 
 def apply_harm_fields(
@@ -186,27 +217,61 @@ def apply_harm_fields(
     decisions: HarmDecisions,
     now: datetime,
 ) -> list[str]:
-    """Write the decisions to the event's harm fields and return the keys that changed
-    (spec 1.5). The caller holds the event row lock.
+    """Write the decisions to the event's harm fields and return the keys that changed, in
+    contract order (spec 1.5). The caller holds the event row lock; the four harm_field rows
+    are locked next, in field_key order.
 
-    STUB for Phase 4 Part 1: writes the given statuses and evidence with the caller as
-    confirmer and returns every key."""
-    session.execute(
-        text(
-            "UPDATE harm_field SET status = :status, evidence = :evidence,"
-            " confirmed_by = :actor_id, confirmed_at = :now"
-            " WHERE event_id = :event_id AND field_key = :field_key"
-        ),
-        [
+    CONFIRMED with text stores the text and CONFIRMED with null stores the field's
+    prefill_evidence; NOT_APPLICABLE stores the text or null. A field changes when its status
+    or its stored evidence differs from what is stored, and only a changed field gets the
+    caller as confirmer and `now` as its time. prefill_evidence is never written, and nothing
+    here touches the event row or the ledger. One INFO line per changed field carries the
+    statuses, never the evidence."""
+    stored = {
+        row.field_key: row
+        for row in session.execute(
+            text(
+                "SELECT field_key, status, evidence, prefill_evidence FROM harm_field"
+                " WHERE event_id = :event_id ORDER BY field_key FOR UPDATE"
+            ),
+            {"event_id": event_id},
+        )
+    }
+    changed: list[str] = []
+    updates: list[dict[str, Any]] = []
+    for key in HARM_FIELDS:
+        decision = decisions.fields[key]
+        current = stored[key]
+        evidence = decision.evidence
+        if decision.status == CONFIRMED and evidence is None:
+            evidence = current.prefill_evidence
+        if (decision.status, evidence) == (current.status, current.evidence):
+            continue
+        changed.append(key)
+        updates.append(
             {
                 "event_id": event_id,
                 "field_key": key,
                 "status": decision.status,
-                "evidence": decision.evidence,
+                "evidence": evidence,
                 "actor_id": principal.actor_id,
                 "now": now,
             }
-            for key, decision in decisions.fields.items()
-        ],
-    )
-    return list(decisions.fields)
+        )
+        review_logger.info(
+            "harm field changed: event_id=%s field_key=%s old_status=%s new_status=%s",
+            event_id,
+            key,
+            current.status,
+            decision.status,
+        )
+    if updates:
+        session.execute(
+            text(
+                "UPDATE harm_field SET status = :status, evidence = :evidence,"
+                " confirmed_by = :actor_id, confirmed_at = :now"
+                " WHERE event_id = :event_id AND field_key = :field_key"
+            ),
+            updates,
+        )
+    return changed
