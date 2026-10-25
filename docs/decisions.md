@@ -1351,6 +1351,14 @@ Decided 17 and 18 October 2026.
 
 ## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
 
+154. **A lone surrogate in harm-field evidence is malformed (Phase 4 spec 1.5, first row;
+     plan G2).** Spec 1.5 lists evidence over 2,000 characters or containing U+0000 as 400
+     MALFORMED_BODY and is silent on lone UTF-16 surrogates. `review.parse_harm_fields` also
+     rejects an evidence string holding any code point from U+D800 to U+DFFF with 400
+     MALFORMED_BODY, matching decision 121 for the metric body. Reason: PostgreSQL text cannot
+     hold a lone surrogate, so storing it would fail as a 500 after the checks had passed.
+     Length counts code points, so a character outside the BMP counts once.
+
 ## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)
 
 ## Part 3 decisions (Phase 4 escalations and reminders; numbers 194 to 213)
