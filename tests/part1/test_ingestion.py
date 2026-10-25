@@ -20,6 +20,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app import gaps, ledger, notifications
+from app.platform import with_phase4_tables
 from tests.api.conftest import INTERNAL, MALFORMED, ApiClient
 from tests.db_helpers import HARM_FIELDS, bearer
 from tests.part1.conftest import T0, entry_types, get, metric, post, post_raw, rows
@@ -429,6 +430,8 @@ def test_no_threshold_stores_the_sample_and_returns_201(
 
 def test_unknown_system_after_a_valid_key_is_500(client: ApiClient, owner_engine: Engine) -> None:
     with owner_engine.begin() as conn:
+        if "harm_context" in with_phase4_tables(conn):  # its system_id references the system
+            conn.execute(text("DELETE FROM harm_context"))
         conn.execute(text("DELETE FROM monitored_system"))
     response = post(client)
     assert response.status_code == 500

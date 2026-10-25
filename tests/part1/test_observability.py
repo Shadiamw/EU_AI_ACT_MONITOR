@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import Engine, text
 
 from app import observability
+from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient
 from tests.db_helpers import bearer
 from tests.part1.conftest import get, metric, post, post_raw
@@ -113,6 +114,8 @@ def test_a_stub_501_is_logged_at_info_and_a_500_at_error(
     caplog.set_level(logging.INFO, logger="api.request")
     client.request("POST", "/v1/events/evt-x/disposition", headers=bearer("rev-1"))
     with owner_engine.begin() as conn:
+        if "harm_context" in with_phase4_tables(conn):  # its system_id references the system
+            conn.execute(text("DELETE FROM harm_context"))
         conn.execute(text("DELETE FROM monitored_system"))
     post(client)  # a valid key for a system with no row: 500 (spec 1.4 step 4)
     stub, failure = request_lines(caplog)

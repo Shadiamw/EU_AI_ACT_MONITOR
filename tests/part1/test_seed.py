@@ -9,6 +9,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
 from app import config
+from app.platform import with_phase4_tables
 from tests.part1.conftest import T0, rows
 from tools.seed_part1 import seed
 
@@ -103,9 +104,8 @@ def test_seed_refuses_outside_the_test_environment(
     owner_engine: Engine, monkeypatch: pytest.MonkeyPatch, environment: str
 ) -> None:
     with owner_engine.begin() as conn:
-        conn.execute(
-            text("TRUNCATE notification_delivery, webhook, sweeper_heartbeat, monitored_system")
-        )
+        tables = ("notification_delivery", "webhook", "sweeper_heartbeat", "monitored_system")
+        conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, tables))}"))
     monkeypatch.setenv("ENVIRONMENT", environment)
     with Session(owner_engine) as session:
         with pytest.raises(RuntimeError):

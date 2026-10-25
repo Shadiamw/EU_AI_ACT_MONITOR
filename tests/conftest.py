@@ -10,6 +10,8 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.pool import NullPool
 
+from app.platform import with_phase4_tables
+
 os.environ.setdefault(
     "DATABASE_URL", "postgresql+psycopg://monitor_app:monitor_app@localhost:5432/monitor_test"
 )
@@ -83,4 +85,4 @@ def empty_part1_tables(owner_engine: Engine) -> None:
     """Every test starts with no events, samples, keys or thresholds. A separate fixture from
     empty_ledger, which the chain scenario in tests/api/test_ledger_system.py overrides."""
     with owner_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {', '.join(PART1_TABLES)}"))
+        conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, PART1_TABLES))}"))

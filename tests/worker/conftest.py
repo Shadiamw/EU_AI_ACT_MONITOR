@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import Engine, text
 
 from app import clock
+from app.platform import with_phase4_tables
 
 WORKER_TABLES = (
     "notification_delivery",
@@ -37,7 +38,7 @@ T0 = datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC)
 @pytest.fixture(autouse=True)
 def empty_worker_tables(owner_engine: Engine) -> None:
     with owner_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {', '.join(WORKER_TABLES)}"))
+        conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, WORKER_TABLES))}"))
 
 
 class FakeClock:

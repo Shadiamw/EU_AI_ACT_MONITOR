@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app import clock, observability
 from app.main import create_app
+from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient
 from tests.db_helpers import bearer
 from tests.worker.conftest import FakeClock
@@ -60,7 +61,7 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
 @pytest.fixture
 def seeded(owner_engine: Engine, fake_clock: FakeClock) -> None:
     with owner_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {', '.join(OTHER_TABLES)}"))
+        conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, OTHER_TABLES))}"))
     with Session(owner_engine) as session:
         seed(session)
         session.commit()

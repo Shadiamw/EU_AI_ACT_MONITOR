@@ -12,6 +12,9 @@ spec 4 ("Seed fixtures") from the environment (spec 5):
   so the stored keys always match the environment.
 - threshold_version, version 1: thr-1 accuracy_drift (drift) gt 0.30 and thr-2 accuracy
   (performance) lt 0.70. Existing rows are left as they are.
+- harm_context (Phase 4 spec 4.4): sys-42 fundamental_rights_infringement, only when the
+  table exists (to_regclass; migration 0005 creates it, Phase 4 Addendum 9.1). An existing row
+  is left as it is.
 - ledger.ensure_seed with {systems: ["sys-42"], threshold_count: "2"}: SEED is appended only to
   an empty ledger (addendum rule 4).
 
@@ -31,6 +34,12 @@ SYSTEM_ID = "sys-42"
 THRESHOLDS = (
     ("thr-1", "accuracy_drift", "drift", "gt", "0.30"),
     ("thr-2", "accuracy", "performance", "lt", "0.70"),
+)
+# Phase 4 spec 4.4 (Pinned): the one harm_context row. The other three fields have no row.
+HARM_CONTEXT = (
+    "fundamental_rights_infringement",
+    "sys-42 makes automated decisions about natural persons, so degraded performance can"
+    " infringe their fundamental rights (Art. 3(49)(c)).",
 )
 SEED_PAYLOAD: Payload = {"systems": [SYSTEM_ID], "threshold_count": str(len(THRESHOLDS))}
 
@@ -89,6 +98,15 @@ def seed(session: Session) -> None:
             for version_id, name, kind, comparator, limit in THRESHOLDS
         ],
     )
+    if session.execute(text("SELECT to_regclass('harm_context') IS NOT NULL")).scalar_one():
+        field_key, context_text = HARM_CONTEXT
+        session.execute(
+            text(
+                "INSERT INTO harm_context (system_id, field_key, context_text)"
+                " VALUES (:system_id, :field_key, :context_text) ON CONFLICT DO NOTHING"
+            ),
+            {"system_id": SYSTEM_ID, "field_key": field_key, "context_text": context_text},
+        )
     ledger.ensure_seed(session, SEED_PAYLOAD)
 
 

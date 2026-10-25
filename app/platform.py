@@ -1,6 +1,8 @@
 """Part 4 platform operations: test reset and clock advance (spec 4.6, decision 133)."""
 
-from sqlalchemy import Engine, create_engine, text
+from collections.abc import Sequence
+
+from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -23,6 +25,21 @@ RESET_TABLES = (
     "threshold_version",
     "clock_state",
 )
+
+# The Phase 4 tables (Phase 4 Addendum 9.1). Migrations 0005 to 0007 create them, so on a
+# branch where a migration is still a placeholder its table does not exist yet.
+PHASE4_TABLES = ("harm_context", "disposition", "escalation")
+
+
+def with_phase4_tables(conn: Connection, tables: Sequence[str] = ()) -> tuple[str, ...]:
+    """`tables` followed by each Phase 4 table that exists (to_regclass). Every truncate list
+    (RESET_TABLES and the test fixtures' own lists) goes through this, so a table that
+    references event or monitored_system is emptied with them."""
+    exists = text("SELECT to_regclass(:table) IS NOT NULL")
+    existing = tuple(
+        table for table in PHASE4_TABLES if conn.execute(exists, {"table": table}).scalar_one()
+    )
+    return (*tables, *existing)
 
 
 def _admin_engine() -> Engine:
@@ -55,7 +72,7 @@ def reset() -> None:
     engine = _admin_engine()
     try:
         with engine.begin() as conn:
-            conn.execute(text(f"TRUNCATE {', '.join(RESET_TABLES)}"))
+            conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, RESET_TABLES))}"))
         with Session(engine) as session:
             install_seed(session)
             session.commit()

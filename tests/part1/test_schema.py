@@ -119,16 +119,25 @@ def test_at_most_one_open_gap_per_system(owner_engine: Engine) -> None:
         insert_event(conn, "evt-3", event_type="monitoring_gap", detected_at=T0)
 
 
-def test_alembic_chain_is_0001_to_0004_with_one_head() -> None:
-    """Spec 4.4: platform, ledger, detection, notifications, in that order."""
+def test_alembic_chain_is_0001_to_0007_with_one_head() -> None:
+    """Spec 4.4: platform, ledger, detection, notifications, then the Phase 4 review,
+    dispositions and escalations (Phase 4 Addendum 9.1), in that order."""
     script = ScriptDirectory.from_config(alembic_config())
-    assert script.get_heads() == ["0004"]
+    assert script.get_heads() == ["0007"]
     chain = [revision.revision for revision in script.walk_revisions("base", "heads")]
-    assert chain == ["0004", "0003", "0002", "0001"]
-    assert [script.get_revision(r).down_revision for r in chain] == ["0003", "0002", "0001", None]
+    assert chain == ["0007", "0006", "0005", "0004", "0003", "0002", "0001"]
+    assert [script.get_revision(r).down_revision for r in chain] == [
+        "0006",
+        "0005",
+        "0004",
+        "0003",
+        "0002",
+        "0001",
+        None,
+    ]
 
 
-def test_database_is_at_head_0004(owner_engine: Engine) -> None:
+def test_database_is_at_head_0007(owner_engine: Engine) -> None:
     assert rows(owner_engine, "SELECT version_num FROM alembic_version") == [
-        {"version_num": "0004"}
+        {"version_num": "0007"}
     ]

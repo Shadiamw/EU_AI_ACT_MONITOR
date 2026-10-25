@@ -3,12 +3,14 @@
 from sqlalchemy import Engine, text
 
 from app.main import create_app
+from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient
 
 
 def _clear(owner_engine: Engine) -> None:
     with owner_engine.begin() as conn:
-        conn.execute(text("TRUNCATE notification_delivery, notification, sweeper_heartbeat"))
+        tables = ("notification_delivery", "notification", "sweeper_heartbeat")
+        conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, tables))}"))
 
 
 def test_healthz_before_the_first_sweep_is_200(owner_engine: Engine) -> None:
