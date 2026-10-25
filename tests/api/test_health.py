@@ -22,6 +22,7 @@ def test_healthz_before_the_first_sweep_is_200(owner_engine: Engine) -> None:
         "sweeper_last_ran_seconds_ago": None,
         "pending_deliveries": 0,
         "oldest_pending_delivery_seconds": None,
+        "overdue_escalations": 0,
     }
 
 

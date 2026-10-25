@@ -4,7 +4,8 @@ transactions.
 Breach events are written by the ingest (app/ingestion.py) and gap events by Part 3's sweeper
 (app/gaps.py); both live in the event and harm_field tables (spec 1.7) and are read the same
 way here. Phase 3 has no disposition: every Event carries `disposition: null`, `revisions: []`
-and `deadline_utc` as stored, always null in Phase 3 (spec 4, Phase 3 stub shape).
+and `deadline_utc` as stored, always null in Phase 3 (spec 4, Phase 3 stub shape). Those three
+come from dispositions.summary (Phase 4 Part 2), whose base-commit stub returns exactly them.
 """
 
 from datetime import datetime
@@ -63,6 +64,9 @@ def detail(session: Session, event_id: str) -> dict[str, Any] | None:
     }
     if set(harm_rows) != set(HARM_FIELDS):
         raise RuntimeError("an event must have exactly the four harm fields")
+    from app import dispositions  # inside the function: dispositions may import events
+
+    summary = dispositions.summary(session, event_id)
     return {
         "event_id": event.event_id,
         "system_id": event.system_id,
@@ -72,9 +76,9 @@ def detail(session: Session, event_id: str) -> dict[str, Any] | None:
         "threshold_value": event.threshold_value,
         "detected_at": api_time(event.detected_at),
         "state": event.state,
-        "disposition": None,
-        "deadline_utc": _time(event.deadline_utc),
-        "revisions": [],
+        "disposition": summary["disposition"],
+        "deadline_utc": summary["deadline_utc"],
+        "revisions": summary["revisions"],
         "harm_fields": {
             key: {
                 "status": harm_rows[key].status,

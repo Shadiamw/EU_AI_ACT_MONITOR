@@ -20,6 +20,7 @@ def healthz() -> JSONResponse:
         "sweeper_last_ran_seconds_ago": values.sweeper_last_ran_seconds_ago,
         "pending_deliveries": values.pending_deliveries,
         "oldest_pending_delivery_seconds": values.oldest_pending_delivery_seconds,
+        "overdue_escalations": values.overdue_escalations,
     }
     age = values.sweeper_last_ran_seconds_ago
     stale = age is not None and age > 3 * config.sweep_interval_seconds()

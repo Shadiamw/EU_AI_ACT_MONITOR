@@ -57,10 +57,19 @@ def late_delivery_count() -> int:
     return _late_deliveries
 
 
-def enqueue(session: Session, event_id: str, notification_type: str = FLAG_NOTIFICATION) -> str:
+def enqueue(
+    session: Session,
+    event_id: str,
+    notification_type: str = FLAG_NOTIFICATION,
+    escalation_pct: int | None = None,
+    notification_id: str | None = None,
+) -> str:
     """Request a notification for an event, in the caller's transaction (spec 6). Appends
     NOTIFICATION_REQUESTED with actor `system` and returns the notification id. Never commits.
-    An unknown notification type raises ValueError before anything is written."""
+    An unknown notification type raises ValueError before anything is written.
+
+    STUB for Phase 4 Part 3: escalation_pct and notification_id (Phase 4 spec 9) are accepted
+    and ignored until Part 3 lands."""
     if notification_type not in webhooks.NOTIFICATION_TYPES:
         raise ValueError(f"unknown notification type {notification_type!r}")
     notification_id = new_id("ntf")

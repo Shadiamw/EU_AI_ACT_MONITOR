@@ -51,6 +51,9 @@ class HealthValues:
     sweeper_last_ran_seconds_ago: int | None  # real time; None before the first sweep
     pending_deliveries: int
     oldest_pending_delivery_seconds: int | None  # simulated clock; None when nothing is pending
+    # STUB for Phase 4 Part 3: always 0 until Part 3 counts the PENDING escalations more than
+    # 60 s past due (Phase 4 spec 3.6, Addendum 9.1).
+    overdue_escalations: int = 0
 
 
 def health_values(engine: Engine) -> HealthValues:
