@@ -364,9 +364,11 @@ def test_live_export_through_the_api_verifies(
     for actor in ("viewer-1", "rev-1"):
         assert client.get("/v1/events/evt-b", headers=as_actor(actor)).status_code == 200
         assert client.get("/v1/events/evt-b/audit", headers=as_actor(actor)).status_code == 200
-    # 8 entries, then per actor one EVENT_VIEWED and one AUDIT_VIEWED: 12 in total.
+    # 8 entries, then per actor one EVENT_VIEWED and one AUDIT_VIEWED, and rev-1's view of the
+    # FLAGGED evt-b also appends REVIEW_STARTED (Phase 4 spec 1.4): 13 in total.
     assert count_entries(owner_engine, "AUDIT_VIEWED") == 2
-    expected = {"valid": True, "entries_checked": 12, "first_mismatch": None}
+    assert count_entries(owner_engine, "REVIEW_STARTED") == 1
+    expected = {"valid": True, "entries_checked": 13, "first_mismatch": None}
     results = three_results(client, app_engine, caplog, tmp_path)
     assert results.api == results.direct == results.script.result == expected
     assert results.script.code == 0

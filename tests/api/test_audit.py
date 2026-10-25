@@ -65,20 +65,22 @@ def test_views_appear_in_the_audit_in_seq_order_after_the_earlier_entries(
     flag_event(app_engine, "evt-b")  # seq 4, 5: another event
     deliver_notification(app_engine, "evt-a")  # seq 6
     view(client, "evt-a", "viewer-1")  # seq 7 EVENT_VIEWED viewer-1
-    view(client, "evt-b", "rev-1")  # seq 8: a view of the other event
-    view(client, "evt-a", "rev-1")  # seq 9 EVENT_VIEWED rev-1
+    view(client, "evt-b", "rev-1")  # seq 8, 9: a view of the other event, which starts its review
+    view(client, "evt-a", "rev-1")  # seq 10 EVENT_VIEWED rev-1, seq 11 REVIEW_STARTED rev-1
 
     trail = audit(client, "evt-a")
-    # evt-a's entries are seqs 2, 3, 6, 7 and 9, in that order. SEED (no subject) and evt-b's
-    # seqs 4, 5 and 8 are not about evt-a. EVENT_FLAGGED and NOTIFICATION_REQUESTED are
-    # written by sys-42, delivery by the worker (system), and the two views by their viewers.
+    # evt-a's entries are seqs 2, 3, 6, 7, 10 and 11, in that order. SEED (no subject) and
+    # evt-b's seqs 4, 5, 8 and 9 are not about evt-a. EVENT_FLAGGED and NOTIFICATION_REQUESTED
+    # are written by sys-42, delivery by the worker (system), and the two views by their
+    # viewers. rev-1's view of the FLAGGED evt-a also starts its review (Phase 4 spec 1.4).
     # Each timestamp is the stored recorded_at of that seq, unchanged.
     expected = [
         ("sys-42", "EVENT_FLAGGED", 2),
         ("sys-42", "NOTIFICATION_REQUESTED", 3),
         ("system", "NOTIFICATION_DELIVERED", 6),
         ("viewer-1", "EVENT_VIEWED", 7),
-        ("rev-1", "EVENT_VIEWED", 9),
+        ("rev-1", "EVENT_VIEWED", 10),
+        ("rev-1", "REVIEW_STARTED", 11),
     ]
     assert trail == [
         {"actor_id": actor, "action": action, "timestamp": stored_timestamp(owner_engine, seq)}

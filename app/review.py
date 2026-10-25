@@ -1,18 +1,18 @@
 """Review (Phase 4 Part 1): harm-field pre-fill at flag time, the review start and the
 harm-field decisions of a disposition call (Phase 4 spec 1.3 to 1.5, Addendum rules 2 and 4).
 
-prefill_harm_fields (spec 1.3), parse_harm_fields, require_complete and apply_harm_fields (spec
-1.5, Addendum rule 2) are real. start_if_reviewer is still the STUB of the Phase 4 base commit,
-with the behavior of spec section 11; Part 1 replaces it. The signatures, PrefillFacts,
-HarmFieldDecision, ParsedHarmFields, HarmDecisions and the two exceptions keep their shape,
-because Parts 2 and 3 build against them. parse_harm_fields and require_complete are pure
-(Addendum rule 8).
+Every function here is real: prefill_harm_fields (spec 1.3), start_if_reviewer (spec 1.4),
+parse_harm_fields, require_complete and apply_harm_fields (spec 1.5, Addendum rule 2). The
+signatures, PrefillFacts, HarmFieldDecision, ParsedHarmFields, HarmDecisions and the two
+exceptions keep the base commit's shape, because Parts 2 and 3 build against them.
+parse_harm_fields and require_complete are pure (Addendum rule 8).
 
 Callers own transactions; nothing here commits.
 
 Logging, on `api.review`, never with the evidence or the context text: the pre-fill writes one
 DEBUG line with the event id and the counts of pre-filled and blank fields; apply_harm_fields
-writes one INFO line per changed field with the event id, the key and the old and new status.
+writes one INFO line per changed field with the event id, the key and the old and new status;
+the event-detail route writes one INFO line per review start, after its commit.
 """
 
 import logging
@@ -158,8 +158,20 @@ def start_if_reviewer(session: Session, principal: Principal, event_id: str) -> 
     """Move a FLAGGED breach event to UNDER_REVIEW on a reviewer's view (spec 1.4, D3) and
     return whether the state changed. Appends nothing (Addendum rule 4).
 
-    STUB for Phase 4 Part 1: returns False and changes nothing."""
-    return False
+    Any other role returns False before any SQL. For a reviewer, one conditional UPDATE locks
+    the row and re-checks type and state in the same statement: at READ COMMITTED a concurrent
+    view waits for the first one's commit, then finds the state no longer FLAGGED and changes
+    nothing. Gap events never match (INV-12)."""
+    if principal.role != "REVIEWER":
+        return False
+    started = session.execute(
+        text(
+            "UPDATE event SET state = 'UNDER_REVIEW' WHERE event_id = :event_id"
+            " AND type = 'threshold_breach' AND state = 'FLAGGED' RETURNING event_id"
+        ),
+        {"event_id": event_id},
+    ).first()
+    return started is not None
 
 
 def _is_malformed(value: Any) -> bool:

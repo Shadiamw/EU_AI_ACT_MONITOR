@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app import audit, events, observability
+from app import audit, events, ledger, observability, review
 from app.auth import Principal, require
 from app.db import get_session
 from app.errors import ApiError, not_found
@@ -104,11 +104,30 @@ def list_events(
 def get_event(
     request: Request, event_id: str, principal: Reader, session: DbSession
 ) -> ExactJSONResponse:
+    """Spec 1.4 (D3), in order: an unknown id is 404 before any write; a reviewer's view of a
+    FLAGGED breach event starts the review; EVENT_VIEWED; REVIEW_STARTED only if the state
+    changed; the body, built after the change; commit before returning (decision 25). The
+    review-start log line follows the commit, so a rolled-back view never logs one."""
     observability.note(request, event_id=event_id)
+    if not events.exists(session, event_id):
+        raise not_found()
+    started = review.start_if_reviewer(session, principal, event_id)
+    # REQ-14: the view is logged in the same transaction (spec 1.6).
+    audit.record_view(session, principal, event_id)
+    if started:
+        ledger.append(
+            session,
+            "REVIEW_STARTED",
+            principal.actor_id,
+            event_id,
+            {"event_id": event_id, "prior_state": "FLAGGED", "new_state": "UNDER_REVIEW"},
+        )
     body = events.detail(session, event_id)
     if body is None:
         raise not_found()
-    # REQ-14: the view is logged in the same transaction (spec 1.6).
-    audit.record_view(session, principal, event_id)
     session.commit()
+    if started:
+        review.review_logger.info(
+            "review started: event_id=%s actor=%s", event_id, principal.actor_id
+        )
     return ExactJSONResponse(body)
