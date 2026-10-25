@@ -133,9 +133,9 @@ appended is open (spec, 'Transactions and lock order (Pinned)'). The ledger func
 - There is no per-type payload shape check: a misspelled or missing payload key is stored
   without error (decision 11). Your own tests must check your payload keys.
 
-### 2.5 The ten entry types
+### 2.5 The fourteen entry types
 
-entry_type must be one of these ten; anything else raises LedgerError (`app/ledger/canonical.py`).
+entry_type must be one of these fourteen (the ten Phase 3 types and the four Phase 4 types); anything else raises LedgerError (`app/ledger/canonical.py`).
 "Written by" and the payload keys come from spec, 'Entry types and payloads'. The allowed
 actor ids are rev-1, viewer-1, sys-42, or `system` for background work (spec, 'Ledger entry
 format'). The spec says notification entries use the event id as subject_id, webhook entries
@@ -153,6 +153,10 @@ use the webhook id, and SEED uses null (same section).
 | WEBHOOK_REGISTERED | Part 3, `POST /v1/webhooks` | the registering principal (`rev-1` or `viewer-1`; decision 103) | webhook id (spec 3.6) | `webhook_id`, `url`, `event_types` |
 | EVENT_VIEWED | Part 2, `audit.record_view`, called by Part 1 | `principal.actor_id` | event id | none (`{}`) |
 | AUDIT_VIEWED | Part 2, the audit endpoint | `principal.actor_id` | event id | none (`{}`) |
+| REVIEW_STARTED | Phase 4 Part 1, the event-detail route, after EVENT_VIEWED, when `review.start_if_reviewer` returned true (Phase 4 Addendum rule 4) | the reviewer (`rev-1`) | event id | `event_id`, `prior_state` (`"FLAGGED"`), `new_state` (`"UNDER_REVIEW"`) (Phase 4 spec 1.4) |
+| DISPOSITION_RECORDED | Phase 4 Part 2, the first disposition of an event | the reviewer | event id | `event_id`, `disposition_id`, `tier`, `rationale` (or null), `deadline_utc` (or null), `anchor_at`, `calendar`, `harm_fields` (each key to its status) (Phase 4 spec 2.10) |
+| DISPOSITION_REVISED | Phase 4 Part 2, every later disposition of the event | the reviewer | event id | `event_id`, `disposition_id`, `supersedes_id`, `prior_tier`, `new_tier`, `rationale` (or null), `prior_deadline_utc` (or null), `deadline_utc` (or null), `anchor_at`, `calendar`, `harm_fields`, `harm_fields_changed` (Phase 4 spec 2.10) |
+| REMINDER_TRIGGERED | Phase 4 Part 3, `escalations.fire_due` | `system` (background work) | event id | `event_id`, `escalation_pct` (integer), `due_at`, `tier`, `anchor_at`, `deadline_utc`, `notification_id` (Phase 4 spec 3.4; tier and deadline_utc are the values on the escalation row, Phase 4 Addendum rule 5) |
 
 The audit endpoint lists every entry whose subject_id is the event id (spec, 'Endpoints you
 own'), so an entry about an event must use that event's id as subject_id or it will not appear
