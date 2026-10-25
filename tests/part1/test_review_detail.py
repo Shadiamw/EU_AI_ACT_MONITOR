@@ -22,7 +22,6 @@ from app.review import apply_harm_fields, parse_harm_fields, require_complete
 from tests.api.conftest import ApiClient
 from tests.db_helpers import bearer, insert_event
 from tests.part1.conftest import T0, get, metric, post
-from tests.part1.test_auth import ROUTES
 from tests.part1.test_review_prefill import AC07_EVIDENCE, RIGHTS, post_ac07
 from tests.worker.conftest import FakeClock
 
@@ -174,18 +173,44 @@ def test_a_gap_event_detail_is_unchanged(
     )
 
 
+# Every route of the service, each with an allowed key and a minimal request, in an order that
+# also works once Part 2's routes are real: the disposition before the report. Kept here rather
+# than taken from tests/part1/test_auth.py, which Part 2 edits. The disposition keeps the
+# reviewer's own rights text, so it never puts the pre-fill back.
+DISPOSITION = {
+    "tier": "OTHER_SERIOUS",
+    "rationale": None,
+    "harm_fields": {
+        "health_safety_harm": {"status": "NOT_APPLICABLE", "evidence": None},
+        "critical_infrastructure_disruption": {"status": "NOT_APPLICABLE", "evidence": None},
+        RIGHTS: {"status": "CONFIRMED", "evidence": "reviewer text"},
+        "property_environmental_damage": {"status": "NOT_APPLICABLE", "evidence": None},
+    },
+}
+EVERY_ROUTE: list[tuple[str, str, str | None, Any]] = [
+    ("POST", "/v1/metrics", "sys-42", metric(timestamp="2026-10-05T09:00:00Z")),
+    ("GET", "/v1/events", "viewer-1", None),
+    ("GET", "/v1/events/{id}", "viewer-1", None),
+    ("GET", "/v1/events/{id}/audit", "viewer-1", None),
+    ("GET", "/v1/ledger/export", "viewer-1", None),
+    ("GET", "/v1/ledger/verify", "viewer-1", None),
+    ("POST", "/v1/events/{id}/disposition", "rev-1", DISPOSITION),
+    ("GET", "/v1/events/{id}/report", "viewer-1", None),
+    ("GET", "/healthz", None, None),
+]
+
+
 def every_response(client: ApiClient, event_id: str) -> list[str]:
-    """One response from every route of the role matrix (tests/part1/test_auth.py), with an
-    allowed key, plus /healthz and a fresh POST /v1/metrics."""
+    """One response from every route in EVERY_ROUTE."""
     texts = []
-    for (method, path), actors in ROUTES.items():
-        actor = "viewer-1" if "viewer-1" in actors else sorted(actors)[0]
-        body = metric(timestamp="2026-10-05T09:00:00Z") if method == "POST" else {}
+    for method, path, actor, body in EVERY_ROUTE:
         response = client.request(
-            method, path.replace("{id}", event_id), headers=bearer(actor), json=body
+            method,
+            path.replace("{id}", event_id),
+            headers={} if actor is None else bearer(actor),
+            json=body,
         )
         texts.append(response.text)
-    texts.append(client.get("/healthz").text)
     return texts
 
 
