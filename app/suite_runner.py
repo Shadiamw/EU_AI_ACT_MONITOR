@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app import clock
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # Subsets that map to the Phase 3 acceptance criteria named by tools/check_acceptance.py.
@@ -99,7 +101,7 @@ def _execute(run: SuiteRun) -> None:
         run.status = "failed"
         run.summary = "suite runner failed"
     finally:
-        run.finished_at = time.time()
+        run.finished_at = clock.wall_now().timestamp()
 
 
 def _summarize(scope: str, code: int, text: str) -> str:
@@ -107,9 +109,10 @@ def _summarize(scope: str, code: int, text: str) -> str:
         return f"{scope} suite passed"
     # Prefer pytest's short summary line when present.
     for line in reversed(text.splitlines()):
-        if "failed" in line or "error" in line or "passed" in line:
-            if line.strip().startswith("=") or " in " in line:
-                return line.strip(" =")
+        if ("failed" in line or "error" in line or "passed" in line) and (
+            line.strip().startswith("=") or " in " in line
+        ):
+            return line.strip(" =")
     return f"{scope} suite failed (exit {code})"
 
 

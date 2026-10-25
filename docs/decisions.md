@@ -1332,3 +1332,19 @@ Decided 17 and 18 October 2026.
      own connection (open item 9); outside test it is wall time with no database read.
      `wall_now()` stays real UTC. Reason: the Pod showcase cannot wait 15 real minutes for a
      gap, and the smoke test of spec section 9 needs these two endpoints.
+
+## Part 4 decisions (Phase 4 platform; numbers 134 to 153)
+
+134. **CI baseline for Phase 4 (Phase 4 Addendum 9.1, commit 1; spec 4.3 step 2).** Main was
+     red at 60d8d08 for two reasons (debrief LIM-05). `app/suite_runner.py` set
+     `finished_at = time.time()`, which the clock-rule test
+     (`tests/worker/test_clock_rule.py`) forbids outside `app/clock.py`; it now uses
+     `clock.wall_now().timestamp()`. This widens the stated use of `clock.wall_now()`, whose
+     docstring says "only for the sweeper heartbeat": it is now also the real time of a suite
+     run's end, which must not follow the simulated clock either. The nested `if` in
+     `_summarize` that ruff flags as SIM102 is merged into one condition with the same
+     result. ruff is pinned to exactly 0.17.1 in `pyproject.toml` (the version in use on
+     October 21, 2026; the file only required >=0.6), so a new lint rule in a later ruff
+     cannot turn a branch red with no code change. `started_at`'s
+     `default_factory=time.time` (`app/suite_runner.py:45`) is left as it is: the clock-rule
+     test does not flag it and the addendum names only line 102.
