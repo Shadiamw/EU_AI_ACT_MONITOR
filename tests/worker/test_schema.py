@@ -123,6 +123,19 @@ EXPECTED_COLUMNS["harm_field"]["prefill_evidence"] = "text"
 # End of the Phase 4 Part 1 slot.
 
 # Phase 4 Part 2 slot (migration 0006).
+EXPECTED_COLUMNS["disposition"] = {
+    "disposition_id": "text",
+    "event_id": "text",
+    "seq_in_event": "integer",
+    "tier": "text",
+    "rationale": "text",
+    "reviewer_id": "text",
+    "assigned_at": TIMESTAMPTZ,
+    "anchor_at": TIMESTAMPTZ,
+    "calendar": "text",
+    "deadline_utc": TIMESTAMPTZ,
+    "supersedes_id": "text",
+}
 # End of the Phase 4 Part 2 slot.
 
 # Phase 4 Part 3 slot (migration 0007).
