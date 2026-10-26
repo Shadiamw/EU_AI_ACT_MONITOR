@@ -1,6 +1,8 @@
 """Environment configuration (spec: Configuration table)."""
 
 import os
+import re
+from datetime import date
 
 
 def _required(name: str) -> str:
@@ -118,6 +120,46 @@ def cors_origins() -> list[str]:
 # marker lines, and edits nothing else in this file.
 
 # Phase 4 Part 2 slot: DEADLINE_CALENDAR and DEADLINE_HOLIDAYS (Phase 4 spec 8).
+
+DEADLINE_CALENDARS = ("calendar_days", "working_days")
+_HOLIDAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def deadline_calendar() -> str:
+    """DEADLINE_CALENDAR (calendar_days): calendar_days or working_days (REQ-10). Anything else
+    is an error, which stops start-up (app.main checks it)."""
+    raw = os.environ.get("DEADLINE_CALENDAR")
+    if raw is None or raw == "":
+        return "calendar_days"
+    if raw not in DEADLINE_CALENDARS:
+        raise RuntimeError(
+            "environment variable DEADLINE_CALENDAR must be calendar_days or working_days"
+        )
+    return raw
+
+
+def deadline_holidays() -> tuple[date, ...]:
+    """DEADLINE_HOLIDAYS (empty): comma-separated YYYY-MM-DD dates that are not working days,
+    sorted and without repeats. Spaces around a date are allowed; an empty item or any other
+    form is an error (Part 2 decision 176). Checked whatever the calendar, so a typo is found at
+    start-up and not when the calendar is switched."""
+    raw = os.environ.get("DEADLINE_HOLIDAYS")
+    if raw is None or raw.strip() == "":
+        return ()
+    holidays = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not _HOLIDAY.fullmatch(item):
+            raise RuntimeError("environment variable DEADLINE_HOLIDAYS must be YYYY-MM-DD dates")
+        try:
+            holidays.add(date.fromisoformat(item))
+        except ValueError:
+            raise RuntimeError(
+                "environment variable DEADLINE_HOLIDAYS must be YYYY-MM-DD dates"
+            ) from None
+    return tuple(sorted(holidays))
+
+
 # End of the Phase 4 Part 2 slot.
 
 # Phase 4 Part 3 slot: ESCALATION_PERCENTAGES (Phase 4 spec 8).
