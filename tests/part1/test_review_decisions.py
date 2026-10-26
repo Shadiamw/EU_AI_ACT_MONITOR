@@ -36,7 +36,7 @@ from app.review import (
 )
 from tests.api.conftest import MALFORMED, ApiClient
 from tests.db_helpers import HARM_FIELDS
-from tests.part1.conftest import entry_types, rows
+from tests.part1.conftest import entry_types, get, rows
 from tests.part1.test_review_prefill import AC07_EVIDENCE, RIGHTS, post_ac07, stored_fields
 from tests.worker.conftest import FakeClock
 
@@ -47,6 +47,8 @@ UNCONFIRMED = {
 }
 NOW = datetime(2026, 10, 5, 9, 30, tzinfo=UTC)
 LATER = datetime(2026, 10, 5, 11, 0, tzinfo=UTC)
+# Contract Example 2's deadline, set on the event before a revision.
+DEADLINE = datetime(2026, 10, 12, 10, 12, tzinfo=UTC)
 REV_1 = Principal(role="REVIEWER", actor_id="rev-1", system_id=None)
 REV_2 = Principal(role="REVIEWER", actor_id="rev-2", system_id=None)
 
@@ -422,6 +424,56 @@ def test_the_event_row_and_the_ledger_are_untouched(
     assert event_after == event_before
     assert event_after[0]["state"] == "FLAGGED"
     assert entry_types(owner_engine) == ledger_before
+
+
+def test_apply_leaves_a_dispositioned_event_row_byte_identical(
+    owner_engine: Engine, app_engine: Engine, event_id: str
+) -> None:
+    """apply_harm_fields writes no event row at all (spec 1.5; Addendum rule 4). The event has
+    a state and a deadline that a stray write could reset, and its xmin (the row version
+    PostgreSQL renews on every UPDATE, even one that stores the same values) must not move."""
+    with owner_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE event SET state = 'DISPOSITIONED', deadline_utc = :deadline"
+                " WHERE event_id = :event_id"
+            ),
+            {"deadline": DEADLINE, "event_id": event_id},
+        )
+    event_sql = "SELECT *, xmin::text AS row_version FROM event WHERE event_id = :event_id"
+    event_before = rows(owner_engine, event_sql, event_id=event_id)
+    assert (event_before[0]["state"], event_before[0]["deadline_utc"]) == (
+        "DISPOSITIONED",
+        DEADLINE,
+    )
+    ledger_before = len(entry_types(owner_engine))
+    changes = ac07(**{RIGHTS: confirmed("new reviewer text")})
+    assert apply(app_engine, event_id, changes) == list(HARM_FIELDS)
+    assert rows(owner_engine, event_sql, event_id=event_id) == event_before
+    assert len(entry_types(owner_engine)) == ledger_before
+    assert by_key(owner_engine, event_id)[RIGHTS] == field(
+        "CONFIRMED", "new reviewer text", AC07_EVIDENCE, "rev-1", NOW
+    )
+
+
+@pytest.mark.parametrize("evidence", ACCEPTED_EVIDENCE.values(), ids=ACCEPTED_EVIDENCE.keys())
+def test_each_accepted_evidence_is_stored_and_read_back(
+    client: ApiClient, owner_engine: Engine, app_engine: Engine, event_id: str, evidence: str
+) -> None:
+    """Every evidence the parser accepts is stored by PostgreSQL exactly as given and shown
+    unchanged by the detail (spec 1.5): nothing accepted may fail later as a 500 at the database
+    (the reason of decision 154)."""
+    apply(
+        app_engine,
+        event_id,
+        ac07(**{RIGHTS: confirmed(evidence), HEALTH: not_applicable(evidence)}),
+    )
+    stored = by_key(owner_engine, event_id)
+    assert (stored[RIGHTS]["status"], stored[RIGHTS]["evidence"]) == ("CONFIRMED", evidence)
+    assert (stored[HEALTH]["status"], stored[HEALTH]["evidence"]) == ("NOT_APPLICABLE", evidence)
+    shown = get(client, f"/v1/events/{event_id}").json()["harm_fields"]
+    assert shown[RIGHTS]["evidence"] == evidence
+    assert shown[HEALTH]["evidence"] == evidence
 
 
 def test_one_info_line_per_changed_field_and_never_the_evidence(

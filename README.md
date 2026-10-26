@@ -517,10 +517,10 @@ With the test database of section 5 running:
 
 | Run | Command | Result on this branch |
 | --- | --- | --- |
-| Part 1's review tests | `.venv/bin/pytest tests/part1/test_review_*.py` | 114 passed, 44 skipped |
-| The whole suite | `.venv/bin/pytest` | 1076 passed, 44 skipped |
+| Part 1's review tests | `.venv/bin/pytest tests/part1/test_review_*.py` | 124 passed, 44 skipped |
+| The whole suite | `.venv/bin/pytest` | 1086 passed, 44 skipped |
 | The integration-marked tests | `.venv/bin/pytest --run-integration -m integration` | 44 items, all fail at Part 2's 501 stub |
-| List the integration-marked tests | `.venv/bin/pytest --collect-only -q -m integration` | 44 of 1120 collected |
+| List the integration-marked tests | `.venv/bin/pytest --collect-only -q -m integration` | 44 of 1130 collected |
 
 The 44 integration items are the five functions of `tests/part1/test_review_integration.py`.
 They need Part 2's real POST /v1/events/{id}/disposition and pass only once Parts 1 and 2 are

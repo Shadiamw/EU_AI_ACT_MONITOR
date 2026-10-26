@@ -279,3 +279,112 @@ def test_observed_and_limit_values_keep_their_digits(
         "accuracy_drift = 0.30000000000000000001 is above the limit 0.30 (threshold thr-1)"
         " at 2026-09-27T10:05:00Z. sys-42 makes"
     ), event_id
+
+
+# Spec 1.3 per key: a text for each field of sys-42 (the rights text is the seeded one).
+OWN_TEXTS = {
+    "health_safety_harm": "sys-42 text for health and safety (4f1a).",
+    "critical_infrastructure_disruption": "sys-42 text for critical infrastructure (8b2c).",
+    RIGHTS: CONTEXT_TEXT,
+    "property_environmental_damage": "sys-42 text for property and the environment (c3d9).",
+}
+
+
+def test_each_field_gets_its_own_context_text(
+    client: ApiClient, owner_engine: Engine, fake_clock: FakeClock
+) -> None:
+    """Spec 1.3 steps 1 and 3 for each key: with a context row for all four fields, each field
+    gets the template followed by its own row's text, and another system's row is not used."""
+    with owner_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO monitored_system"
+                " (system_id, sampling_interval_s, gap_timeout_intervals, last_received_at)"
+                " VALUES ('sys-7', 300, 3, :t)"
+            ),
+            {"t": T0},
+        )
+        insert = text(
+            "INSERT INTO harm_context (system_id, field_key, context_text)"
+            " VALUES (:system_id, :key, :text)"
+        )
+        for key, own in OWN_TEXTS.items():
+            if key != RIGHTS:
+                conn.execute(insert, {"system_id": "sys-42", "key": key, "text": own})
+        conn.execute(
+            insert, {"system_id": "sys-7", "key": RIGHTS, "text": "sys-7 text, never for sys-42."}
+        )
+    event_id = post_ac07(client, fake_clock)
+    stored = {row.pop("field_key"): row for row in stored_fields(owner_engine, event_id)}
+    for key, own in OWN_TEXTS.items():
+        expected = (
+            "accuracy = 0.61 is below the limit 0.70 (threshold thr-2) at 2026-10-05T09:00:00Z. "
+            + own
+        )
+        assert stored[key] == {
+            "status": "PREFILLED_PENDING_CONFIRMATION",
+            "evidence": expected,
+            "prefill_evidence": expected,
+            "confirmed_by": None,
+            "confirmed_at": None,
+        }, key
+
+
+@pytest.mark.parametrize(
+    ("literal", "changes", "at", "sentence", "payload_value"),
+    [
+        (
+            "1e-7",
+            {
+                "metric_name": "accuracy",
+                "metric_type": "performance",
+                "timestamp": "2026-10-05T09:00:00Z",
+            },
+            AC07_AT,
+            "accuracy = 0.0000001 is below the limit 0.70 (threshold thr-2)"
+            " at 2026-10-05T09:00:00Z.",
+            "0.0000001",
+        ),
+        (
+            "3.4E-1",
+            {},
+            T0,
+            "accuracy_drift = 0.34 is above the limit 0.30 (threshold thr-1)"
+            " at 2026-09-27T10:05:00Z.",
+            "0.34",
+        ),
+    ],
+    ids=["1e-7", "3.4E-1"],
+)
+def test_exponent_form_values_are_written_as_plain_decimals(
+    client: ApiClient,
+    owner_engine: Engine,
+    fake_clock: FakeClock,
+    literal: str,
+    changes: dict[str, Any],
+    at: datetime,
+    sentence: str,
+    payload_value: str,
+) -> None:
+    """Spec 1.3: values are plain decimal strings, also when the sender writes a JSON number in
+    exponent form (parsed as Decimal("1E-7")), and the same string as the EVENT_FLAGGED payload.
+    The 201 body carries no value."""
+    fake_clock.set(at)
+    content = json.dumps(metric(value="VALUE", **changes)).replace('"VALUE"', literal)
+    response = post_raw(client, content)
+    assert response.status_code == 201
+    assert set(response.json()) == {"sample_id", "flagged_event_id"}
+    event_id = response.json()["flagged_event_id"]
+    [rights] = rows(
+        owner_engine,
+        "SELECT evidence FROM harm_field WHERE event_id = :e AND field_key = :k",
+        e=event_id,
+        k=RIGHTS,
+    )
+    assert rights["evidence"] == f"{sentence} {CONTEXT_TEXT}"
+    [flagged] = rows(
+        owner_engine,
+        "SELECT payload FROM ledger_entry WHERE entry_type = 'EVENT_FLAGGED' AND subject_id = :e",
+        e=event_id,
+    )
+    assert flagged["payload"]["observed_value"] == payload_value
