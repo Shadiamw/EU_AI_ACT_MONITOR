@@ -1407,6 +1407,120 @@ Decided 17 and 18 October 2026.
 
 ## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)
 
+174. **Part 2 is built on Part 1's head, not on the bare base commit (Phase 4 Addendum 9.2).**
+     Branch `phase4-part2-dispositions` starts at `phase4-part1-review` (`d4d8c1f`), which sits
+     on the base commit (`4d1487e`). The owner asked for this, because the disposition handler
+     calls Part 1's `parse_harm_fields`, `require_complete` and `apply_harm_fields`. The tests
+     here therefore run against Part 1's real code (pre-fill, review start, harm-field writes)
+     instead of the section 11 stubs, and Part 1's integration-marked tests run on this branch
+     with `--run-integration`. Consequence for integration: merging Part 2 first also brings
+     Part 1's commits up to `d4d8c1f`, and the later Part 1 merge adds only what Part 1
+     committed after that. The merge order 2, 1, 3, 4 still works. Risk: a rebase or force-push
+     of Part 1's branch would duplicate commits, so Part 1 must only add commits.
+
+175. **The request is read as raw JSON after authentication (Phase 4 spec 2.3, 2.4 steps 2 and
+     3).** A body that is not JSON or not an object is 400 MALFORMED_BODY. `tier` must be one of
+     the four contract strings exactly (case-sensitive, not trimmed), so `"DEATH "`, `true` and a
+     list are 400. `rationale` is absent, null or a string; anything else is 400. Unknown
+     top-level keys are ignored. `harm_fields` goes to Part 1's `parse_harm_fields` as sent,
+     with absent and null both passed as None (409, not 400, for missing fields). The
+     NOT_SERIOUS rationale check runs after every shape check, so a malformed body is 400
+     MALFORMED_BODY before 400 RATIONALE_REQUIRED, and both come before the event lookup (404).
+
+176. **DEADLINE_HOLIDAYS is strict and is checked at start-up whatever the calendar (Phase 4
+     spec 8).** Each comma-separated item, after trimming spaces, must be a valid `YYYY-MM-DD`
+     date. An empty item (`a,,b` or a trailing comma) or any other form stops start-up with an
+     error, as a bad DEADLINE_CALENDAR does. Repeats are dropped and the list is sorted. It is
+     checked even with `calendar_days`, so a typo is found at start-up rather than when the
+     calendar is switched. `app.main.create_app` calls `deadlines.current_calendar()` once to
+     make the check (a two-line edit of app/main.py beside Part 2's router line).
+
+177. **Working days are counted on UTC dates from the day after the anchor (Phase 4 spec 2.5).**
+     The anchor is converted to UTC first. Its own date is never counted, even when it is a
+     working day. The result is the n-th counted date at the anchor's UTC time of day,
+     microseconds included. The recorded calendar with no holidays is exactly
+     `working_days;holidays=` (nothing after the `=`), so a recorded calendar has one form.
+
+178. **A rationale is at most 4,000 code points, counted before trimming, and may not contain
+     U+0000 or a lone surrogate (Phase 4 spec 2.3).** Both are 400 MALFORMED_BODY, as for
+     harm-field evidence (decision 154). PostgreSQL text cannot store them and the ledger's
+     canonical JSON refuses them, so storing one would be a 500 after every check had passed.
+     Trimming uses Python's `str.strip()`, so any Unicode whitespace (U+3000 included) is
+     blank. A blank rationale on a serious tier is stored as null.
+
+179. **The disposition table carries its invariants as constraints (Phase 4 spec 2.9).** Beyond
+     spec 2.9: `supersedes_id` is also a foreign key to `disposition.disposition_id` (the
+     previous row must exist); `deadline_utc` is null exactly when the tier is NOT_SERIOUS
+     (INV-2); a NOT_SERIOUS row always has a rationale; and a rationale is never the empty
+     string. `event_id` is a plain foreign key to event (Addendum rule 5). The unique
+     `(event_id, seq_in_event)` constraint is the index spec 2.9 asks for. The trigger and the
+     grants copy `ledger_entry` (0002).
+
+180. **EVENT_NOT_REVIEWABLE's message is "a monitoring gap event cannot be dispositioned"
+     (Phase 4 spec 7).** The spec names the code but not the message.
+
+181. **Addendum rule 1 is a pure function over the event's disposition rows.**
+     `deadlines.extends_deadline(prior_tiers, new_tier)` takes the tiers of the rows, oldest
+     first, finds the latest one that is not NOT_SERIOUS and says whether the new tier's window
+     is longer. It never reads a revision's `prior_tier` or the event state. The handler calls
+     it at step 8, after the harm-field completeness check, and only when the rationale is
+     blank.
+
+182. **Every new deadline is `compute(anchor, tier, recorded calendar)` (Phase 4 spec 2.5).** The
+     anchor and the calendar come from the first row, so spec 2.5's "same tier: unchanged" and
+     "stricter: the minimum" hold by construction, and a reopen from NOT_SERIOUS gets its
+     deadline from the first anchor even when that instant has passed.
+
+183. **The disposition rows are read without a row lock (Phase 4 spec 10).** The application
+     role has no UPDATE privilege on `disposition`, so it cannot `SELECT … FOR UPDATE` there.
+     The event row lock (`SELECT … FOR UPDATE`, step 4) serializes every disposition call on an
+     event, and the rows are read in a later statement, which at READ COMMITTED sees everything
+     the previous lock holder committed. Twenty parallel calls give `seq_in_event` 1 to 20 with
+     no fork.
+
+184. **The response is built inside the transaction and appends nothing (Phase 4 spec 2.4 step
+     16).** `events.detail` runs before the commit, as in the event-detail route, so the body is
+     what was committed. It is not a view, so there is no EVENT_VIEWED.
+
+185. **The ledger payloads (Phase 4 spec 2.10).** `harm_fields` maps each of the four fields, in
+     contract order, to the status decided in this call. `harm_fields_changed` is the result of
+     `apply_harm_fields` (contract order, `[]` when nothing changed). `prior_deadline_utc` is
+     the previous row's `deadline_utc`. Times use the API format. No evidence text is copied.
+
+186. **The report guard is one read-only query (Phase 4 spec 2.8).** It answers 404 for an
+     unknown event, 409 NO_DISPOSITION when the event has no disposition row, and otherwise 501
+     NOT_IMPLEMENTED with the Phase 3 stub's message ("not implemented in this phase"). It
+     writes and appends nothing, and accepts REVIEWER only (Addendum rule 6).
+
+187. **One INFO line per recorded disposition, after the commit, on `api.disposition` (Phase 4
+     spec 7).** It names the event, the disposition id, `seq_in_event`, the tier and the actor,
+     and says whether the call recorded or revised. It never carries the rationale or the
+     evidence. Because it follows the commit, a rolled-back call writes no such line (Part 1's
+     field-change lines are the exception, decision 162).
+
+188. **The Phase 3 stub tests now expect the Phase 4 behavior (Addendum 9.10).** In
+     `tests/part1/test_auth.py` the report is REVIEWER only, and the allowed role gets 400 on
+     the disposition (the metric body has no tier) and 409 NO_DISPOSITION on the report,
+     instead of 501. `tests/part1/test_events_api.py::test_disposition_and_report_stubs` is
+     renamed `test_disposition_and_report_check_the_key_and_role_first` and expects 400, 409 or
+     404, 403 and 401. The 501 half of
+     `tests/part1/test_observability.py::test_a_stub_501_is_logged_at_info_and_a_500_at_error`
+     takes its 501 from the report guard after a recorded disposition.
+
+189. **One edit outside Part 2's slot in app/config.py.** The slot's functions need `re` and
+     `datetime.date`, which are imported at the top of the module; ruff (E402) forbids imports
+     inside the slot.
+
+190. **Migration 0006's downgrade tolerates a database where only the placeholder ran.** A
+     database upgraded while 0006 was the base commit's empty placeholder (any test database
+     shared between part branches) is at 0006 or later with no `disposition` table. The
+     downgrade therefore uses `DROP TABLE IF EXISTS` and `DROP FUNCTION IF EXISTS`, so
+     `alembic downgrade base` and the test suite's rebuild work there. The upgrade is
+     unchanged. The opposite case is not repaired: such a database never runs the real 0006
+     upgrade, because alembic sees it at head, so it must be downgraded to 0005 (or rebuilt)
+     before the real migration applies. No deployed database is affected as long as no image
+     with the placeholders is deployed.
+
 ## Part 3 decisions (Phase 4 escalations and reminders; numbers 194 to 213)
 
 ## Integration decisions (Phase 4 integration; numbers 214 to 233)

@@ -599,39 +599,122 @@ What the disposition route (Part 2) and the report (Part 3) can rely on:
 
 ## 11. Phase 4 Part 2: dispositions and deadlines
 
-OWNER NOTES, delete this block when your section is written.
+Part 2 of Phase 4 records the reviewer's decision: one of exactly four dispositions, an
+append-only revision history, the absolute Art. 73 deadline counted from the first assignment,
+the rule that a deadline can shorten but never lengthen silently, and the report guard that
+stops an event without a disposition from advancing (REQ-08a, 08b, 09, 10, 13). It is built on
+branch `phase4-part2-dispositions`, which starts at Part 1's head `d4d8c1f`, itself on the base
+commit `4d1487e` (decision 174). Decisions 174 to 189 in [docs/decisions.md](docs/decisions.md)
+record the choices the specification left open.
 
-Branch name: chosen by the owner (for example phase4-part2-dispositions).
+### 11.1 What Part 2 does
 
-Stubs replaced: dispositions.summary in app/dispositions.py; deadlines.compute and
-deadlines.current_calendar in app/deadlines.py; app/api/stub_routes.py (deleted); the
-placeholder migration 0006_dispositions.py.
+| Behavior | What happens | Spec |
+| --- | --- | --- |
+| POST /v1/events/{id}/disposition | REVIEWER only. Body `{tier, rationale, harm_fields}`. In one transaction: lock the event row, run the checks, write the harm fields (Part 1), append a `disposition` row, set `event.state` and `event.deadline_utc`, call `escalations.plan` (Part 3), append one ledger entry, commit. 200 with the full Event. | 2.4 |
+| Order of checks | 401, 403, 400 MALFORMED_BODY, 400 RATIONALE_REQUIRED, 404, 409 EVENT_NOT_REVIEWABLE, 409 HARM_FIELDS_UNCONFIRMED, 409 DEADLINE_EXTENSION_REQUIRES_RATIONALE. The first failure decides; nothing is written or appended before it. | 7, 2.4 |
+| Revisions | Every later call on the same event is a revision: a new row with `supersedes_id` = the previous row, whatever the state (DISPOSITIONED or CLOSED, D2). Rows are never updated or deleted (trigger plus grants). | 2.4, 2.6, 2.9 |
+| Deadline | `deadline_utc = compute(anchor, tier, calendar)`, where the anchor and calendar are the first row's. NOT_SERIOUS has none and closes the event. | 2.5, 6 |
+| No silent extension | A serious tier whose window is longer than the most recent serious tier's needs a non-blank rationale, including on a reopen from NOT_SERIOUS (409 without one). | Addendum rule 1 |
+| Event fields | `disposition`: tier and rationale from the latest row, reviewer_id and assigned_at from the first. `revisions`: one entry per later row, oldest first. `deadline_utc`: the event row's. | 2.7 |
+| GET /v1/events/{id}/report | REVIEWER only. 404 unknown event; 409 NO_DISPOSITION without a disposition row (gap events always); otherwise 501 until Phase 5 (D1). Reads only. | 2.8, Addendum rule 6 |
+| Ledger | DISPOSITION_RECORDED (first) and DISPOSITION_REVISED (later), actor the reviewer, subject the event id, with the payloads of spec 2.10. | 2.10 |
+| Logging | One INFO line per recorded disposition on `api.disposition`, after the commit; never the rationale or evidence. | decision 187 |
 
-Slots filled: the Phase 4 Part 2 slot in app/config.py (DEADLINE_CALENDAR, DEADLINE_HOLIDAYS);
-the Phase 4 Part 2 slot in tests/worker/test_schema.py; decisions 174 to 193 under their
-heading in docs/decisions.md; this section.
+### 11.2 Errors
 
-Files owned (Phase 4 Addendum 9.6): app/dispositions.py, app/deadlines.py, the disposition and
-report routes, the deletion of app/api/stub_routes.py, every router include or removal in
-app/main.py except Part 4's test-router line, migration 0006, and the Phase 3 stub tests below.
+| Status | error_code | message |
+| --- | --- | --- |
+| 400 | MALFORMED_BODY | `the request is malformed` |
+| 400 | RATIONALE_REQUIRED | `rationale is required when tier is NOT_SERIOUS` |
+| 404 | NOT_FOUND | `resource not found` |
+| 409 | EVENT_NOT_REVIEWABLE | `a monitoring gap event cannot be dispositioned` |
+| 409 | HARM_FIELDS_UNCONFIRMED | `all four harm fields must be CONFIRMED or NOT_APPLICABLE` |
+| 409 | DEADLINE_EXTENSION_REQUIRES_RATIONALE | `extending a running deadline requires a rationale` |
+| 409 | NO_DISPOSITION (report) | `no disposition has been recorded for this event` |
+| 501 | NOT_IMPLEMENTED (report) | `not implemented in this phase` |
 
-Phase 3 tests changed (9.10): tests/part1/test_auth.py (ROUTES and STUBS); the stub tests in
-tests/part1/test_events_api.py; the 501 half of
-tests/part1/test_observability.py::test_a_stub_501_is_logged_at_info_and_a_500_at_error.
+### 11.3 Configuration
 
-Tests to mark integration (rule 10): AC-09 no escalation rows; the D2 revisions that check
-reminders are CANCELLED and re-planned; the rule 1 cases that check reminders.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DEADLINE_CALENDAR` | `calendar_days` | `calendar_days` or `working_days`. Anything else stops start-up. |
+| `DEADLINE_HOLIDAYS` | (empty) | Comma-separated `YYYY-MM-DD` dates that are not working days, used only with `working_days`. A malformed list stops start-up (decision 176). |
 
-Merge order: phase4-integration is created from main when the first part is ready; the parts
-merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
-4 Addendum 9.2).
+The first disposition of an event records the calendar (`calendar_days` or
+`working_days;holidays=YYYY-MM-DD,...`), and every revision reuses it, so a configuration change
+never moves an existing deadline. Working days are Monday to Friday on UTC dates, counted from
+the day after the anchor, at the anchor's UTC time of day (decision 177).
 
-Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
-why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
-you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
-which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+### 11.4 Where the code lives
 
-END OF OWNER NOTES.
+| What | Where |
+| --- | --- |
+| Deadline engine and the rule 1 check (pure) | `app/deadlines.py` |
+| Request parsing, the transaction, `summary`, the report guard | `app/dispositions.py` |
+| The two routes | `app/api/disposition_routes.py` (replaces the deleted `app/api/stub_routes.py`) |
+| `DEADLINE_CALENDAR`, `DEADLINE_HOLIDAYS` | `app/config.py`, Part 2 slot |
+| The `disposition` table | `migrations/versions/0006_dispositions.py` |
+| Tests | `tests/part2/`, and the Phase 3 tests in 11.7 |
+
+### 11.5 Running the tests
+
+With the test database of section 5 running:
+
+| Run | Command | Result on this branch |
+| --- | --- | --- |
+| Part 2's tests | `.venv/bin/pytest tests/part2` | 159 passed, 8 skipped |
+| The whole suite | `.venv/bin/pytest` | 1247 passed, 52 skipped (the base of this branch: 1086 passed, 44 skipped) |
+| The integration-marked tests | `.venv/bin/pytest --run-integration -m integration` | 44 passed (all of Part 1's), 8 failed (Part 2's, no `escalation` table yet) |
+
+Part 2's integration-marked tests (Addendum rule 10) are in
+`tests/part2/test_disposition_integration.py`. They check the `escalation` rows that Part 3's
+migration 0007 and `escalations.plan` create, so they fail on this branch, where 0007 is still a
+placeholder:
+
+| Test | Needs |
+| --- | --- |
+| `test_ac09_a_not_serious_first_disposition_has_no_escalation_rows` | Part 3's escalation table |
+| `test_d2_revisions_cancel_and_replan_the_reminders` | Part 3's plan (cancel, then back to PENDING) |
+| `test_a_stricter_revision_moves_the_unsent_reminders` | Part 3's plan (re-plan PENDING rows) |
+| `test_addendum_rule_1_reopens_and_the_reminders` (4 cases) | Part 3's plan |
+| `test_a_looser_revision_without_a_rationale_leaves_the_reminders_alone` | Part 3's plan |
+
+Because this branch carries Part 1's real code, Part 1's integration-marked tests
+(`tests/part1/test_review_integration.py`) pass here with `--run-integration`.
+
+### 11.6 Facts for Parts 3 and 4
+
+- `escalations.plan(session, event_id, anchor, deadline_utc)` is called once per successful
+  call, after the event row is updated and before the ledger append, with the event row locked.
+  `anchor` is the first row's `assigned_at` (it never changes); `deadline_utc` is None for
+  NOT_SERIOUS. It is looked up on the module at call time, so it can be replaced in tests.
+- `dispositions.summary(session, event_id)` returns `{disposition, revisions, deadline_utc}`
+  with API-format times: `disposition.tier` is the tier in force and `disposition.assigned_at`
+  is the first assignment (the anchor), as Addendum rule 3 expects.
+- `deadlines.compute(anchor, tier, calendar)` and `deadlines.current_calendar()` are pure apart
+  from reading the two settings; `deadlines.TIER_DAYS` and `deadlines.TIERS` are the tier
+  tables.
+- A disposition row cannot be updated or deleted even by the owner role; test reset empties the
+  table with TRUNCATE as the owner, through `app.platform.with_phase4_tables`.
+
+### 11.7 Phase 3 tests changed (Addendum 9.10)
+
+| Test | Why |
+| --- | --- |
+| `tests/part1/test_auth.py::test_role_matrix` (ROUTES and STUBS) | the report is REVIEWER only; the allowed role now gets 400 (disposition) and 409 NO_DISPOSITION (report) instead of 501 |
+| `tests/part1/test_events_api.py::test_disposition_and_report_stubs`, renamed `test_disposition_and_report_check_the_key_and_role_first` | the stubs are gone: 400 for a broken disposition body, 409 or 404 for the report, 403 for viewer and system |
+| `tests/part1/test_observability.py::test_a_stub_501_is_logged_at_info_and_a_500_at_error`, the 501 half | the 501 now comes from the report guard after a recorded disposition |
+| `tests/worker/test_schema.py`, the Phase 4 Part 2 slot | the `disposition` columns |
+
+### 11.8 Known limitations
+
+| Limitation | Decision |
+| --- | --- |
+| **Working days are UTC days.** A team in another time zone gets its weekend boundaries in UTC. | 177 |
+| **The report is only a guard until Phase 5.** A reviewer gets 501 once a disposition exists, so AC-14's "reviewer succeeds" for reports completes in Phase 5. | D1, 186 |
+| **One seeded reviewer.** Only rev-1 exists, so `disposition.reviewer_id` (first row) and a revision's `reviewer_id` cannot differ through the API; the test for which row feeds which field inserts rows as the owner. | |
+| **Built on Part 1's head.** The branch includes Part 1's commits up to `d4d8c1f` (Addendum 9.2 expects part branches to be independent). | 174 |
 
 ## 12. Phase 4 Part 3: escalations and reminders
 
