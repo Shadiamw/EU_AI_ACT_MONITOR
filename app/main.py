@@ -9,10 +9,10 @@ from fastapi.staticfiles import StaticFiles
 
 from app import config, deadlines, errors, observability
 from app.api import (
+    disposition_routes,
     health_routes,
     ingestion_routes,
     ledger_routes,
-    stub_routes,
     test_routes,
     webhook_routes,
 )
@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(ingestion_routes.router)
     app.include_router(ledger_routes.router)
     app.include_router(webhook_routes.router)
-    app.include_router(stub_routes.router)
+    app.include_router(disposition_routes.router)
     app.include_router(health_routes.router)
     app.include_router(test_routes.router)
 

@@ -11,7 +11,7 @@ from sqlalchemy import Engine, text
 from app import observability
 from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient
-from tests.db_helpers import bearer
+from tests.db_helpers import HARM_FIELDS, bearer
 from tests.part1.conftest import get, metric, post, post_raw
 
 LOG_KEYS = {"ts", "level", "request_id", "actor_id", "method", "path", "status", "duration_ms"}
@@ -111,8 +111,22 @@ def test_request_log_never_contains_the_authorization_header(
 def test_a_stub_501_is_logged_at_info_and_a_500_at_error(
     client: ApiClient, owner_engine: Engine, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Phase 4 Part 2 (Addendum 9.10): the disposition stub is gone, so the 501 comes from the
+    report guard, which stays 501 once a disposition exists until Phase 5 (D1, spec 2.8 step
+    4). The disposition is recorded first and its lines are cleared before the two checked
+    here."""
+    event_id = post(client).json()["flagged_event_id"]
+    harm_fields = {key: {"status": "NOT_APPLICABLE", "evidence": None} for key in HARM_FIELDS}
+    recorded = client.request(
+        "POST",
+        f"/v1/events/{event_id}/disposition",
+        headers=bearer("rev-1"),
+        json={"tier": "OTHER_SERIOUS", "rationale": None, "harm_fields": harm_fields},
+    )
+    assert recorded.status_code == 200
     caplog.set_level(logging.INFO, logger="api.request")
-    client.request("POST", "/v1/events/evt-x/disposition", headers=bearer("rev-1"))
+    caplog.clear()
+    client.request("GET", f"/v1/events/{event_id}/report", headers=bearer("rev-1"))
     with owner_engine.begin() as conn:
         if "harm_context" in with_phase4_tables(conn):  # its system_id references the system
             conn.execute(text("DELETE FROM harm_context"))

@@ -163,8 +163,9 @@ def test_keys_never_appear_in_logs(client: ApiClient, caplog: pytest.LogCaptureF
         assert secret not in text_logged
 
 
-# The role matrix (spec 4): (method, path) -> the roles allowed. Disposition and report are
-# the 501 stubs (spec 1.6); everything else answers 200 for an allowed role.
+# The role matrix (spec 4; Phase 4 spec 7): (method, path) -> the roles allowed. Disposition
+# and report are REVIEWER only (Phase 4 spec 2.4 and 2.8, Addendum rule 6); everything else
+# answers 200 for an allowed role.
 ROUTES = {
     ("POST", "/v1/metrics"): {"sys-42"},
     ("GET", "/v1/events"): {"sys-42", "rev-1", "viewer-1"},
@@ -173,10 +174,20 @@ ROUTES = {
     ("GET", "/v1/ledger/export"): {"rev-1", "viewer-1"},
     ("GET", "/v1/ledger/verify"): {"rev-1", "viewer-1"},
     ("POST", "/v1/events/{id}/disposition"): {"rev-1"},
-    ("GET", "/v1/events/{id}/report"): {"rev-1", "viewer-1"},
+    ("GET", "/v1/events/{id}/report"): {"rev-1"},
 }
 SUCCESS = {("POST", "/v1/metrics"): 201}
-STUBS = {("POST", "/v1/events/{id}/disposition"), ("GET", "/v1/events/{id}/report")}
+# Phase 4 Part 2 (Addendum 9.10): the allowed role passes the role check and reaches the next
+# check. The metric body has no tier, so the disposition is 400 (Phase 4 spec 2.3); the event
+# has no disposition, so the report is 409 NO_DISPOSITION (Phase 4 spec 2.8 step 3).
+NO_DISPOSITION = {
+    "error_code": "NO_DISPOSITION",
+    "message": "no disposition has been recorded for this event",
+}
+PASSED_ROLE_CHECK = {
+    ("POST", "/v1/events/{id}/disposition"): (400, MALFORMED),
+    ("GET", "/v1/events/{id}/report"): (409, NO_DISPOSITION),
+}
 
 
 @pytest.mark.parametrize("actor", [*ACTORS, None])
@@ -193,16 +204,13 @@ def test_role_matrix(client: ApiClient, route: tuple[str, str], actor: str | Non
         expected = (401, UNAUTHORIZED)
     elif actor not in ROUTES[route]:
         expected = (403, FORBIDDEN)
-    elif route in STUBS:
-        expected = (501, None)
+    elif route in PASSED_ROLE_CHECK:
+        expected = PASSED_ROLE_CHECK[route]
     else:
         expected = (SUCCESS.get(route, 200), None)
     assert response.status_code == expected[0]
     if expected[1] is not None:
         assert response.json() == expected[1]
-    if expected[0] == 501:
-        assert set(response.json()) == {"error_code", "message"}
-        assert response.json()["error_code"] == "NOT_IMPLEMENTED"
 
 
 def test_check_order_401_403_400_mismatch(client: ApiClient, owner_engine: Engine) -> None:
