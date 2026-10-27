@@ -10,14 +10,23 @@ def _required(name: str) -> str:
     return value
 
 
+def _psycopg_url(url: str) -> str:
+    """Render/Heroku hand out postgres://…; this app uses psycopg3."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+    if url.startswith("postgresql://") and "+psycopg" not in url:
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
 def database_url() -> str:
     """Connection for the application role (INSERT and SELECT only on the ledger)."""
-    return _required("DATABASE_URL")
+    return _psycopg_url(_required("DATABASE_URL"))
 
 
 def database_admin_url() -> str:
     """Owner role. Used by migrations and, in test only, by reset."""
-    return _required("DATABASE_ADMIN_URL")
+    return _psycopg_url(_required("DATABASE_ADMIN_URL"))
 
 
 def ingest_key_sys_42() -> str:

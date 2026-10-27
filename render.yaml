@@ -1,0 +1,52 @@
+# Free Render deploy (no Fly card). One web service runs API + worker together.
+#
+# 1. Push this branch to GitHub
+# 2. https://dashboard.render.com → New → Blueprint → select this repo
+# 3. After it goes live, set SUITE_BASE_URL secret to https://<your-service>.onrender.com
+# 4. UptimeRobot (free): monitor GET https://<your-service>.onrender.com/livez every 5 minutes
+#    so the free tier does not sleep Wed–Thu
+# 5. Registry:
+#      System: https://<your-service>.onrender.com/system
+#      Tester: https://<your-service>.onrender.com/tester
+
+databases:
+  - name: eu-ai-act-monitor-db
+    plan: free
+    databaseName: monitor_test
+    user: monitor
+
+services:
+  - type: web
+    name: eu-ai-act-monitor-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerCommand: all
+    healthCheckPath: /livez
+    envVars:
+      - key: ENVIRONMENT
+        value: test
+      - key: LOCK_TIMEOUT
+        value: 5s
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: INGEST_KEY_SYS_42
+        value: test-ingest-key-sys-42-0d6f1c2e9b8a4f37
+      - key: REVIEWER_KEY
+        value: test-reviewer-key-rev-1-5a7e3b9c1d2f4086
+      - key: VIEWER_KEY
+        value: test-viewer-key-viewer-1-8c4d2e6f0a1b3957
+      - key: TESTER_TARGET_URL
+        value: https://34-57-175-31.sslip.io
+      # Render injects DATABASE_URL as postgres://… — SQLAlchemy/psycopg accept it.
+      # Same URL for admin on free tier (single DB user).
+      - key: DATABASE_URL
+        fromDatabase:
+          name: eu-ai-act-monitor-db
+          property: connectionString
+      - key: DATABASE_ADMIN_URL
+        fromDatabase:
+          name: eu-ai-act-monitor-db
+          property: connectionString

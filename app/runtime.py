@@ -132,7 +132,31 @@ def main(argv: list[str] | None = None) -> None:
 
         worker_main()
         return
-    raise SystemExit("usage: python -m app.runtime [prepare|api|worker]")
+    if command_name == "all":
+        # Single free-tier dyno (e.g. Render): migrate, run worker + API together.
+        import subprocess
+
+        prepare()
+        worker = subprocess.Popen([sys.executable, "-m", "app.runtime", "worker"])
+        try:
+            os.execvp(
+                sys.executable,
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "app.main:app",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "8000",
+                ],
+            )
+        finally:
+            worker.terminate()
+            worker.wait(timeout=10)
+        return
+    raise SystemExit("usage: python -m app.runtime [prepare|api|worker|all]")
 
 
 if __name__ == "__main__":
