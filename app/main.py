@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import config, errors, observability
@@ -19,6 +19,8 @@ from app.api import (
 )
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+_ROOT = Path(__file__).resolve().parent.parent
+_POD_SPEC = _ROOT / "pod_spec.txt"
 
 
 def create_app() -> FastAPI:
@@ -32,6 +34,13 @@ def create_app() -> FastAPI:
     # Staff autograder bases: .../system and .../tester (+ /test/setup|run|report).
     app.include_router(harness_routes.build_router("system"), prefix="/system")
     app.include_router(harness_routes.build_router("tester"), prefix="/tester")
+
+    @app.get("/pod_spec.txt", response_class=PlainTextResponse)
+    def pod_spec() -> PlainTextResponse:
+        """Public pod interface doc for the course registry (repo may be private)."""
+        if not _POD_SPEC.is_file():
+            return PlainTextResponse("pod_spec.txt missing from deploy image\n", status_code=404)
+        return PlainTextResponse(_POD_SPEC.read_text(encoding="utf-8"))
 
     @app.get("/")
     def ui_home() -> RedirectResponse:

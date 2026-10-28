@@ -61,7 +61,7 @@ def _new_id() -> str:
 
 
 def _pick_target(body: dict[str, Any]) -> str | None:
-    for key in ("target", "system_url", "base_url", "url", "system", "sut"):
+    for key in ("target", "target_url", "system_url", "base_url", "url", "system", "sut"):
         value = body.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().rstrip("/")

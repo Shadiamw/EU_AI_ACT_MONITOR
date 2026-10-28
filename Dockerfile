@@ -12,6 +12,7 @@ COPY migrations ./migrations
 COPY tools ./tools
 COPY tests ./tests
 COPY scripts ./scripts
+COPY pod_spec.txt ./pod_spec.txt
 # [dev] pulls in pytest so the UI can run the suite in ENVIRONMENT=test.
 RUN pip install --no-cache-dir ".[dev]" \
     && chmod +x scripts/render-start.sh
