@@ -52,6 +52,68 @@
         <pre class="out" id="ops-out" aria-live="polite">Ready.</pre>
       </section>
 
+      <section class="panel review" aria-labelledby="review-title">
+        <div class="panel-head">
+          <h1 id="review-title">Event review</h1>
+          <p>
+            AC-09 surface: load an event as viewer or reviewer, confirm harm fields, and
+            record one of the four pinned dispositions.
+          </p>
+        </div>
+        <div class="key-row">
+          <label>
+            Event id
+            <input id="event-id" type="text" autocomplete="off" placeholder="evt-…" />
+          </label>
+          <label>
+            Act as
+            <select id="review-as">
+              <option value="reviewer">Reviewer</option>
+              <option value="viewer">Viewer</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions" role="group" aria-label="Review actions">
+          <button type="button" id="load-event">Load event</button>
+          <button type="button" id="submit-disposition" class="primary">
+            Submit disposition
+          </button>
+        </div>
+        <p class="risk" id="risk-indicator" hidden></p>
+        <div class="review-grid">
+          <div>
+            <h2 class="subhead">Harm fields</h2>
+            <div id="harm-fields" class="harm-fields"></div>
+          </div>
+          <div>
+            <h2 class="subhead">Disposition</h2>
+            <label class="stack">
+              Tier
+              <select id="disposition-tier">
+                <option value="DEATH">Death (10-day deadline)</option>
+                <option value="CRITICAL_INFRASTRUCTURE_OR_WIDESPREAD">
+                  Critical infrastructure disruption / widespread infringement (2-day
+                  deadline)
+                </option>
+                <option value="OTHER_SERIOUS">
+                  Other serious incident (15-day deadline)
+                </option>
+                <option value="NOT_SERIOUS">
+                  Assessed — not a serious incident (rationale required, no deadline)
+                </option>
+              </select>
+            </label>
+            <label class="stack">
+              Rationale
+              <textarea id="disposition-rationale" rows="3"></textarea>
+            </label>
+            <h2 class="subhead">History</h2>
+            <pre class="out" id="review-history">Load an event to see tier, deadline, revisions and escalation instants.</pre>
+          </div>
+        </div>
+        <pre class="out" id="review-out" aria-live="polite">No event loaded.</pre>
+      </section>
+
       <section class="panel suite" aria-labelledby="suite-title">
         <div class="panel-head">
           <h1 id="suite-title">Test suite</h1>

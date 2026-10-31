@@ -151,9 +151,16 @@ def _run_smoke() -> tuple[int, str]:
     if status not in (200, 503):
         ok = False
 
-    status, body = post("/v1/test/reset")
+    reviewer = os.environ.get("REVIEWER_KEY", "")
+    reset_headers = {"Authorization": f"Bearer {reviewer}"} if reviewer else {}
+    req = urllib.request.Request(base + "/v1/test/reset", method="POST", headers=reset_headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            status, body = resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        status, body = exc.code, exc.read().decode("utf-8", errors="replace")
     lines.append(f"POST /v1/test/reset -> {status} {body[:200]}")
-    if status not in (200, 204):
+    if status != 204:
         ok = False
 
     viewer = os.environ.get("VIEWER_KEY", "")

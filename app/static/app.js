@@ -85,13 +85,20 @@
       setOps(result.data ?? result);
     },
     async reset() {
-      const result = await api("/v1/test/reset", { method: "POST" });
-      setOps({ status: result.status, body: result.data });
+      const result = await api("/v1/test/reset", {
+        method: "POST",
+        auth: "reviewer",
+      });
+      setOps({
+        status: result.status,
+        body: result.status === 204 ? null : result.data,
+      });
       await refreshHealth();
     },
     async advance() {
       const result = await api("/v1/test/clock/advance", {
         method: "POST",
+        auth: "reviewer",
         body: JSON.stringify({ seconds: 900 }),
       });
       setOps({ status: result.status, body: result.data });
@@ -150,9 +157,13 @@
   }
 
   async function fetchSuite() {
-    const result = await api("/v1/test/suite");
+    const result = await api("/v1/test/suite", { auth: "reviewer" });
     if (result.status === 404) {
       suiteMeta.textContent = "Suite endpoint unavailable (ENVIRONMENT must be test).";
+      return null;
+    }
+    if (result.status === 401 || result.status === 403) {
+      suiteMeta.textContent = `Suite needs a reviewer key (${result.status}).`;
       return null;
     }
     const run = result.data && result.data.run;
@@ -201,6 +212,7 @@
       try {
         const result = await api("/v1/test/suite", {
           method: "POST",
+          auth: "reviewer",
           body: JSON.stringify({ scope }),
         });
         if (!result.ok) {
@@ -222,6 +234,176 @@
         setSuiteButtons(false);
       }
     });
+  });
+
+  const HARM_FIELDS = [
+    "health_safety_harm",
+    "critical_infrastructure_disruption",
+    "fundamental_rights_infringement",
+    "property_environmental_damage",
+  ];
+
+  const harmRoot = document.getElementById("harm-fields");
+  const riskEl = document.getElementById("risk-indicator");
+  const reviewOut = document.getElementById("review-out");
+  const reviewHistory = document.getElementById("review-history");
+  const eventIdInput = document.getElementById("event-id");
+  const reviewAs = document.getElementById("review-as");
+  let loadedEvent = null;
+
+  function reviewAuth() {
+    return reviewAs.value === "viewer" ? "viewer" : "reviewer";
+  }
+
+  function setReview(msg) {
+    reviewOut.textContent = typeof msg === "string" ? msg : pretty(msg);
+  }
+
+  function elapsedParts(fromIso, toMs) {
+    const from = Date.parse(fromIso);
+    if (Number.isNaN(from)) return { h: 0, m: 0 };
+    const mins = Math.max(0, Math.floor((toMs - from) / 60000));
+    return { h: Math.floor(mins / 60), m: mins % 60 };
+  }
+
+  function renderRisk(event) {
+    const now = Date.now();
+    const disp = event.disposition;
+    if (disp && disp.assigned_at) {
+      const { h, m } = elapsedParts(event.detected_at, Date.parse(disp.assigned_at));
+      riskEl.textContent =
+        `Detected ${event.detected_at}, classified ${disp.assigned_at}: ` +
+        `${h} h ${m} min elapsed before classification` +
+        (event.deadline_utc ? ` · deadline_utc ${event.deadline_utc}` : " · no deadline");
+    } else {
+      const { h, m } = elapsedParts(event.detected_at, now);
+      riskEl.textContent =
+        `Detected at ${event.detected_at}: ${h} h ${m} min elapsed; ` +
+        "the legal window may already be running" +
+        (event.deadline_utc ? ` · deadline_utc ${event.deadline_utc}` : "");
+    }
+    riskEl.hidden = false;
+  }
+
+  function escalationInstants(anchorIso, deadlineIso) {
+    if (!anchorIso || !deadlineIso) return [];
+    const anchor = Date.parse(anchorIso);
+    const deadline = Date.parse(deadlineIso);
+    if (Number.isNaN(anchor) || Number.isNaN(deadline) || deadline <= anchor) return [];
+    const windowUs = (deadline - anchor) * 1000;
+    return [50, 80, 100].map((pct) => {
+      const due = new Date(anchor + Math.ceil((windowUs * pct) / 100) / 1000);
+      return { pct, at: due.toISOString().replace(/\.\d{3}Z$/, "Z") };
+    });
+  }
+
+  function renderHistory(event) {
+    const disp = event.disposition;
+    const lines = [
+      `state ${event.state}`,
+      `tier ${disp ? disp.tier : "(none)"}`,
+      `deadline_utc ${event.deadline_utc ?? "null"}`,
+      `revisions ${(event.revisions || []).length}`,
+    ];
+    for (const rev of event.revisions || []) {
+      lines.push(
+        `  - ${rev.revised_at || rev.assigned_at || "?"} ${rev.prior_tier || "?"} -> ${rev.tier}`
+      );
+    }
+    const anchor = disp && disp.assigned_at;
+    for (const row of escalationInstants(anchor, event.deadline_utc)) {
+      lines.push(`reminder ${row.pct}% at ${row.at}`);
+    }
+    reviewHistory.textContent = lines.join("\n");
+  }
+
+  function renderHarmFields(event) {
+    const fields = event.harm_fields || {};
+    harmRoot.innerHTML = "";
+    for (const key of HARM_FIELDS) {
+      const field = fields[key] || {};
+      const evidence =
+        field.evidence == null || field.evidence === ""
+          ? "no evidence available"
+          : String(field.evidence);
+      const card = document.createElement("div");
+      card.className = "harm-card";
+      card.dataset.field = key;
+      card.innerHTML = `
+        <strong>${key}</strong>
+        <div class="evidence"></div>
+        <div class="choices">
+          <label><input type="radio" name="status-${key}" value="CONFIRMED" checked /> Confirmed</label>
+          <label><input type="radio" name="status-${key}" value="NOT_APPLICABLE" /> Not applicable</label>
+        </div>
+        <label class="stack">Evidence override
+          <textarea data-evidence rows="2" placeholder="optional"></textarea>
+        </label>`;
+      card.querySelector(".evidence").textContent = evidence;
+      if (field.status === "NOT_APPLICABLE") {
+        card.querySelector(`input[value="NOT_APPLICABLE"]`).checked = true;
+      }
+      harmRoot.appendChild(card);
+    }
+  }
+
+  function collectHarmFields() {
+    const out = {};
+    for (const card of harmRoot.querySelectorAll(".harm-card")) {
+      const key = card.dataset.field;
+      const status = card.querySelector(`input[name="status-${key}"]:checked`).value;
+      const evidence = card.querySelector("[data-evidence]").value;
+      out[key] = { status };
+      if (evidence.trim()) out[key].evidence = evidence;
+    }
+    return out;
+  }
+
+  document.getElementById("load-event").addEventListener("click", async () => {
+    const eventId = eventIdInput.value.trim();
+    if (!eventId) {
+      setReview("Enter an event id.");
+      return;
+    }
+    setReview(`Loading ${eventId}…`);
+    const result = await api(`/v1/events/${encodeURIComponent(eventId)}`, {
+      auth: reviewAuth(),
+    });
+    if (!result.ok) {
+      setReview({ status: result.status, body: result.data });
+      return;
+    }
+    loadedEvent = result.data;
+    renderHarmFields(loadedEvent);
+    renderRisk(loadedEvent);
+    renderHistory(loadedEvent);
+    setReview(loadedEvent);
+  });
+
+  document.getElementById("submit-disposition").addEventListener("click", async () => {
+    const eventId = eventIdInput.value.trim();
+    if (!eventId) {
+      setReview("Enter an event id.");
+      return;
+    }
+    const body = {
+      tier: document.getElementById("disposition-tier").value,
+      rationale: document.getElementById("disposition-rationale").value,
+      harm_fields: collectHarmFields(),
+    };
+    setReview("Submitting disposition…");
+    const result = await api(`/v1/events/${encodeURIComponent(eventId)}/disposition`, {
+      method: "POST",
+      auth: reviewAuth(),
+      body: JSON.stringify(body),
+    });
+    setReview({ status: result.status, body: result.data });
+    if (result.ok && result.data) {
+      loadedEvent = result.data;
+      renderHarmFields(loadedEvent);
+      renderRisk(loadedEvent);
+      renderHistory(loadedEvent);
+    }
   });
 
   refreshHealth().catch(() => {

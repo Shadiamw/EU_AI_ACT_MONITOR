@@ -83,8 +83,12 @@ def wait_for_head(timeout_s: float = 120) -> None:
         sleep(1)
 
 
-def seed() -> None:
-    """Install the Part 1/4 fixtures as the owner. Requires ENVIRONMENT=test (decision 128)."""
+def seed(*, reset_clock: bool = False) -> None:
+    """Install the Part 1/4 fixtures as the owner. Requires ENVIRONMENT=test (decision 128).
+
+    The simulated clock offset is left alone on an ordinary process start so a Fly idle stop
+    mid-demo does not snap time back to wall clock (Phase 4 Addendum rule 7). Only prepare and
+    POST /v1/test/reset zero the offset."""
     if not config.is_test_environment():
         raise RuntimeError("container seed requires ENVIRONMENT=test")
     engine = _admin_engine()
@@ -92,7 +96,8 @@ def seed() -> None:
         with Session(engine) as session:
             install_seed(session)
             session.commit()
-        platform.set_offset_seconds(0)
+        if reset_clock:
+            platform.set_offset_seconds(0)
     finally:
         engine.dispose()
 
@@ -100,7 +105,7 @@ def seed() -> None:
 def prepare() -> None:
     wait_for_database()
     command.upgrade(_alembic_config(), "head")
-    seed()
+    seed(reset_clock=True)
 
 
 def main(argv: list[str] | None = None) -> None:

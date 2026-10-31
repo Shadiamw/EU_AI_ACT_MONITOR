@@ -580,38 +580,44 @@ END OF OWNER NOTES.
 
 ## 13. Phase 4 Part 4: platform
 
-OWNER NOTES, delete this block when your section is written.
+Branch: `phase4-part4-platform`, from the Phase 4 base commit `4d1487e`. Owner: Bhanu.
 
-Branch name: chosen by the owner (for example phase4-part4-platform).
+### What this part owns
 
-Stubs replaced: none from the base commit. Part 4 extends REQUIRED in tools/check_acceptance.py
-on its own branch, and writes the HTTP acceptance runner (tests/acceptance),
-tools/demo_phase4.py and the Model 5 fixtures that the CI steps conditioned by the base commit
-run.
+Contract test endpoints, the simulated clock's process lifetime, `/healthz`, the console
+reviewer panel, the Model 5 fixtures, the HTTP acceptance runner, the webhook sink, the Phase 4
+demo script, and the deployment notes that sit on top of the base commit.
 
-Slots filled: decisions 134 to 153 under their heading in docs/decisions.md (134 is the base
-commit's); this section.
+| Surface | Contract behaviour |
+| --- | --- |
+| `POST /v1/test/reset` | REVIEWER or VIEWER; **204** empty body; truncates Phase 4 tables when present |
+| `POST /v1/test/clock/advance` | REVIEWER or VIEWER; body `{ "seconds": <int≥0> }`; **200** `{ "simulated_time" }` only; then `gaps.sweep` → `escalations.fire_due` → `notifications.deliver_due` |
+| `POST /v1/test/suite` | REVIEWER only (named exception to the common matrix) |
+| Outside `ENVIRONMENT=test` | Standard 404 **before** any key check |
+| `/healthz` | Adds `overdue_escalations`; **503** when the database is unreachable (LIM-09) or the sweeper is stale |
 
-Files owned (Phase 4 Addendum 9.6): app/platform.py, the test routes, app/runtime.py,
-app/suite_runner.py, /healthz, app/static, tools/ (including the guarded seed row's data),
-tests/acceptance, tests/fixtures/phase4, CI, the deployment files, tests/api/test_platform.py,
-tests/part1/test_smoke.py, docs/models.
+Ordinary process start (`runtime.seed`) does **not** zero the clock offset. Only `prepare` and
+reset do, so a Fly idle stop mid-demo does not snap simulated time back to wall time.
 
-Phase 3 tests changed (9.10): tests/api/test_platform.py and tests/part1/test_smoke.py (204 on
-reset, the clock body, keys, zero allowed, gap events through GET
-/v1/events?type=monitoring_gap).
+### Console, fixtures, demo
 
-Tests to mark integration (rule 10): /healthz with the real overdue_escalations; the seed row
-against the real table; the acceptance runner, the Model 5 fixtures, the demo script and the
-console panel.
+- Console (`app/static`): event review panel with the four pinned disposition labels, harm-field
+  confirmations, risk indicator (REQ-15) and escalation timeline.
+- Model 5 fixtures: [`tests/fixtures/phase4/`](tests/fixtures/phase4/) run with
+  `python -m tools.run_model5 --base-url "$BASE_URL"`.
+- Webhook sink: `python tools/webhook_sink.py` (POST/GET/DELETE `/hook/{channel}`).
+- Demo: `python tools/demo_phase4.py` (HTTP only; stops cleanly if disposition is still a stub).
+- HTTP acceptance: `tests/acceptance/` (integration-marked; needs a live `BASE_URL`).
 
-Merge order: phase4-integration is created from main when the first part is ready; the parts
-merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
-4 Addendum 9.2).
+### Phase 3 tests this part changed (Addendum 9.10)
 
-Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
-why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
-you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
-which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+`tests/api/test_platform.py` and `tests/part1/test_smoke.py` now send a reviewer or viewer key,
+expect 204 on reset, `{simulated_time}` on advance (including zero seconds), and read gap events
+through `GET /v1/events?type=monitoring_gap`.
 
-END OF OWNER NOTES.
+### Integration-marked (Addendum rule 10)
+
+`/healthz` with real `overdue_escalations`, the seed row against the real `harm_context` table,
+`tests/acceptance`, the Model 5 runner, `tools/demo_phase4.py` and the console panel. They need
+Parts 1–3.
+

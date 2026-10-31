@@ -1,6 +1,8 @@
-"""Fail unless the pytest JUnit file shows every Phase 3 acceptance criterion passing.
+"""Fail unless the pytest JUnit file shows every required acceptance criterion passing.
 
-AC-12 is reported and not required: reminders are not in Phase 3 (decision 89).
+Phase 3 ACs stay required on every branch. Phase 4 ACs (AC-07..12, 14, 15, 17) are added to
+REQUIRED at integration (Phase 4 Addendum 9.5; Part 4 decision 151) once Parts 1–3 publish
+their exact node ids.
 """
 
 import sys
@@ -27,6 +29,19 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "AC-15": ("tests.api.test_audit::",),
 }
 
+# Filled at integration from the part reports (Addendum 9.5). Kept here so the merge of Part 4
+# only edits this mapping.
+PHASE4_REQUIRED: dict[str, tuple[str, ...]] = {
+    # "AC-07": (),
+    # "AC-08": (),
+    # "AC-09": (),
+    # "AC-10": (),
+    # "AC-11": (),
+    # "AC-12": (),
+    # "AC-14": (),
+    # "AC-17": (),
+}
+
 
 def _node(classname: str, name: str) -> str:
     return f"{classname}::{name}"
@@ -42,28 +57,31 @@ def _matches(node: str, required: str) -> bool:
     return node == required or node.startswith(required + "[")
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
         print("usage: check_acceptance.py RESULTS.xml", file=sys.stderr)
         return 2
-    root = ET.parse(argv[1]).getroot()
+    root = ET.parse(args[0]).getroot()
     cases = [
         (_node(case.get("classname") or "", case.get("name") or ""), _passed(case))
         for case in root.iter("testcase")
     ]
+    required = {**REQUIRED, **{k: v for k, v in PHASE4_REQUIRED.items() if v}}
     missing: list[str] = []
-    for criterion, names in REQUIRED.items():
-        for required in names:
-            hits = [ok for node, ok in cases if _matches(node, required)]
+    for criterion, names in required.items():
+        for name in names:
+            hits = [ok for node, ok in cases if _matches(node, name)]
             if hits and all(hits):
-                print(f"{criterion} passed ({len(hits)}): {required}")
+                print(f"{criterion} passed ({len(hits)}): {name}")
             else:
-                missing.append(f"{criterion} {required}")
-                print(f"{criterion} MISSING OR FAILED: {required}", file=sys.stderr)
-    print(
-        "AC-12 not in Phase 3: reminders need the deadlines of REQ-10. "
-        "reminder stays a valid webhook type."
-    )
+                missing.append(f"{criterion} {name}")
+                print(f"{criterion} MISSING OR FAILED: {name}", file=sys.stderr)
+    if not PHASE4_REQUIRED or not any(PHASE4_REQUIRED.values()):
+        print(
+            "Phase 4 ACs not yet wired into REQUIRED "
+            "(fill PHASE4_REQUIRED at integration; decision 151)."
+        )
     if missing:
         print(f"{len(missing)} acceptance criterion check(s) failed", file=sys.stderr)
         return 1
@@ -71,4 +89,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(main())

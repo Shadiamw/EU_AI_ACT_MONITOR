@@ -1349,6 +1349,81 @@ Decided 17 and 18 October 2026.
      `default_factory=time.time` (`app/suite_runner.py:45`) is left as it is: the clock-rule
      test does not flag it and the addendum names only line 102.
 
+135. **Test endpoints require keys and return contract bodies (Phase 4 spec 4.5; Addendum
+     rule 7).** `POST /v1/test/reset` returns 204 with an empty body. `POST /v1/test/clock/advance`
+     returns only `{ "simulated_time": <ISO-8601 UTC> }`; the previous `ok`,
+     `seconds_advanced`, `offset_seconds`, `gaps_opened` and `deliveries` fields are logged on
+     the `api` logger instead. Both accept REVIEWER or VIEWER. Zero seconds is allowed so a
+     caller can read simulated now without moving the clock (LIM-03).
+
+136. **Environment check before authentication on test routes (Addendum rule 7).** Outside
+     `ENVIRONMENT=test` the handlers raise the standard 404 before any key is read, so a missing
+     key never becomes 401 on a production deploy. The check is the first statement inside the
+     route dependency, not a later body guard.
+
+137. **Seed-key bootstrap for an empty `api_key` table.** Reset needs a REVIEWER or VIEWER key,
+     but the table is empty until reset seeds it. When the database lookup finds no match, the
+     test-route dependency also accepts the configured `REVIEWER_KEY` and `VIEWER_KEY` digests
+     (the same values the seed writes). After a successful reset, the database digests are used.
+
+138. **Clock advance runs sweep, fire_due and deliver_due in that order (spec 4.5).** After the
+     offset is updated, `gaps.sweep`, `escalations.fire_due` and `notifications.deliver_due`
+     each run once so a reminder whose instant was crossed is delivered before the response
+     returns. Part 3's `fire_due` is still a stub on this branch and returns `[]`.
+
+139. **Simulated clock survives ordinary process start (Addendum rule 7).** `runtime.seed()` no
+     longer writes `offset_seconds = 0`. Only `prepare` (Fly `release_command`) and
+     `POST /v1/test/reset` zero the offset. An idle stop or restart mid-demo therefore keeps the
+     simulated time. Every deploy still resets it through `prepare`.
+
+140. **`/healthz` returns 503 when the database is unreachable (LIM-09).** A connection or query
+     failure yields the same body shape with zeros/`null` and status 503, instead of an uncaught
+     500. The stale-sweeper 503 rule is unchanged.
+
+141. **`/v1/test/suite` is REVIEWER only.** Named exception to the common REVIEWER-or-VIEWER
+     matrix (Addendum rule 7). The console and suite smoke path send the reviewer key.
+
+142. **Console and demo_showcase send the reviewer key and expect 204.** Requiring keys would
+     otherwise break `app/static/app.js` and `tools/demo_showcase.sh` (Addendum rule 7). The
+     console review panel uses the four pinned disposition labels of spec 4.6 and shows empty
+     harm evidence as the literal text `no evidence available`.
+
+143. **Webhook sink is a separate standard-library process (spec 4.9).** `tools/webhook_sink.py`
+     stores POSTed JSON per channel in memory and exposes GET/DELETE. It is not part of the API
+     image; CI and demos run it beside the stack. Channels are unauthenticated by design
+     (LIM-06).
+
+144. **Model 5 fixtures are data plus an HTTP runner (spec 4.7).**
+     `tests/fixtures/phase4/model5_examples.json` holds Ex-1, Ex-2 and Ex-4. `tools/run_model5.py`
+     drives them against any `BASE_URL`. They are integration-marked: disposition, review start
+     and the report guard come from Parts 1–3.
+
+145. **HTTP acceptance lives under `tests/acceptance/` and is integration-marked (spec 4.8,
+     Addendum rule 10).** Tests use only httpx and environment keys. They are skipped without
+     `--run-integration` so the part branch stays green against stubs.
+
+146. **`tools/demo_phase4.py` is HTTP-only and tolerates a disposition stub.** On this branch
+     disposition still returns 501; the demo prints that and exits 0 after the review-open step.
+     After integration it continues through disposition and a 900 s advance.
+
+147. **Part 4 branches from the base commit, not from Part 1 or Part 2 (Addendum 9.2).** The
+     branch `phase4-part4-platform` starts at `4d1487e`. Merge order into `phase4-integration`
+     remains 2, 1, 3, 4.
+
+148. **Gap events after clock advance are observed through the events API.** Because the clock
+     response no longer returns `gaps_opened`, tests and demos list
+     `GET /v1/events?type=monitoring_gap` (Addendum 9.10).
+
+149. **Decision numbers 149–153 are reserved for deployment follow-ups on this branch.** The
+     development-deploy merge, the separate Fly webhook app, and CI gating of the acceptance
+     runner onto `phase4-integration` / main land in later commits and fill these numbers when
+     the files change.
+
+150. Reserved (deployment / Fly receiver).
+151. Reserved (CI acceptance gate extension of `REQUIRED`).
+152. Reserved (Vercel console `API_BASE_URL` / demo recording).
+153. Reserved (model confirmation document updates after integration).
+
 ## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
 
 ## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)

@@ -2,7 +2,8 @@
 
 Part 4's reset and clock-advance endpoints are used for steps 1 and 4. The verifier runs as
 a separate process, as another team would run it. The fake clock is not used: advance moves
-clock_state.offset_seconds, and clock.now() reads it (decision 133).
+clock_state.offset_seconds, and clock.now() reads it (decision 133). Phase 4 brings the test
+endpoints to the contract (204, {simulated_time}, keys required; Addendum 9.10).
 """
 
 import json
@@ -32,7 +33,7 @@ def test_spec_section_9_smoke(
 ) -> None:
     client = live_client
     # 1. Reset. The ledger is valid with one entry, SEED.
-    assert client.request("POST", "/v1/test/reset").json() == {"ok": True}
+    assert client.request("POST", "/v1/test/reset", headers=bearer("rev-1")).status_code == 204
     assert get(client, "/v1/ledger/verify").json() == {
         "valid": True,
         "entries_checked": 1,
@@ -60,9 +61,14 @@ def test_spec_section_9_smoke(
     response = client.request("POST", "/v1/metrics", headers=bearer("sys-42"), json=sample)
     assert response.status_code == 201
     event_id = response.json()["flagged_event_id"]
-    delivered = client.request("POST", "/v1/test/clock/advance", json={"seconds": 1})
+    delivered = client.request(
+        "POST",
+        "/v1/test/clock/advance",
+        headers=bearer("rev-1"),
+        json={"seconds": 1},
+    )
     assert delivered.status_code == 200
-    assert delivered.json()["deliveries"] == 1
+    assert set(delivered.json()) == {"simulated_time"}
     deliveries = receiver.calls[pings:]
     assert [(c.body["notification_type"], c.body["event_id"]) for c in deliveries] == [
         ("flag_notification", event_id)
@@ -80,14 +86,18 @@ def test_spec_section_9_smoke(
     ]
 
     # 4. Advance 900 s more with no samples: a monitoring_gap event appears and a second
-    #    webhook call arrives.
-    advanced = client.request("POST", "/v1/test/clock/advance", json={"seconds": 900})
+    #    webhook call arrives. Gap ids come from the events query (contract body has none).
+    advanced = client.request(
+        "POST",
+        "/v1/test/clock/advance",
+        headers=bearer("rev-1"),
+        json={"seconds": 900},
+    )
     assert advanced.status_code == 200
-    assert len(advanced.json()["gaps_opened"]) == 1
-    gap_id = advanced.json()["gaps_opened"][0]
-    assert advanced.json()["deliveries"] >= 1
+    assert set(advanced.json()) == {"simulated_time"}
     gaps_listed = get(client, "/v1/events?type=monitoring_gap").json()
-    assert [item["event_id"] for item in gaps_listed] == [gap_id]
+    assert len(gaps_listed) == 1
+    gap_id = gaps_listed[0]["event_id"]
     deliveries = receiver.calls[pings:]
     assert [(c.body["event_id"], c.body["type"]) for c in deliveries] == [
         (event_id, "threshold_breach"),
