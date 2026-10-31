@@ -37,6 +37,15 @@
     return JSON.stringify(value, null, 2);
   }
 
+  // API errors are shown with their error_code and message (spec 4.6).
+  function describeError(result) {
+    const data = result && result.data;
+    if (data && typeof data === "object" && data.error_code) {
+      return `HTTP ${result.status} ${data.error_code}: ${data.message}`;
+    }
+    return `HTTP ${result.status}${result.text ? ` ${result.text}` : ""}`;
+  }
+
   async function api(path, options = {}) {
     const headers = { ...(options.headers || {}) };
     if (options.auth === "viewer") {
@@ -216,7 +225,7 @@
           body: JSON.stringify({ scope }),
         });
         if (!result.ok) {
-          suiteMeta.textContent = `Could not start (${result.status})`;
+          suiteMeta.textContent = `Could not start: ${describeError(result)}`;
           suiteOut.textContent = pretty(result.data ?? result.text);
           setSuiteButtons(false);
           return;
@@ -247,9 +256,11 @@
   const riskEl = document.getElementById("risk-indicator");
   const reviewOut = document.getElementById("review-out");
   const reviewHistory = document.getElementById("review-history");
+  const revisionsBody = document.querySelector("#revisions-table tbody");
   const eventIdInput = document.getElementById("event-id");
   const reviewAs = document.getElementById("review-as");
   let loadedEvent = null;
+  let loadedNow = null;
 
   function reviewAuth() {
     return reviewAs.value === "viewer" ? "viewer" : "reviewer";
@@ -266,25 +277,51 @@
     return { h: Math.floor(mins / 60), m: mins % 60 };
   }
 
-  function renderRisk(event) {
-    const now = Date.now();
+  // The simulated "now" for the risk indicator (spec 4.6; decision 142). The only contract
+  // source of simulated time is a clock advance of 0 seconds (Addendum rule 7), and an advance
+  // also runs gaps.sweep, escalations.fire_due and notifications.deliver_due once (spec 4.5).
+  // So it is read only when the user loads an event, never on a timer or a poll. Outside the
+  // test environment the endpoint is 404, and the browser clock is used instead.
+  async function simulatedNow() {
+    try {
+      const result = await api("/v1/test/clock/advance", {
+        method: "POST",
+        auth: reviewAuth(),
+        body: JSON.stringify({ seconds: 0 }),
+      });
+      if (result.ok && result.data && typeof result.data.simulated_time === "string") {
+        const ms = Date.parse(result.data.simulated_time);
+        if (!Number.isNaN(ms)) return { ms, source: "simulated clock" };
+      }
+    } catch {
+      /* fall back to the browser clock */
+    }
+    return { ms: Date.now(), source: "browser clock" };
+  }
+
+  function renderRisk(event, now) {
     const disp = event.disposition;
     if (disp && disp.assigned_at) {
       const { h, m } = elapsedParts(event.detected_at, Date.parse(disp.assigned_at));
       riskEl.textContent =
         `Detected ${event.detected_at}, classified ${disp.assigned_at}: ` +
         `${h} h ${m} min elapsed before classification` +
-        (event.deadline_utc ? ` · deadline_utc ${event.deadline_utc}` : " · no deadline");
+        ` · deadline_utc ${event.deadline_utc ?? "null"}`;
     } else {
-      const { h, m } = elapsedParts(event.detected_at, now);
+      const { h, m } = elapsedParts(event.detected_at, now.ms);
       riskEl.textContent =
         `Detected at ${event.detected_at}: ${h} h ${m} min elapsed; ` +
         "the legal window may already be running" +
-        (event.deadline_utc ? ` · deadline_utc ${event.deadline_utc}` : "");
+        ` · deadline_utc ${event.deadline_utc ?? "null"}` +
+        ` · now from the ${now.source}`;
     }
     riskEl.hidden = false;
   }
 
+  // The 50/80/100 % instants with Part 3's formula (spec 3, "Window"): instant for p =
+  // anchor + ceil((deadline - anchor) * p / 100) in whole microseconds, where the anchor is the
+  // first assigned_at (disposition.assigned_at) and the deadline is deadline_utc. Display only:
+  // the reminders themselves are planned and fired by the service.
   function escalationInstants(anchorIso, deadlineIso) {
     if (!anchorIso || !deadlineIso) return [];
     const anchor = Date.parse(anchorIso);
@@ -297,24 +334,38 @@
     });
   }
 
+  function renderRevisions(event) {
+    revisionsBody.innerHTML = "";
+    const revisions = event.revisions || [];
+    if (!revisions.length) {
+      const row = revisionsBody.insertRow();
+      const cell = row.insertCell();
+      cell.colSpan = 4;
+      cell.textContent = "no revisions";
+      return;
+    }
+    // The contract's revision keys: prior_tier, new_tier, reviewer_id, revised_at.
+    for (const rev of revisions) {
+      const row = revisionsBody.insertRow();
+      for (const value of [rev.prior_tier, rev.new_tier, rev.reviewer_id, rev.revised_at]) {
+        row.insertCell().textContent = value ?? "";
+      }
+    }
+  }
+
   function renderHistory(event) {
     const disp = event.disposition;
     const lines = [
       `state ${event.state}`,
-      `tier ${disp ? disp.tier : "(none)"}`,
+      `current tier ${disp ? disp.tier : "(none)"}`,
       `deadline_utc ${event.deadline_utc ?? "null"}`,
-      `revisions ${(event.revisions || []).length}`,
     ];
-    for (const rev of event.revisions || []) {
-      lines.push(
-        `  - ${rev.revised_at || rev.assigned_at || "?"} ${rev.prior_tier || "?"} -> ${rev.tier}`
-      );
-    }
     const anchor = disp && disp.assigned_at;
     for (const row of escalationInstants(anchor, event.deadline_utc)) {
       lines.push(`reminder ${row.pct}% at ${row.at}`);
     }
     reviewHistory.textContent = lines.join("\n");
+    renderRevisions(event);
   }
 
   function renderHarmFields(event) {
@@ -333,15 +384,17 @@
         <strong>${key}</strong>
         <div class="evidence"></div>
         <div class="choices">
-          <label><input type="radio" name="status-${key}" value="CONFIRMED" checked /> Confirmed</label>
+          <label><input type="radio" name="status-${key}" value="CONFIRMED" /> Confirmed</label>
           <label><input type="radio" name="status-${key}" value="NOT_APPLICABLE" /> Not applicable</label>
         </div>
-        <label class="stack">Evidence override
+        <label class="stack">Evidence (optional)
           <textarea data-evidence rows="2" placeholder="optional"></textarea>
         </label>`;
       card.querySelector(".evidence").textContent = evidence;
-      if (field.status === "NOT_APPLICABLE") {
-        card.querySelector(`input[value="NOT_APPLICABLE"]`).checked = true;
+      // No choice is made for the reviewer (decision 142): only a decision already stored is
+      // shown; a PREFILLED_PENDING_CONFIRMATION field starts with neither option selected.
+      if (field.status === "CONFIRMED" || field.status === "NOT_APPLICABLE") {
+        card.querySelector(`input[value="${field.status}"]`).checked = true;
       }
       harmRoot.appendChild(card);
     }
@@ -351,7 +404,10 @@
     const out = {};
     for (const card of harmRoot.querySelectorAll(".harm-card")) {
       const key = card.dataset.field;
-      const status = card.querySelector(`input[name="status-${key}"]:checked`).value;
+      const chosen = card.querySelector(`input[name="status-${key}"]:checked`);
+      // A field left unchosen is sent as still pending, so the service answers 409
+      // HARM_FIELDS_UNCONFIRMED instead of the console confirming anything.
+      const status = chosen ? chosen.value : "PREFILLED_PENDING_CONFIRMATION";
       const evidence = card.querySelector("[data-evidence]").value;
       out[key] = { status };
       if (evidence.trim()) out[key].evidence = evidence;
@@ -370,12 +426,13 @@
       auth: reviewAuth(),
     });
     if (!result.ok) {
-      setReview({ status: result.status, body: result.data });
+      setReview(describeError(result));
       return;
     }
     loadedEvent = result.data;
+    loadedNow = await simulatedNow();
     renderHarmFields(loadedEvent);
-    renderRisk(loadedEvent);
+    renderRisk(loadedEvent, loadedNow);
     renderHistory(loadedEvent);
     setReview(loadedEvent);
   });
@@ -397,11 +454,16 @@
       auth: reviewAuth(),
       body: JSON.stringify(body),
     });
+    if (!result.ok) {
+      setReview(describeError(result));
+      return;
+    }
     setReview({ status: result.status, body: result.data });
-    if (result.ok && result.data) {
+    if (result.data) {
       loadedEvent = result.data;
       renderHarmFields(loadedEvent);
-      renderRisk(loadedEvent);
+      // The time read at the last load: a submit never reads the clock again.
+      renderRisk(loadedEvent, loadedNow || { ms: Date.parse(loadedEvent.detected_at), source: "event" });
       renderHistory(loadedEvent);
     }
   });

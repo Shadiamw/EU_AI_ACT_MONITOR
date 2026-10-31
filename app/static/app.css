@@ -359,3 +359,26 @@ footer .api-base {
     flex-direction: column;
   }
 }
+
+.revisions {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-collapse: collapse;
+  font: 400 0.78rem/1.4 var(--mono);
+  color: var(--ink);
+}
+
+.revisions caption {
+  text-align: left;
+  font: 600 0.8rem/1.4 var(--sans);
+  color: var(--ink-soft);
+  padding-bottom: 0.35rem;
+}
+
+.revisions th,
+.revisions td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+}

@@ -592,17 +592,32 @@ demo script, and the deployment notes that sit on top of the base commit.
 | --- | --- |
 | `POST /v1/test/reset` | REVIEWER or VIEWER; **204** empty body; truncates Phase 4 tables when present |
 | `POST /v1/test/clock/advance` | REVIEWER or VIEWER; body `{ "seconds": <int≥0> }`; **200** `{ "simulated_time" }` only; then `gaps.sweep` → `escalations.fire_due` → `notifications.deliver_due` |
-| `POST /v1/test/suite` | REVIEWER only (named exception to the common matrix) |
+| `POST /v1/test/suite` | REVIEWER only (named exception to the common matrix). Scopes `smoke` and `acceptance` only; anything else is 400 |
 | Outside `ENVIRONMENT=test` | Standard 404 **before** any key check |
 | `/healthz` | Adds `overdue_escalations`; **503** when the database is unreachable (LIM-09) or the sweeper is stale |
 
 Ordinary process start (`runtime.seed`) does **not** zero the clock offset. Only `prepare` and
 reset do, so a Fly idle stop mid-demo does not snap simulated time back to wall time.
 
+**Test-route keys (decision 137).** In `ENVIRONMENT=test` only, when no `api_key` row matches the
+presented key, the test routes also accept the configured `REVIEWER_KEY` and `VIEWER_KEY` (with
+their roles), so a reset works on an empty key table. The system key is never accepted this way,
+a stored row always wins, and ordinary routes never use it.
+
+**The console suite runner (LIM-02, decision 141).** `acceptance` runs the HTTP acceptance runner
+(`tests/acceptance`) as a subprocess against this service's own URL (`SUITE_BASE_URL`, default
+`http://127.0.0.1:8000`), with **a reset before and after the run**, even when it fails. The
+runner gets the service's keys and no `DATABASE_*` variable, and is started with
+`--confcutdir=tests/acceptance`. `smoke` calls `/healthz`, reset and ledger verify. **The
+database-level pytest suite never runs in a service; it runs only in CI** (there is no `full`
+scope). The image has what the runner needs: the Dockerfile copies `tests/` and installs the
+`[dev]` extra (pytest; httpx is a main dependency).
+
 ### Console, fixtures, demo
 
-- Console (`app/static`): event review panel with the four pinned disposition labels, harm-field
-  confirmations, risk indicator (REQ-15) and escalation timeline.
+- Console (`app/static`, served at `/ui/`): event review panel with the four pinned disposition
+  labels, harm-field confirmations, risk indicator (REQ-15), a revisions table and the
+  escalation timeline (see "Console" below).
 - Model 5 fixtures: [`tests/fixtures/phase4/`](tests/fixtures/phase4/) run with
   `python -m tools.run_model5 --base-url "$BASE_URL"`.
 - Webhook sink: `python tools/webhook_sink.py` (POST/GET/DELETE `/hook/{channel}`), and the
@@ -610,6 +625,35 @@ reset do, so a Fly idle stop mid-demo does not snap simulated time back to wall 
   by anyone who knows the channel name**: the sink has no authentication (LIM-06).
 - Demo: `python tools/demo_phase4.py` (HTTP only; stops cleanly if disposition is still a stub).
 - HTTP acceptance: `tests/acceptance/` (see below).
+
+### Console (spec 4.6, decision 142)
+
+- **Act as** defaults to **Viewer**. Loading an event as a reviewer starts the review (D3, an
+  audited state change), so it is an explicit choice.
+- Harm fields in contract order, each with its stored evidence or the literal `no evidence
+  available`. **No status is pre-selected**: only a decision already stored (CONFIRMED or
+  NOT_APPLICABLE) is shown. A field left unchosen is sent as pending, so the service answers
+  409 `HARM_FIELDS_UNCONFIRMED`; the console never confirms anything itself.
+- Revisions table from the contract keys `prior_tier`, `new_tier`, `reviewer_id`, `revised_at`.
+- Risk indicator text as spec 4.6, beside `deadline_utc`. **"Now" is the simulated clock, read
+  with `POST /v1/test/clock/advance {"seconds": 0}` with the selected key, once per event load**
+  (Addendum rule 7 names this as the way to read simulated now; spec 4.6 names no side-effect
+  free source). **Side effect:** that call also runs `gaps.sweep`, `escalations.fire_due` and
+  `notifications.deliver_due` once (spec 4.5), so loading an event can open a due gap and send due
+  reminders and deliveries, exactly as the worker would on its next pass. It is never called on
+  a timer or a poll. Outside `ENVIRONMENT=test` the call is 404 and the browser clock is used;
+  the indicator says which clock it used.
+- Escalation timeline: the 50/80/100 % instants with Part 3's formula (anchor = first
+  `assigned_at`, `anchor + ceil((deadline − anchor) × p / 100)` µs), for display only.
+- API errors are shown as `HTTP <status> <error_code>: <message>`.
+
+**Manual check (needs Parts 1 and 2; run on the integration branch).** Reset; ingest
+`accuracy = 0.61`; load the event as Viewer (state stays FLAGGED; rights evidence shown, the
+other three `no evidence available`; no option selected); switch to Reviewer and load (state
+UNDER_REVIEW); submit OTHER_SERIOUS with a field unchosen (409 `HARM_FIELDS_UNCONFIRMED` shown);
+choose all four and submit (deadline +15 d, three timeline instants); submit DEATH (one revisions
+row OTHER_SERIOUS → DEATH by rev-1, deadline +10 d from the same anchor); as Viewer submit (403
+`FORBIDDEN_ROLE` shown).
 
 ### HTTP acceptance runner
 

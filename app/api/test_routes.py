@@ -114,7 +114,8 @@ def test_suite_status(_principal: TestReviewer) -> JSONResponse:
 
 @router.post("/v1/test/suite")
 async def test_suite_start(request: Request, _principal: TestReviewer) -> JSONResponse:
-    """Start smoke, acceptance, or full. Body: {"scope": "smoke"|"acceptance"|"full"}."""
+    """Start a run. Body: {"scope": "smoke"|"acceptance"}. acceptance is the HTTP acceptance
+    runner against this service, between two resets (spec 4.5, LIM-02; decision 141)."""
     try:
         body: Any = await request.json()
     except Exception:

@@ -67,23 +67,25 @@ jobs:
       - name: Health
         run: curl --fail --silent --show-error http://127.0.0.1:8000/healthz
       # The API posts to the sink by its compose hostname; the runner reads the same channel
-      # through the published port (Phase 4 spec 4.8 and 4.9).
+      # through the published port (Phase 4 spec 4.8 and 4.9). `!cancelled() &&` in front of
+      # the 9.5 condition lets the runner, Model 5 and the demo each report on their own, so a
+      # failure in one (Part 3 absent) does not skip the others.
       - name: HTTP acceptance runner
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/ci
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/ci
         run: pytest tests/acceptance --confcutdir=tests/acceptance -p no:cacheprovider --junitxml=acceptance.xml
       - name: Model 5 examples
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/model5
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/model5
         run: python tools/run_model5.py
       - name: Phase 4 demo
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/demo

@@ -1361,10 +1361,14 @@ Decided 17 and 18 October 2026.
      key never becomes 401 on a production deploy. The check is the first statement inside the
      route dependency, not a later body guard.
 
-137. **Seed-key bootstrap for an empty `api_key` table.** Reset needs a REVIEWER or VIEWER key,
-     but the table is empty until reset seeds it. When the database lookup finds no match, the
-     test-route dependency also accepts the configured `REVIEWER_KEY` and `VIEWER_KEY` digests
-     (the same values the seed writes). After a successful reset, the database digests are used.
+137. **Seed-key bootstrap for an empty `api_key` table, restricted.** Reset needs a REVIEWER or
+     VIEWER key, but the table is empty until reset seeds it. In `ENVIRONMENT=test` only (the
+     environment check comes first, decision 136), when the database lookup finds no row for the
+     presented key, the test-route dependency also accepts the configured `REVIEWER_KEY` and
+     `VIEWER_KEY` digests, with their own roles (the same values the seed writes). It never
+     accepts the system key, a stored row always wins (a stored row for the reviewer key with
+     the VIEWER role makes it a viewer), and ordinary routes never use it. Kept by decision 5 of
+     the completion plan, with these limits pinned by tests in `tests/api/test_platform.py`.
 
 138. **Clock advance runs sweep, fire_due and deliver_due in that order (spec 4.5).** After the
      offset is updated, `gaps.sweep`, `escalations.fire_due` and `notifications.deliver_due`
@@ -1380,13 +1384,42 @@ Decided 17 and 18 October 2026.
      failure yields the same body shape with zeros/`null` and status 503, instead of an uncaught
      500. The stale-sweeper 503 rule is unchanged.
 
-141. **`/v1/test/suite` is REVIEWER only.** Named exception to the common REVIEWER-or-VIEWER
-     matrix (Addendum rule 7). The console and suite smoke path send the reviewer key.
+141. **`/v1/test/suite` is REVIEWER only and runs only the HTTP runner (spec 4.5, LIM-02).**
+     Named exception to the common REVIEWER-or-VIEWER matrix (Addendum rule 7). The scopes are
+     `smoke` (a few HTTP calls) and `acceptance`; any other scope, including the former `full`,
+     is 400 MALFORMED_BODY. `acceptance` runs `python -m pytest tests/acceptance
+     --confcutdir=tests/acceptance -p no:cacheprovider -q --tb=short` as a subprocess against
+     this service's own URL (`SUITE_BASE_URL`, default `http://127.0.0.1:8000`), with the
+     service's keys and **without** `DATABASE_URL` and `DATABASE_ADMIN_URL`, and calls
+     `platform.reset()` before the run and again after it in a `finally`, so the seeded keys and
+     a clean state are restored even when the run fails or times out (20 minutes). The previous
+     in-process path ran `pytest tests` or a node-id subset with the container's database URLs,
+     so tests/conftest.py rebuilt the service's own database; it is removed. The database-level
+     suite runs only in CI. The image already has what the runner needs (Dockerfile copies
+     `tests/`, installs `[dev]`). The console and the smoke path send the reviewer key.
 
-142. **Console and demo_showcase send the reviewer key and expect 204.** Requiring keys would
-     otherwise break `app/static/app.js` and `tools/demo_showcase.sh` (Addendum rule 7). The
-     console review panel uses the four pinned disposition labels of spec 4.6 and shows empty
-     harm evidence as the literal text `no evidence available`.
+142. **Console and demo_showcase send keys; the console's review panel (spec 4.6).** Requiring keys
+     would otherwise break `app/static/app.js` and `tools/demo_showcase.sh` (Addendum rule 7).
+     The review panel uses the four pinned disposition labels and shows empty harm evidence as
+     the literal `no evidence available`. Completed per spec 4.6 and decision 5 of the
+     completion plan:
+     - "Act as" defaults to Viewer, because loading as a reviewer starts the review (D3).
+     - No harm status is pre-selected; only a stored CONFIRMED or NOT_APPLICABLE is shown. An
+       unchosen field is sent as `PREFILLED_PENDING_CONFIRMATION`, so the service answers 409
+       HARM_FIELDS_UNCONFIRMED rather than the console confirming anything.
+     - Revisions are a table of the contract keys `prior_tier`, `new_tier`, `reviewer_id`,
+       `revised_at` (the earlier code read a `tier` key the contract does not have).
+     - The risk indicator's "now" is the simulated clock, read with `POST
+       /v1/test/clock/advance {"seconds": 0}` and the selected key, once per explicit event
+       load, never on a timer or a poll. Spec 4.6 names no side-effect-free source and
+       Addendum rule 7 names this call as the way to read simulated now. Its side effect is
+       recorded here and in README 13: the call also runs `gaps.sweep`, `escalations.fire_due`
+       and `notifications.deliver_due` once (spec 4.5), which is what the worker does on its
+       next pass anyway. Outside the test environment the call is 404 and the browser clock is
+       used; the indicator names the clock it used.
+     - The escalation timeline keeps Part 3's formula for display only.
+     - API errors are shown as `HTTP <status> <error_code>: <message>`.
+     - The suite panel offers smoke and acceptance only (decision 141).
 
 143. **Webhook sink is a separate standard-library process (spec 4.9).** `tools/webhook_sink.py`
      stores POSTed JSON per channel in memory and exposes GET/DELETE. It runs as its own

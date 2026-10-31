@@ -1,7 +1,10 @@
 """GET /healthz (decision 111)."""
 
+import pytest
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import OperationalError
 
+from app import worker
 from app.main import create_app
 from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient
@@ -44,3 +47,36 @@ def test_healthz_is_503_when_the_last_sweep_is_older_than_three_intervals(
     assert body["pending_deliveries"] == 0
     assert body["oldest_pending_delivery_seconds"] is None
     assert body["sweeper_last_ran_seconds_ago"] > 3 * 60
+
+
+def test_healthz_is_503_with_the_body_when_the_database_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LIM-09: an unreachable database is 503 with the usual body shape, never a 500."""
+
+    def unreachable(engine: Engine) -> None:
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(worker, "health_values", unreachable)
+    with ApiClient(create_app()) as client:
+        response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json() == {
+        "sweeper_last_ran_seconds_ago": None,
+        "pending_deliveries": 0,
+        "oldest_pending_delivery_seconds": None,
+        "overdue_escalations": 0,
+    }
+
+
+def test_healthz_needs_no_key_and_is_not_a_test_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    with ApiClient(create_app()) as client:
+        response = client.get("/healthz")
+    assert response.status_code in (200, 503)
+    assert set(response.json()) == {
+        "sweeper_last_ran_seconds_ago",
+        "pending_deliveries",
+        "oldest_pending_delivery_seconds",
+        "overdue_escalations",
+    }
