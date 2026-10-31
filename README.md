@@ -605,9 +605,39 @@ reset do, so a Fly idle stop mid-demo does not snap simulated time back to wall 
   confirmations, risk indicator (REQ-15) and escalation timeline.
 - Model 5 fixtures: [`tests/fixtures/phase4/`](tests/fixtures/phase4/) run with
   `python -m tools.run_model5 --base-url "$BASE_URL"`.
-- Webhook sink: `python tools/webhook_sink.py` (POST/GET/DELETE `/hook/{channel}`).
+- Webhook sink: `python tools/webhook_sink.py` (POST/GET/DELETE `/hook/{channel}`), and the
+  `sink` service in `docker-compose.yml` on port 8765. **Anything sent to a channel is readable
+  by anyone who knows the channel name**: the sink has no authentication (LIM-06).
 - Demo: `python tools/demo_phase4.py` (HTTP only; stops cleanly if disposition is still a stub).
-- HTTP acceptance: `tests/acceptance/` (integration-marked; needs a live `BASE_URL`).
+- HTTP acceptance: `tests/acceptance/` (see below).
+
+### HTTP acceptance runner
+
+`tests/acceptance` talks to a running stack over HTTP only (spec 4.8). Run it from the
+repository root with its own conftest only:
+
+```bash
+docker compose up -d --build --wait     # API, worker, PostgreSQL and the sink
+BASE_URL=http://127.0.0.1:8000 \
+WEBHOOK_SINK_URL=http://sink:8765/hook/ci \
+WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/ci \
+pytest tests/acceptance --confcutdir=tests/acceptance -p no:cacheprovider
+```
+
+- `--confcutdir=tests/acceptance` is required. It keeps `tests/conftest.py` out, whose session
+  fixture downgrades and upgrades the database named by `DATABASE_ADMIN_URL`. The runner needs
+  no `DATABASE_*` variable and never connects to a database
+  (`tests/test_runner_isolation.py`).
+- Without `BASE_URL` every test is skipped. Each test starts with `POST /v1/test/reset`.
+- `WEBHOOK_SINK_URL` is the address the **API** posts to; `WEBHOOK_SINK_READ_URL` is where the
+  **runner** reads the same channel back (it defaults to `WEBHOOK_SINK_URL`). With compose they
+  differ, because the API container reaches the sink as `sink`. Keys come from `INGEST_KEY` (or
+  `INGEST_KEY_SYS_42`), `REVIEWER_KEY` and `VIEWER_KEY`, with the test defaults.
+- The in-process suite skips this folder: CI runs `pytest --ignore=tests/acceptance`. The image
+  job runs the runner, `tools/run_model5.py` and `tools/demo_phase4.py` against the compose
+  stack, under the Addendum 9.5 condition (main, `phase4-integration`, pull requests into main).
+- The acceptance gate (`tools/check_acceptance.py`) merges the Phase 3 and Phase 4 criteria
+  per criterion as a union (decision 151).
 
 ### Phase 3 tests this part changed (Addendum 9.10)
 

@@ -1389,18 +1389,27 @@ Decided 17 and 18 October 2026.
      harm evidence as the literal text `no evidence available`.
 
 143. **Webhook sink is a separate standard-library process (spec 4.9).** `tools/webhook_sink.py`
-     stores POSTed JSON per channel in memory and exposes GET/DELETE. It is not part of the API
-     image; CI and demos run it beside the stack. Channels are unauthenticated by design
-     (LIM-06).
+     stores POSTed JSON per channel in memory and exposes GET/DELETE. It runs as its own
+     process, never inside the API: the compose file runs it as the `sink` service (the same
+     image, its own entrypoint and healthcheck, port 8765), and the API reaches it as
+     `http://sink:8765/hook/<channel>` while the host reads the channel through the published
+     port. Channels are unauthenticated by design (LIM-06); README 13 says so.
 
 144. **Model 5 fixtures are data plus an HTTP runner (spec 4.7).**
      `tests/fixtures/phase4/model5_examples.json` holds Ex-1, Ex-2 and Ex-4. `tools/run_model5.py`
      drives them against any `BASE_URL`. They are integration-marked: disposition, review start
      and the report guard come from Parts 1–3.
 
-145. **HTTP acceptance lives under `tests/acceptance/` and is integration-marked (spec 4.8,
-     Addendum rule 10).** Tests use only httpx and environment keys. They are skipped without
-     `--run-integration` so the part branch stays green against stubs.
+145. **HTTP acceptance lives under `tests/acceptance/`, is integration-marked and runs in
+     isolation (spec 4.8, Addendum rule 10).** Tests use only httpx and environment keys. The
+     runner is invoked as `pytest tests/acceptance --confcutdir=tests/acceptance`, so
+     `tests/conftest.py` (whose session fixture rebuilds the database named by
+     `DATABASE_ADMIN_URL`) is never loaded and no database is needed. Its own conftest
+     registers the `integration` marker, resets before every test and skips the folder when
+     `BASE_URL` is unset. The in-process CI steps run with `--ignore=tests/acceptance`; the
+     image job runs the runner against the compose stack under the Addendum 9.5 condition.
+     `tests/test_runner_isolation.py` sits outside the folder so the in-process suite checks
+     the isolation on every branch.
 
 146. **`tools/demo_phase4.py` is HTTP-only and tolerates a disposition stub.** On this branch
      disposition still returns 501; the demo prints that and exits 0 after the review-open step.
@@ -1420,7 +1429,15 @@ Decided 17 and 18 October 2026.
      the files change.
 
 150. Reserved (deployment / Fly receiver).
-151. Reserved (CI acceptance gate extension of `REQUIRED`).
+151. **The acceptance gate merges Phase 3 and Phase 4 criteria per key, as a union (spec
+     4.10).** `tools/check_acceptance.py` builds its list with `required_criteria()`: every
+     Phase 3 entry in `REQUIRED` stays, and a Phase 4 entry in `PHASE4_REQUIRED` adds its node
+     ids to the same criterion, in order and without duplicates. The previous
+     `{**REQUIRED, **PHASE4_REQUIRED}` replaced a key, so a Phase 4 AC-15 list would have
+     dropped the Phase 3 `tests.api.test_audit::` requirement. An empty Phase 4 tuple adds
+     nothing. A skipped or failed required test still counts as missing.
+     `tests/test_check_acceptance.py` covers the union, the skip rule and the usage error. The
+     Phase 4 node ids themselves are filled in at the final integration.
 152. Reserved (Vercel console `API_BASE_URL` / demo recording).
 153. Reserved (model confirmation document updates after integration).
 

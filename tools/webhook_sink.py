@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 from urllib.parse import unquote
 
-_STORE: dict[str, list[dict]] = {}
+_STORE: dict[str, list[dict[str, object]]] = {}
 _LOCK = Lock()
 
 

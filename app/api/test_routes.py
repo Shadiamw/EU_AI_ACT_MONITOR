@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -43,7 +44,7 @@ def _principal_from_seed_keys(authorization: str | None) -> Principal | None:
     return None
 
 
-def _require_test(*roles: str):
+def _require_test(*roles: str) -> Callable[..., Principal]:
     """Environment check first, then the usual 401 / 403 key check."""
     allowed = frozenset(roles)
 

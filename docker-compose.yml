@@ -1,4 +1,4 @@
-# One API process, one worker, PostgreSQL 16. ENVIRONMENT=test so the Pod demo can use
+# One API process, one worker, PostgreSQL 16 and the webhook sink. ENVIRONMENT=test so the Pod demo can use
 # POST /v1/test/reset and POST /v1/test/clock/advance (docs/phase3_uncertainties.md).
 # The role script runs once, as the superuser, the first time the data volume is created.
 services:
@@ -72,6 +72,24 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  # tools/webhook_sink.py (Phase 4 spec 4.9; decision 143). The API reaches it as
+  # http://sink:8765/hook/<channel>; the host (the HTTP runner, Model 5, the demo) reads the same
+  # channel at http://127.0.0.1:8765/hook/<channel>. Memory only and unauthenticated: anything
+  # sent to a channel is readable by anyone who knows the channel name.
+  sink:
+    build: .
+    entrypoint: ["python", "tools/webhook_sink.py"]
+    command: []
+    # The image healthcheck calls the API's /healthz; the sink answers on its own port.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/hook/healthcheck')"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    ports:
+      - "8765:8765"
     restart: unless-stopped
 
 volumes:

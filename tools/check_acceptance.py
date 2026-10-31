@@ -1,8 +1,9 @@
 """Fail unless the pytest JUnit file shows every required acceptance criterion passing.
 
-Phase 3 ACs stay required on every branch. Phase 4 ACs (AC-07..12, 14, 15, 17) are added to
-REQUIRED at integration (Phase 4 Addendum 9.5; Part 4 decision 151) once Parts 1–3 publish
-their exact node ids.
+Phase 3 ACs stay required on every branch. Phase 4 ACs (AC-07..12, 14, 15, 17) are added at
+integration (Phase 4 Addendum 9.5) once Parts 1–3 publish their exact node ids. The two
+mappings are merged per criterion as a union (Part 4 decision 151): a Phase 4 entry for AC-15
+adds its ids to the Phase 3 AC-15 ids and never replaces them.
 """
 
 import sys
@@ -57,6 +58,17 @@ def _matches(node: str, required: str) -> bool:
     return node == required or node.startswith(required + "[")
 
 
+def required_criteria() -> dict[str, tuple[str, ...]]:
+    """REQUIRED plus PHASE4_REQUIRED, per criterion, in order, without duplicates.
+
+    A criterion whose Phase 4 tuple is still empty adds nothing (decision 151)."""
+    merged = {criterion: tuple(names) for criterion, names in REQUIRED.items()}
+    for criterion, names in PHASE4_REQUIRED.items():
+        if names:
+            merged[criterion] = tuple(dict.fromkeys((*merged.get(criterion, ()), *names)))
+    return merged
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
@@ -67,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         (_node(case.get("classname") or "", case.get("name") or ""), _passed(case))
         for case in root.iter("testcase")
     ]
-    required = {**REQUIRED, **{k: v for k, v in PHASE4_REQUIRED.items() if v}}
+    required = required_criteria()
     missing: list[str] = []
     for criterion, names in required.items():
         for name in names:
