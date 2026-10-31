@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import clock, events, evidence, gaps, ledger, notifications, observability
+from app import clock, evidence, gaps, ledger, notifications, observability, review
 from app.auth import Principal
 from app.errors import ApiError
 from app.formats import new_id, retain_until
@@ -218,12 +218,18 @@ def ingest(session: Session, principal: Principal, sample: MetricIn) -> IngestRe
             "retain_until": retain_until(sample.timestamp),
         },
     )
-    session.execute(
-        text(
-            "INSERT INTO harm_field (event_id, field_key, status)"
-            " VALUES (:event_id, :field_key, 'PREFILLED_PENDING_CONFIRMATION')"
+    review.prefill_harm_fields(
+        session,
+        event_id,
+        sample.system_id,
+        review.PrefillFacts(
+            metric_name=sample.metric_name,
+            observed_value=sample.value,
+            threshold_value=limit,
+            comparator=threshold.comparator,
+            threshold_version_id=threshold.threshold_version_id,
+            detected_at=sample.timestamp,
         ),
-        [{"event_id": event_id, "field_key": key} for key in events.HARM_FIELDS],
     )
     session.execute(
         text(

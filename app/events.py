@@ -3,9 +3,11 @@ transactions.
 
 Breach events are written by the ingest (app/ingestion.py) and gap events by Part 3's sweeper
 (app/gaps.py); both live in the event and harm_field tables (spec 1.7) and are read the same
-way here. Phase 3 has no disposition: every Event carries `disposition: null`, `revisions: []`
-and `deadline_utc` as stored, always null in Phase 3 (spec 4, Phase 3 stub shape). Those three
-come from dispositions.summary (Phase 4 Part 2), whose base-commit stub returns exactly them.
+way here. The Event keeps the contract's shape and field order (Phase 4 spec 1.6):
+disposition, revisions and deadline_utc come from dispositions.summary (Part 2), imported inside
+detail; until Part 2 lands, its base-commit stub gives disposition null, revisions [] and
+deadline_utc as stored. The harm fields are the rows as stored. prefill_evidence is never
+exposed, because the HarmField object is fixed, and detected_at is only read here.
 """
 
 from datetime import datetime

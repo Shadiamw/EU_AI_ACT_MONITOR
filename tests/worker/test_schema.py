@@ -114,9 +114,28 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
 # EXPECTED_COLUMNS["table"] = {...}, and the columns it adds to existing tables, as
 # EXPECTED_COLUMNS["table"]["column"] = "type", on its own lines between its two markers.
 # Phase 4 Part 1 slot (migration 0005).
+EXPECTED_COLUMNS["harm_context"] = {
+    "system_id": "text",
+    "field_key": "text",
+    "context_text": "text",
+}
+EXPECTED_COLUMNS["harm_field"]["prefill_evidence"] = "text"
 # End of the Phase 4 Part 1 slot.
 
 # Phase 4 Part 2 slot (migration 0006).
+EXPECTED_COLUMNS["disposition"] = {
+    "disposition_id": "text",
+    "event_id": "text",
+    "seq_in_event": "integer",
+    "tier": "text",
+    "rationale": "text",
+    "reviewer_id": "text",
+    "assigned_at": TIMESTAMPTZ,
+    "anchor_at": TIMESTAMPTZ,
+    "calendar": "text",
+    "deadline_utc": TIMESTAMPTZ,
+    "supersedes_id": "text",
+}
 # End of the Phase 4 Part 2 slot.
 
 # Phase 4 Part 3 slot (migration 0007).
