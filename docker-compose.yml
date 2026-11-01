@@ -45,7 +45,13 @@ services:
   api:
     build: .
     command: ["api"]
-    environment: *app_env
+    # The API process also runs the in-service HTTP runner (POST /v1/test/suite, scope
+    # acceptance). It hands its environment to that runner, so it needs a sink channel too, or
+    # the sink tests skip (decision 143). The channel is the API's own: it posts there and the
+    # runner it starts reads it back by the same compose hostname.
+    environment:
+      <<: *app_env
+      WEBHOOK_SINK_URL: http://sink:8765/hook/suite
     # So a webhook on the host (tools/demo_showcase.sh) is reachable from the container.
     extra_hosts:
       - "host.docker.internal:host-gateway"

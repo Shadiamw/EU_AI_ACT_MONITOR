@@ -1426,12 +1426,23 @@ Decided 17 and 18 October 2026.
      process, never inside the API: the compose file runs it as the `sink` service (the same
      image, its own entrypoint and healthcheck, port 8765), and the API reaches it as
      `http://sink:8765/hook/<channel>` while the host reads the channel through the published
-     port. Channels are unauthenticated by design (LIM-06); README 13 says so.
+     port. Channels are unauthenticated by design (LIM-06); README 13 says so. The compose `api`
+     service also gets `WEBHOOK_SINK_URL=http://sink:8765/hook/suite`, because the API process
+     runs the in-service HTTP runner (`POST /v1/test/suite`, scope acceptance) with its own
+     environment; without it that run skips the sink tests and still reports passed.
 
 144. **Model 5 fixtures are data plus an HTTP runner (spec 4.7).**
-     `tests/fixtures/phase4/model5_examples.json` holds Ex-1, Ex-2 and Ex-4. `tools/run_model5.py`
-     drives them against any `BASE_URL`. They are integration-marked: disposition, review start
-     and the report guard come from Parts 1–3.
+     `tests/fixtures/phase4/model5_examples.json` holds Ex-1, Ex-2 and Ex-4 in the spec 4.7 step
+     format (`at` offset from d0, `as`, `call`, `body`, `expect`), plus two keys of this
+     branch: `sink` (what the receiver holds: a flag count or the exact reminder percentages)
+     and `expect.audit_delta` (the exact ledger entries a call appended for the event, read by
+     exporting before and after). `tools/run_model5.py` drives them against any `BASE_URL`, stops
+     an example at its first mismatch and exits 1 if any example failed;
+     `tests/acceptance/test_model5.py` runs each example as one runner test. Every expected
+     value comes from spec 4.7 (and the spec and contract sections it rests on), not from the
+     code; the fixture README lists the source per step. Ex-4's ledger follows Addendum rule 9
+     (the view is logged, the 403 and 409 append nothing). A redelivered notification_id counts
+     once (spec 3.4). They need Parts 1–3 and fail, not skip, without them.
 
 145. **HTTP acceptance lives under `tests/acceptance/`, is integration-marked and runs in
      isolation (spec 4.8, Addendum rule 10).** Tests use only httpx and environment keys. The
@@ -1442,11 +1453,20 @@ Decided 17 and 18 October 2026.
      `BASE_URL` is unset. The in-process CI steps run with `--ignore=tests/acceptance`; the
      image job runs the runner against the compose stack under the Addendum 9.5 condition.
      `tests/test_runner_isolation.py` sits outside the folder so the in-process suite checks
-     the isolation on every branch.
+     the isolation on every branch. The sink fixture still skips its tests when
+     `WEBHOOK_SINK_URL` is unset, so a runner without a sink can run the rest; instead, the image
+     job's runner step fails when a sink is configured and the JUnit file reports any skip
+     (`tests/test_stack_config.py`).
 
-146. **`tools/demo_phase4.py` is HTTP-only and tolerates a disposition stub.** On this branch
-     disposition still returns 501; the demo prints that and exits 0 after the review-open step.
-     After integration it continues through disposition and a 900 s advance.
+146. **`tools/demo_phase4.py` is HTTP-only and walks spec section 12's ten steps in order.**
+     Each step checks its statuses, body fields, state, ledger counts and receiver content and
+     prints `step N ok` or `step N FAILED`; the first mismatch ends the demo with exit 1 (a 501
+     or a missing reminder is a failure; `--keep-going` runs the remaining steps for a report
+     and still exits 1). It uses two receiver channels: `WEBHOOK_SINK_URL` for step 2's
+     both-types webhook, and the same URL plus `-reminder` for a reminder-only webhook that must
+     hold the three reminders and no flag. Step 10 exports the ledger and runs
+     `tools/verify_ledger.py` on it, which must exit 0. `tests/acceptance/test_demo.py` runs it
+     inside the runner.
 
 147. **Part 4 branches from the base commit, not from Part 1 or Part 2 (Addendum 9.2).** The
      branch `phase4-part4-platform` starts at `4d1487e`. Merge order into `phase4-integration`

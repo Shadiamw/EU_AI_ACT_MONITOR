@@ -9,7 +9,9 @@
           "at": "+0s",
           "as": "reviewer",
           "call": "POST /v1/test/reset",
-          "expect": { "status": 204 }
+          "expect": {
+            "status": 204
+          }
         },
         {
           "at": "+0s",
@@ -17,9 +19,14 @@
           "call": "POST /v1/webhooks",
           "body": {
             "url": "${WEBHOOK_SINK_URL}",
-            "event_types": ["flag_notification", "reminder"]
+            "event_types": [
+              "flag_notification",
+              "reminder"
+            ]
           },
-          "expect": { "status": 201 }
+          "expect": {
+            "status": 201
+          }
         },
         {
           "at": "+0s",
@@ -30,12 +37,52 @@
             "metric_name": "accuracy",
             "metric_type": "performance",
             "value": 0.61,
-            "timestamp": "${SIMULATED_NOW}"
+            "timestamp": "${NOW}"
           },
           "expect": {
             "status": 201,
-            "save": { "event": "$.flagged_event_id" }
+            "save": {
+              "event": "$.flagged_event_id",
+              "d0": "@NOW"
+            }
           }
+        },
+        {
+          "at": "+0s",
+          "note": "flag webhook received",
+          "sink": {
+            "notification_type": "flag_notification",
+            "event": "${event}",
+            "count": 1,
+            "eq": {
+              "$.type": "threshold_breach",
+              "$.system_id": "sys-42"
+            }
+          }
+        },
+        {
+          "at": "+0s",
+          "as": "viewer",
+          "call": "GET /v1/events/${event}",
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "FLAGGED",
+              "$.harm_fields.health_safety_harm.status": "PREFILLED_PENDING_CONFIRMATION",
+              "$.harm_fields.critical_infrastructure_disruption.status": "PREFILLED_PENDING_CONFIRMATION",
+              "$.harm_fields.fundamental_rights_infringement.status": "PREFILLED_PENDING_CONFIRMATION",
+              "$.harm_fields.property_environmental_damage.status": "PREFILLED_PENDING_CONFIRMATION",
+              "$.harm_fields.health_safety_harm.evidence": null,
+              "$.harm_fields.critical_infrastructure_disruption.evidence": null,
+              "$.harm_fields.property_environmental_damage.evidence": null,
+              "$.harm_fields.fundamental_rights_infringement.evidence": "accuracy = 0.61 is below the limit 0.70 (threshold thr-2) at ${d0}. sys-42 makes automated decisions about natural persons, so degraded performance can infringe their fundamental rights (Art. 3(49)(c)).",
+              "$.detected_at": "${d0}",
+              "$.disposition": null,
+              "$.deadline_utc": null,
+              "$.revisions": []
+            }
+          },
+          "note": "rights pre-filled from the template, the other three blank, nothing decided"
         },
         {
           "at": "+0s",
@@ -44,10 +91,10 @@
           "expect": {
             "status": 200,
             "eq": {
-              "$.state": "UNDER_REVIEW",
-              "$.harm_fields.fundamental_rights_infringement.status": "PREFILLED_PENDING_CONFIRMATION"
+              "$.state": "UNDER_REVIEW"
             }
-          }
+          },
+          "note": "D3: the reviewer opens the event"
         },
         {
           "at": "+4h",
@@ -55,18 +102,56 @@
           "call": "POST /v1/events/${event}/disposition",
           "body": {
             "tier": "OTHER_SERIOUS",
-            "rationale": "rights impact confirmed after review",
+            "rationale": null,
             "harm_fields": {
-              "health_safety_harm": { "status": "NOT_APPLICABLE" },
-              "critical_infrastructure_disruption": { "status": "NOT_APPLICABLE" },
-              "fundamental_rights_infringement": { "status": "CONFIRMED" },
-              "property_environmental_damage": { "status": "NOT_APPLICABLE" }
+              "health_safety_harm": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "critical_infrastructure_disruption": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "fundamental_rights_infringement": {
+                "status": "CONFIRMED",
+                "evidence": null
+              },
+              "property_environmental_damage": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              }
             }
           },
           "expect": {
             "status": 200,
-            "eq": { "$.state": "DISPOSITIONED", "$.disposition.tier": "OTHER_SERIOUS" },
-            "relative": { "$.deadline_utc": "$.disposition.assigned_at + 15d" }
+            "eq": {
+              "$.state": "DISPOSITIONED",
+              "$.disposition.tier": "OTHER_SERIOUS",
+              "$.disposition.reviewer_id": "rev-1",
+              "$.detected_at": "${d0}",
+              "$.harm_fields.fundamental_rights_infringement.status": "CONFIRMED",
+              "$.harm_fields.fundamental_rights_infringement.evidence": "accuracy = 0.61 is below the limit 0.70 (threshold thr-2) at ${d0}. sys-42 makes automated decisions about natural persons, so degraded performance can infringe their fundamental rights (Art. 3(49)(c)).",
+              "$.harm_fields.fundamental_rights_infringement.confirmed_by": "rev-1"
+            },
+            "relative": {
+              "$.disposition.assigned_at": "${d0} + 4h ~60s",
+              "$.deadline_utc": "$.disposition.assigned_at + 15d"
+            },
+            "save": {
+              "anchor": "$.disposition.assigned_at"
+            },
+            "audit_delta": [
+              {
+                "entry_type": "DISPOSITION_RECORDED",
+                "actor_id": "rev-1",
+                "payload": {
+                  "tier": "OTHER_SERIOUS"
+                },
+                "save": {
+                  "first_disposition": "payload.disposition_id"
+                }
+              }
+            ]
           }
         },
         {
@@ -75,18 +160,151 @@
           "call": "POST /v1/events/${event}/disposition",
           "body": {
             "tier": "DEATH",
-            "rationale": "reclassified after further evidence",
+            "rationale": null,
             "harm_fields": {
-              "health_safety_harm": { "status": "CONFIRMED" },
-              "critical_infrastructure_disruption": { "status": "NOT_APPLICABLE" },
-              "fundamental_rights_infringement": { "status": "CONFIRMED" },
-              "property_environmental_damage": { "status": "NOT_APPLICABLE" }
+              "health_safety_harm": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "critical_infrastructure_disruption": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "fundamental_rights_infringement": {
+                "status": "CONFIRMED",
+                "evidence": null
+              },
+              "property_environmental_damage": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              }
             }
           },
           "expect": {
             "status": 200,
-            "eq": { "$.disposition.tier": "DEATH" },
-            "relative": { "$.deadline_utc": "$.disposition.assigned_at + 10d" }
+            "eq": {
+              "$.state": "DISPOSITIONED",
+              "$.disposition.tier": "DEATH",
+              "$.disposition.assigned_at": "${anchor}",
+              "$.revisions.0.prior_tier": "OTHER_SERIOUS",
+              "$.revisions.0.new_tier": "DEATH",
+              "$.revisions.0.reviewer_id": "rev-1"
+            },
+            "len": {
+              "$.revisions": 1
+            },
+            "relative": {
+              "$.deadline_utc": "${anchor} + 10d"
+            },
+            "save": {
+              "deadline": "$.deadline_utc"
+            },
+            "audit_delta": [
+              {
+                "entry_type": "DISPOSITION_REVISED",
+                "actor_id": "rev-1",
+                "payload": {
+                  "prior_tier": "OTHER_SERIOUS",
+                  "new_tier": "DEATH",
+                  "supersedes_id": "${first_disposition}"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "at": "+5d4h",
+          "note": "d5 13:00 = anchor + 5d: the 10-day window's 50%",
+          "sink": {
+            "notification_type": "reminder",
+            "event": "${event}",
+            "pcts": [
+              50
+            ],
+            "eq": {
+              "$.tier": "DEATH",
+              "$.assigned_at": "${anchor}",
+              "$.deadline_utc": "${deadline}",
+              "$.system_id": "sys-42",
+              "$.type": "threshold_breach"
+            }
+          }
+        },
+        {
+          "at": "+7d16h",
+          "note": "d8 01:00 = the old 15-day 50% instant: nothing new",
+          "sink": {
+            "notification_type": "reminder",
+            "event": "${event}",
+            "pcts": [
+              50
+            ],
+            "eq": {
+              "$.tier": "DEATH",
+              "$.assigned_at": "${anchor}",
+              "$.deadline_utc": "${deadline}",
+              "$.system_id": "sys-42",
+              "$.type": "threshold_breach"
+            }
+          }
+        },
+        {
+          "at": "+8d4h",
+          "note": "d8 13:00 = anchor + 8d: 80%",
+          "sink": {
+            "notification_type": "reminder",
+            "event": "${event}",
+            "pcts": [
+              50,
+              80
+            ],
+            "eq": {
+              "$.tier": "DEATH",
+              "$.assigned_at": "${anchor}",
+              "$.deadline_utc": "${deadline}",
+              "$.system_id": "sys-42",
+              "$.type": "threshold_breach"
+            }
+          }
+        },
+        {
+          "at": "+10d4h",
+          "note": "d10 13:00 = anchor + 10d: 100%",
+          "sink": {
+            "notification_type": "reminder",
+            "event": "${event}",
+            "pcts": [
+              50,
+              80,
+              100
+            ],
+            "eq": {
+              "$.tier": "DEATH",
+              "$.assigned_at": "${anchor}",
+              "$.deadline_utc": "${deadline}",
+              "$.system_id": "sys-42",
+              "$.type": "threshold_breach"
+            }
+          }
+        },
+        {
+          "at": "+11d4h",
+          "note": "a day later: none after 100%",
+          "sink": {
+            "notification_type": "reminder",
+            "event": "${event}",
+            "pcts": [
+              50,
+              80,
+              100
+            ],
+            "eq": {
+              "$.tier": "DEATH",
+              "$.assigned_at": "${anchor}",
+              "$.deadline_utc": "${deadline}",
+              "$.system_id": "sys-42",
+              "$.type": "threshold_breach"
+            }
           }
         }
       ]
@@ -99,7 +317,23 @@
           "at": "+0s",
           "as": "reviewer",
           "call": "POST /v1/test/reset",
-          "expect": { "status": 204 }
+          "expect": {
+            "status": 204
+          }
+        },
+        {
+          "at": "+0s",
+          "as": "reviewer",
+          "call": "POST /v1/webhooks",
+          "body": {
+            "url": "${WEBHOOK_SINK_URL}",
+            "event_types": [
+              "reminder"
+            ]
+          },
+          "expect": {
+            "status": 201
+          }
         },
         {
           "at": "+0s",
@@ -110,18 +344,37 @@
             "metric_name": "accuracy_drift",
             "metric_type": "drift",
             "value": 0.34,
-            "timestamp": "${SIMULATED_NOW}"
+            "timestamp": "${NOW}"
           },
           "expect": {
             "status": 201,
-            "save": { "event": "$.flagged_event_id" }
+            "save": {
+              "event": "$.flagged_event_id",
+              "d0": "@NOW"
+            }
+          }
+        },
+        {
+          "at": "+0s",
+          "as": "viewer",
+          "call": "GET /v1/events/${event}",
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "FLAGGED"
+            }
           }
         },
         {
           "at": "+0s",
           "as": "reviewer",
           "call": "GET /v1/events/${event}",
-          "expect": { "status": 200, "eq": { "$.state": "UNDER_REVIEW" } }
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "UNDER_REVIEW"
+            }
+          }
         },
         {
           "at": "+0s",
@@ -131,16 +384,45 @@
             "tier": "NOT_SERIOUS",
             "rationale": "",
             "harm_fields": {
-              "health_safety_harm": { "status": "NOT_APPLICABLE" },
-              "critical_infrastructure_disruption": { "status": "NOT_APPLICABLE" },
-              "fundamental_rights_infringement": { "status": "NOT_APPLICABLE" },
-              "property_environmental_damage": { "status": "NOT_APPLICABLE" }
+              "health_safety_harm": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "critical_infrastructure_disruption": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "fundamental_rights_infringement": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "property_environmental_damage": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              }
             }
           },
           "expect": {
             "status": 400,
-            "eq": { "$.error_code": "RATIONALE_REQUIRED" }
+            "body": {
+              "error_code": "RATIONALE_REQUIRED",
+              "message": "rationale is required when tier is NOT_SERIOUS"
+            },
+            "audit_delta": []
           }
+        },
+        {
+          "at": "+0s",
+          "as": "viewer",
+          "call": "GET /v1/events/${event}",
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "UNDER_REVIEW",
+              "$.disposition": null
+            }
+          },
+          "note": "state unchanged after the 400"
         },
         {
           "at": "+0s",
@@ -150,22 +432,58 @@
             "tier": "NOT_SERIOUS",
             "rationale": "seasonal shift, no user impact",
             "harm_fields": {
-              "health_safety_harm": { "status": "NOT_APPLICABLE" },
-              "critical_infrastructure_disruption": { "status": "NOT_APPLICABLE" },
-              "fundamental_rights_infringement": { "status": "NOT_APPLICABLE" },
-              "property_environmental_damage": { "status": "NOT_APPLICABLE" }
+              "health_safety_harm": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "critical_infrastructure_disruption": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "fundamental_rights_infringement": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "property_environmental_damage": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              }
             }
           },
           "expect": {
             "status": 200,
-            "eq": { "$.state": "CLOSED", "$.deadline_utc": null }
+            "eq": {
+              "$.state": "CLOSED",
+              "$.deadline_utc": null,
+              "$.disposition.tier": "NOT_SERIOUS",
+              "$.disposition.rationale": "seasonal shift, no user impact"
+            },
+            "len": {
+              "$.revisions": 0
+            }
           }
         },
         {
           "at": "+0s",
           "as": "reviewer",
           "call": "GET /v1/events/${event}/report",
-          "expect": { "status": 501 }
+          "expect": {
+            "status": 501,
+            "body": {
+              "error_code": "NOT_IMPLEMENTED",
+              "message": "not implemented in this phase"
+            },
+            "audit_delta": []
+          }
+        },
+        {
+          "at": "+16d",
+          "note": "no reminders ever (past the longest window)",
+          "sink": {
+            "notification_type": "reminder",
+            "event": "${event}",
+            "pcts": []
+          }
         }
       ]
     },
@@ -177,7 +495,9 @@
           "at": "+0s",
           "as": "reviewer",
           "call": "POST /v1/test/reset",
-          "expect": { "status": 204 }
+          "expect": {
+            "status": 204
+          }
         },
         {
           "at": "+0s",
@@ -188,24 +508,45 @@
             "metric_name": "accuracy",
             "metric_type": "performance",
             "value": 0.61,
-            "timestamp": "${SIMULATED_NOW}"
+            "timestamp": "${NOW}"
           },
           "expect": {
             "status": 201,
-            "save": { "event": "$.flagged_event_id" }
+            "save": {
+              "event": "$.flagged_event_id",
+              "d0": "@NOW"
+            }
           }
         },
         {
           "at": "+0s",
           "as": "reviewer",
           "call": "GET /v1/events/${event}",
-          "expect": { "status": 200, "eq": { "$.state": "UNDER_REVIEW" } }
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "UNDER_REVIEW"
+            }
+          },
+          "note": "Ex-1's event in UNDER_REVIEW"
         },
         {
           "at": "+0s",
           "as": "viewer",
           "call": "GET /v1/events/${event}",
-          "expect": { "status": 200, "eq": { "$.state": "UNDER_REVIEW" } }
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "UNDER_REVIEW"
+            },
+            "audit_delta": [
+              {
+                "entry_type": "EVENT_VIEWED",
+                "actor_id": "viewer-1"
+              }
+            ]
+          },
+          "note": "viewer-1's view is logged"
         },
         {
           "at": "+0s",
@@ -213,18 +554,46 @@
           "call": "POST /v1/events/${event}/disposition",
           "body": {
             "tier": "DEATH",
-            "rationale": "viewer must be refused",
+            "rationale": null,
             "harm_fields": {
-              "health_safety_harm": { "status": "CONFIRMED" },
-              "critical_infrastructure_disruption": { "status": "NOT_APPLICABLE" },
-              "fundamental_rights_infringement": { "status": "NOT_APPLICABLE" },
-              "property_environmental_damage": { "status": "NOT_APPLICABLE" }
+              "health_safety_harm": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "critical_infrastructure_disruption": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              },
+              "fundamental_rights_infringement": {
+                "status": "CONFIRMED",
+                "evidence": null
+              },
+              "property_environmental_damage": {
+                "status": "NOT_APPLICABLE",
+                "evidence": null
+              }
             }
           },
           "expect": {
             "status": 403,
-            "eq": { "$.error_code": "FORBIDDEN_ROLE" }
+            "body": {
+              "error_code": "FORBIDDEN_ROLE",
+              "message": "this role may not call this endpoint"
+            },
+            "audit_delta": []
           }
+        },
+        {
+          "at": "+0s",
+          "as": "viewer",
+          "call": "GET /v1/events/${event}",
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "UNDER_REVIEW"
+            }
+          },
+          "note": "state unchanged after the 403"
         },
         {
           "at": "+0s",
@@ -232,14 +601,25 @@
           "call": "GET /v1/events/${event}/report",
           "expect": {
             "status": 409,
-            "eq": { "$.error_code": "NO_DISPOSITION" }
+            "body": {
+              "error_code": "NO_DISPOSITION",
+              "message": "no disposition has been recorded for this event"
+            },
+            "audit_delta": []
           }
         },
         {
           "at": "+0s",
-          "as": "reviewer",
+          "as": "viewer",
           "call": "GET /v1/events/${event}",
-          "expect": { "status": 200, "eq": { "$.state": "UNDER_REVIEW" } }
+          "expect": {
+            "status": 200,
+            "eq": {
+              "$.state": "UNDER_REVIEW",
+              "$.disposition": null
+            }
+          },
+          "note": "state unchanged after the 409"
         }
       ]
     }

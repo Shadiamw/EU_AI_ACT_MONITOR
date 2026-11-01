@@ -76,7 +76,25 @@ jobs:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/ci
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/ci
-        run: pytest tests/acceptance --confcutdir=tests/acceptance -p no:cacheprovider --junitxml=acceptance.xml
+        # With a sink configured nothing here may skip: a skipped sink test is a reminder or a
+        # flag delivery that was never checked (decision 145).
+        run: |
+          status=0
+          pytest tests/acceptance --confcutdir=tests/acceptance -p no:cacheprovider -rs --junitxml=acceptance.xml || status=$?
+          python - <<'PY' || status=1
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("acceptance.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          skipped = sum(int(suite.get("skipped", "0")) for suite in suites)
+          if os.environ.get("WEBHOOK_SINK_URL") and skipped:
+              print(f"{skipped} acceptance test(s) skipped although WEBHOOK_SINK_URL is set")
+              sys.exit(1)
+          print(f"skipped: {skipped}")
+          PY
+          exit $status
       - name: Model 5 examples
         if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
         env:

@@ -618,12 +618,20 @@ scope). The image has what the runner needs: the Dockerfile copies `tests/` and 
 - Console (`app/static`, served at `/ui/`): event review panel with the four pinned disposition
   labels, harm-field confirmations, risk indicator (REQ-15), a revisions table and the
   escalation timeline (see "Console" below).
-- Model 5 fixtures: [`tests/fixtures/phase4/`](tests/fixtures/phase4/) run with
-  `python -m tools.run_model5 --base-url "$BASE_URL"`.
+- Model 5 fixtures: [`tests/fixtures/phase4/`](tests/fixtures/phase4/) (Ex-1, Ex-2, Ex-4; the
+  README there gives the step format and the source of every expected value), run with
+  `python tools/run_model5.py [--example ex1]` and the runner's environment variables. It exits
+  1 at the first mismatch in any example (decision 144).
 - Webhook sink: `python tools/webhook_sink.py` (POST/GET/DELETE `/hook/{channel}`), and the
   `sink` service in `docker-compose.yml` on port 8765. **Anything sent to a channel is readable
   by anyone who knows the channel name**: the sink has no authentication (LIM-06).
-- Demo: `python tools/demo_phase4.py` (HTTP only; stops cleanly if disposition is still a stub).
+- Demo: `python tools/demo_phase4.py [--keep-going]`, HTTP only, with `BASE_URL`, the three keys,
+  `WEBHOOK_SINK_URL` and `WEBHOOK_SINK_READ_URL`. It walks spec section 12's ten steps in order,
+  prints `step N ok` or `step N FAILED`, and exits 1 on the first mismatch (status, body field,
+  state, ledger count or receiver content); `--keep-going` reports every step and still exits 1.
+  It registers step 2's webhook on `WEBHOOK_SINK_URL` and a reminder-only webhook on the same
+  URL plus `-reminder`, and ends by exporting the ledger and running `tools/verify_ledger.py`
+  on it (decision 146). Before Parts 1–3 are merged it fails at the first step they own.
 - HTTP acceptance: `tests/acceptance/` (see below).
 
 ### Console (spec 4.6, decision 142)
@@ -705,12 +713,18 @@ the code. `tests/acceptance/api.py` holds the HTTP helpers and those values. Ids
 | AC-15 | `test_ac15_audit.py` | `test_a_view_only_action_is_logged_with_the_viewer_and_the_time` (Phase 3), `test_a_view_by_one_user_and_an_edit_by_another_are_both_logged` (Phase 4 edit) |
 | AC-17 | `test_ac17_risk_gap.py` | `test_detection_and_the_assignment_deadline_are_both_visible_with_the_gap` |
 
+Beside the criteria, `test_model5.py::test_model5_example[ex1|ex2|ex4]` (sink) runs the Model 5
+fixtures and `test_demo.py::test_the_demo_walks_the_ten_steps` (sink) runs the demo, both
+against the same stack.
+
 What the HTTP runner cannot show, and where it is shown instead:
 
 - **"(sink)" tests skip without `WEBHOOK_SINK_URL`.** The in-service run (`POST /v1/test/suite
   {"scope":"acceptance"}`) inherits the service's environment, so it skips them unless the
-  service sets that variable. A "passed" in-service run without a sink therefore says nothing
-  about AC-02's notification, AC-04 or AC-12.
+  service sets that variable. The compose `api` service sets it
+  (`http://sink:8765/hook/suite`); a service started without it, and a "passed" from it, says
+  nothing about AC-02's notification, AC-04, AC-12, Model 5 or the demo. In CI the image job's
+  runner step fails if a sink is configured and any test skipped (decisions 143, 145).
 - **AC-04's alternate bound** (for example 5 min) needs a restart with another
   `NOTIFY_MAX_DELAY_SECONDS`. The in-process worker tests cover it.
 - **AC-06's direct modification** bypasses the application, which HTTP cannot do. The runner
