@@ -764,7 +764,7 @@ the same moment (REQ-11, AC-12). It is built on branch `phase4-part3-escalations
 | --- | --- | --- |
 | Part 3's tests, on Part 3's branch | `.venv/bin/pytest tests/part3` | 81 passed, 6 skipped |
 | The whole suite, no flag, on Part 3's branch | `.venv/bin/pytest` | 1330 passed, 58 skipped, 0 failed |
-| Part 3's trial merge with Part 4, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1513 passed, 3 failed: Part 4 console tests, CRLF on a Windows checkout only (they pass with LF; see the report) |
+| Part 3's trial merge with Part 4, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1513 passed, 3 failed: Part 4 console tests, CRLF on a Windows checkout only (they pass with LF; Part 3's report, now kept outside the repository, decision 224) |
 | All four parts merged, no flag | `.venv/bin/pytest --ignore=tests/acceptance` | 1474 passed, 71 skipped, 0 failed |
 | All four parts merged, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1545 passed, 0 failed |
 

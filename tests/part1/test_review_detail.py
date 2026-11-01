@@ -125,7 +125,7 @@ def test_disposition_revisions_and_deadline_come_from_the_summary(
     store_example_2(owner_engine, None)
     revision = {
         "prior_tier": "OTHER_SERIOUS",
-        "new_tier": "DEATH_OR_SERIOUS_HARM",
+        "new_tier": "DEATH",
         "reviewer_id": "rev-1",
         "revised_at": "2026-09-27T11:00:00Z",
     }

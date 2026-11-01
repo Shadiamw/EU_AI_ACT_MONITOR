@@ -5,7 +5,7 @@ Breach events are written by the ingest (app/ingestion.py) and gap events by Par
 (app/gaps.py); both live in the event and harm_field tables (spec 1.7) and are read the same
 way here. The Event keeps the contract's shape and field order (Phase 4 spec 1.6):
 disposition, revisions and deadline_utc come from dispositions.summary (Part 2), imported inside
-detail; until Part 2 lands, its base-commit stub gives disposition null, revisions [] and
+detail; for an event with no disposition row it gives disposition null, revisions [] and
 deadline_utc as stored. The harm fields are the rows as stored. prefill_evidence is never
 exposed, because the HarmField object is fixed, and detected_at is only read here.
 """

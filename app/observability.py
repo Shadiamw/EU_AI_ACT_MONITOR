@@ -125,7 +125,8 @@ class RequestLogMiddleware:
     @staticmethod
     def _log(scope: Scope, request_id: str, status: int, started: float, body: bytes) -> None:
         state = scope.get("state", {})
-        # A 501 from the Phase 3 stubs is the expected answer, not a failure (decision 126).
+        # A 501 (the report's NOT_IMPLEMENTED until Phase 5) is the expected answer, not a
+        # failure (decision 126).
         level = logging.ERROR if status >= 500 and status != 501 else logging.INFO
         line: dict[str, Any] = {
             "ts": api_time(clock.now()),

@@ -8,8 +8,7 @@ most once per event and percentage; a clock advance runs the firing and delivery
 (spec 4.5). Spec 3.5 pins the reminder body. Addendum rule 7: the webhook is registered for
 reminder only, so no gap flag reaches it, and counts filter by notification_type anyway.
 
-Needs Part 3 (escalations and reminders). Until it is merged, these tests fail only on the
-missing reminders.
+Needs Part 3 (escalations and reminders), merged at integration (decision 215).
 """
 
 from __future__ import annotations
