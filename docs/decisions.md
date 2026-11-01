@@ -1763,3 +1763,83 @@ Decided 17 and 18 October 2026.
      Rule 9.10 lists only `test_notification_references_the_event_once`. Nothing is weakened.
 
 ## Integration decisions (Phase 4 integration; numbers 214 to 233)
+
+214. **Part 4 is merged before Part 3 (Phase 4 Addendum 9.2 departure, accepted by SS on 31
+     October 2026).** The order became 2, 1, 4, 3 instead of 2, 1, 3, 4. Consequences, as
+     approved: Part 3 merges onto Part 4's keyed test endpoints; reset's `to_regclass` guard and
+     `fire_due` are proved only when 0007 lands; Part 4's items that need reminders (runner AC-12,
+     demo step 9, Model 5 Ex-1 reminders) could not be shown before Part 3; the flagged run carried
+     Part 2's eight escalation failures until then. Part 3 merged as `8fe01ee`, after which all
+     of these ran: the flagged suite passed with no failure, the HTTP runner passed 133 with none
+     skipped, and the demo's ten steps and Model 5 Ex-1, Ex-2 and Ex-4 passed on a local stack.
+
+215. **The Part 3 merged is `a1c4af1` on `phase4-part3-escalations`.** It was written by Arvind
+     at his own request; Arnav's version, if any, is not merged. Merged into
+     `phase4-integration` (`5791bf8`) with a plain merge commit, `8fe01ee`, tree `30f8c5d`, with no
+     conflict and one alembic head, 0007.
+
+216. **Part 3 stacked on `phase4-integration` is accepted (Part 3 decision 194).** Addendum 9.2
+     expects part branches to start at the base commit. Part 3 starts at `4580d28`, where Parts 1
+     and 2 were already merged, so the merge brings only Part 3's commits on top of Part 4's. Part 2
+     was built the same way on Part 1's head (decision 174).
+
+217. **The Phase 3 test changed beyond Addendum 9.10 is accepted (Part 3 decision 206).**
+     `tests/worker/test_notifications.py::test_enqueue_records_the_request_and_routes_nothing`
+     compares `SELECT * FROM notification` exactly, so it gains `escalation_pct: None`. Rule 9.10
+     lists only `test_notification_references_the_event_once`. No assertion is removed or
+     loosened.
+
+218. **`PHASE4_REQUIRED` is filled, and two gate tests follow the merged mapping (Addendum 9.5,
+     decision 151).** `tools/check_acceptance.py` now requires the Phase 4 tests of AC-07 to
+     AC-12, AC-14, AC-15 and AC-17 from the part reports, including AC-09's escalation-row test,
+     Part 3's seven AC-12 tests, and for AC-15 Part 2's test and Part 1's four review-start tests.
+     They are merged per criterion with `REQUIRED`, so AC-15 keeps Phase 3's
+     `tests.api.test_audit::` entry. In `tests/test_check_acceptance.py`,
+     `test_one_argument_is_the_results_file` builds its passing cases from
+     `required_criteria()`, and `test_there_is_no_ac12_note` asserts that the old note's text is
+     absent instead of the word AC-12, because a wired gate prints "AC-12 passed" lines. That
+     change was committed first, so every commit stays green.
+
+219. **The root conftest refuses the HTTP runner without `--confcutdir` (Part 4 decision 145).**
+     `tests/conftest.py`'s session fixture `migrated_db` rebuilds the database named by
+     `DATABASE_ADMIN_URL`. When `BASE_URL` is set and a collected test is under
+     `tests/acceptance`, collection now stops with a usage error that names
+     `--confcutdir=tests/acceptance`, before any fixture runs. A run without `BASE_URL` is
+     unchanged. `tests/test_confcutdir_guard.py` checks both cases in subprocesses pointed at a
+     closed port.
+
+220. **A committed test checks the standalone verifier against a real Phase 4 ledger.**
+     `tests/api/test_phase4_ledger_verify.py` writes REVIEW_STARTED, DISPOSITION_RECORDED,
+     DISPOSITION_REVISED and REMINDER_TRIGGERED through the real app and the clock-advance
+     endpoint, then requires the server's verify, a direct `verify_ledger` call and
+     `tools/verify_ledger.py` run as a process on the export to agree that it is valid. For each
+     of the four types, one character of one payload is changed in a copy of the file and in the
+     database, and all of them must name the same `first_mismatch`. No ledger file is touched.
+
+221. **Part 2's four coverage gaps are tested in a new file (parts12-verification section 6).**
+     `tests/part2/test_disposition_gaps.py`, so no Part 2 test file changes: a blank rationale
+     never extends a deadline, directly or on a reopen (N5); the harm fields, the disposition row
+     and the event update are in place, and no ledger entry yet, when `escalations.plan` runs
+     (M14); a revision with unconfirmed harm fields is 409 and writes nothing (N1); same-tier and
+     looser-with-rationale revisions stay DISPOSITIONED (N2, N3). They test existing behaviour, so
+     each was shown to fail against a changed production line, which was then restored.
+
+222. **The pinned lock order is tested for the disposition and for `fire_due` (Guide 8,
+     parts12-verification N4).** `tests/test_phase4_lock_order.py`, integration-marked, stops a
+     disposition inside `escalations.plan` and `fire_due` inside `notifications.enqueue`, and
+     probes from second connections with `FOR UPDATE NOWAIT`: the event row and the event's
+     harm-field or escalation rows are held, the `monitored_system` row is free, and the ledger
+     lock is still free (append comes last). Two more tests hold the event row first and show
+     that a revision and `fire_due` wait on it while holding none of the later rows. Waiting is
+     read from `pg_locks` (`NOT granted`), because `pg_stat_activity` hides another role's wait.
+
+223. **docs/models/phase4_models.md is written from the merged tests (spec 4.12).** It replaces
+     Part 4's pre-integration version. Each Model 1 transition, each Model 3 rule and each of
+     INV-1 to INV-13 names the tests that show it; an invariant without a test is marked Partly
+     with the Phase 5 part named, or Differs with the rule that wins, and the document lists
+     what could not be shown.
+
+224. **The part reports leave the repository (Integration Guide 3 and 12).**
+     `phase4-part2-report.md` and `phase4-part3-report.md` were committed at the repository
+     root by their parts. They are removed; copies are kept with the integration records outside
+     the repository, as Part 4 did with its own report.
