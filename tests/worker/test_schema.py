@@ -139,6 +139,20 @@ EXPECTED_COLUMNS["disposition"] = {
 # End of the Phase 4 Part 2 slot.
 
 # Phase 4 Part 3 slot (migration 0007).
+EXPECTED_COLUMNS["escalation"] = {
+    "event_id": "text",
+    "pct": "integer",
+    "status": "text",
+    "due_at": TIMESTAMPTZ,
+    "anchor_at": TIMESTAMPTZ,
+    "tier": "text",
+    "deadline_utc": TIMESTAMPTZ,
+    "notification_id": "text",
+    "sent_at": TIMESTAMPTZ,
+    "cancelled_at": TIMESTAMPTZ,
+    "updated_at": TIMESTAMPTZ,
+}
+EXPECTED_COLUMNS["notification"]["escalation_pct"] = "integer"
 # End of the Phase 4 Part 3 slot.
 
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
@@ -238,7 +252,8 @@ def test_harm_field_key_and_status_check(owner_engine: Engine) -> None:
 
 
 def test_notification_references_the_event_once(owner_engine: Engine) -> None:
-    """Spec 3.7: one notification row per event, with a foreign key to event."""
+    """Phase 4 spec 3.5: one flag_notification per event, by the partial unique index that
+    replaces uq_notification_event, with a foreign key to event."""
     insert = (
         "INSERT INTO notification (notification_id, event_id, notification_type, created_at)"
         " VALUES (:id, :event_id, 'flag_notification', :t)"
@@ -248,7 +263,7 @@ def test_notification_references_the_event_once(owner_engine: Engine) -> None:
     add_event(owner_engine, "evt-1")
     with owner_engine.begin() as conn:
         conn.execute(text(insert), {"id": "ntf-1", "event_id": "evt-1", "t": T0})
-    with pytest.raises(IntegrityError, match="uq_notification_event"), owner_engine.begin() as c:
+    with pytest.raises(IntegrityError, match="uq_notification_flag"), owner_engine.begin() as c:
         c.execute(text(insert), {"id": "ntf-2", "event_id": "evt-1", "t": T0})
 
 

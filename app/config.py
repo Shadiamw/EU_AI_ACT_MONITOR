@@ -163,4 +163,28 @@ def deadline_holidays() -> tuple[date, ...]:
 # End of the Phase 4 Part 2 slot.
 
 # Phase 4 Part 3 slot: ESCALATION_PERCENTAGES (Phase 4 spec 8).
+_PERCENTAGE = re.compile(r"[0-9]{1,3}")
+
+
+def escalation_percentages() -> tuple[int, ...]:
+    """ESCALATION_PERCENTAGES (50,80,100): comma-separated integers 1 to 100, strictly ascending
+    (REQ-11). Spaces around an item are allowed; anything else is an error, which stops start-up
+    (app.main and app.worker check it; Part 3 decision 196)."""
+    raw = os.environ.get("ESCALATION_PERCENTAGES")
+    if raw is None or raw.strip() == "":
+        return (50, 80, 100)
+    items = [item.strip() for item in raw.split(",")]
+    values = [int(item) for item in items if _PERCENTAGE.fullmatch(item)]
+    if (
+        len(values) != len(items)
+        or any(not 1 <= value <= 100 for value in values)
+        or any(a >= b for a, b in zip(values, values[1:], strict=False))
+    ):
+        raise RuntimeError(
+            "environment variable ESCALATION_PERCENTAGES must be integers from 1 to 100,"
+            " strictly ascending"
+        )
+    return tuple(values)
+
+
 # End of the Phase 4 Part 3 slot.

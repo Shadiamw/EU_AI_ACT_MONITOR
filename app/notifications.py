@@ -1,8 +1,9 @@
 """Notifications (REQ-04, and REQ-02 for gaps): enqueue, and the delivery pass (spec 3.5).
 
 enqueue runs inside the caller's transaction (Part 1's ingest for a flagged event, the gap
-sweeper for a gap). It records the notification and appends NOTIFICATION_REQUESTED as its last
-write, so an event without its notification request, or the reverse, cannot exist.
+sweeper for a gap, the escalation scheduler for a reminder). It records the notification and
+appends NOTIFICATION_REQUESTED as its last write, so an event without its notification request,
+or the reverse, cannot exist.
 
 The delivery pass (deliver_due) never calls a webhook while a transaction is open (spec 7):
 
@@ -21,9 +22,13 @@ A claim whose result was never recorded (a crash, or a lock timeout while record
 again when its lease runs out, so delivery is at least once: a receiver can see the same
 notification_id twice.
 
-latency_seconds is the delivery time minus the event's received_at, in whole seconds, on the
-simulated clock. within_bound is latency_seconds <= NOTIFY_MAX_DELAY_SECONDS. A late delivery is
-logged as a warning and counted; the bound never delays sending.
+A reminder (Phase 4 spec 3.5) uses the same outbox. Its body is built from its escalation row,
+so a later revision never changes a retry's body (Addendum rule 5).
+
+latency_seconds is the delivery time minus the event's received_at (for a reminder, its
+escalation's due_at), in whole seconds, on the simulated clock. within_bound is
+latency_seconds <= NOTIFY_MAX_DELAY_SECONDS. A late delivery is logged as a warning and counted;
+the bound never delays sending.
 """
 
 import logging
@@ -41,6 +46,7 @@ from app.formats import api_time, new_id, whole_seconds
 logger = logging.getLogger("worker")
 
 FLAG_NOTIFICATION = "flag_notification"
+REMINDER = "reminder"
 WORKER_ACTOR = "system"  # background work (spec, 'Ledger entry format'; decision 93)
 
 # Spec 3.5 step 5: retry delays after failed attempts 1 to 5; attempt 6 is the last.
@@ -65,23 +71,27 @@ def enqueue(
     notification_id: str | None = None,
 ) -> str:
     """Request a notification for an event, in the caller's transaction (spec 6). Appends
-    NOTIFICATION_REQUESTED with actor `system` and returns the notification id. Never commits.
-    An unknown notification type raises ValueError before anything is written.
-
-    STUB for Phase 4 Part 3: escalation_pct and notification_id (Phase 4 spec 9) are accepted
-    and ignored until Part 3 lands."""
+    NOTIFICATION_REQUESTED with actor `system` and returns the notification id, generated when
+    none is given. Never commits. An unknown notification type raises ValueError before anything
+    is written, and so does an escalation_pct missing on a reminder or given on anything else
+    (Phase 4 spec 3.5)."""
     if notification_type not in webhooks.NOTIFICATION_TYPES:
         raise ValueError(f"unknown notification type {notification_type!r}")
-    notification_id = new_id("ntf")
+    if (notification_type == REMINDER) != (escalation_pct is not None):
+        raise ValueError("escalation_pct is required for a reminder and forbidden otherwise")
+    if notification_id is None:
+        notification_id = new_id("ntf")
     session.execute(
         text(
             "INSERT INTO notification (notification_id, event_id, notification_type,"
-            " created_at) VALUES (:notification_id, :event_id, :type, :now)"
+            " escalation_pct, created_at)"
+            " VALUES (:notification_id, :event_id, :type, :escalation_pct, :now)"
         ),
         {
             "notification_id": notification_id,
             "event_id": event_id,
             "type": notification_type,
+            "escalation_pct": escalation_pct,
             "now": clock.now(),
         },
     )
@@ -112,6 +122,12 @@ class Claim:
     event_type: str
     detected_at: datetime
     received_at: datetime
+    # A reminder's fields, from its escalation row (Addendum rule 5); None on a flag.
+    escalation_pct: int | None = None
+    tier: str | None = None
+    assigned_at: datetime | None = None
+    deadline_utc: datetime | None = None
+    due_at: datetime | None = None
 
 
 def retry_delay_seconds(failed_attempt: int) -> int:
@@ -194,14 +210,19 @@ def _claim(engine: Engine) -> list[Claim]:
             text(
                 "SELECT d.notification_id, d.webhook_id, d.attempt_count, w.url,"
                 " n.notification_type, e.event_id, e.system_id, e.type, e.detected_at,"
-                " e.received_at"
+                " e.received_at, n.escalation_pct, x.tier, x.anchor_at, x.deadline_utc, x.due_at"
                 " FROM notification_delivery d"
                 " JOIN notification n ON n.notification_id = d.notification_id"
                 " JOIN webhook w ON w.webhook_id = d.webhook_id"
                 " JOIN event e ON e.event_id = n.event_id"
+                " LEFT JOIN escalation x ON x.notification_id = n.notification_id"
                 " WHERE d.status = 'PENDING' AND d.next_attempt_at <= :now"
                 " AND (d.lease_until IS NULL OR d.lease_until <= :now)"
-                " ORDER BY d.next_attempt_at, d.notification_id, d.webhook_id"
+                # A reminder's body comes from its row, so it waits for one (Part 3 decision 203).
+                " AND (n.notification_type <> 'reminder' OR x.notification_id IS NOT NULL)"
+                # One clock jump delivers an event's reminders in ascending order (spec 3.9).
+                " ORDER BY d.next_attempt_at, n.created_at, n.escalation_pct NULLS FIRST,"
+                " d.notification_id, d.webhook_id"
                 " LIMIT :limit FOR UPDATE OF d SKIP LOCKED"
             ),
             {"now": now, "limit": CLAIM_BATCH_SIZE},
@@ -236,6 +257,11 @@ def _claim(engine: Engine) -> list[Claim]:
                     event_type=row.type,
                     detected_at=row.detected_at,
                     received_at=row.received_at,
+                    escalation_pct=row.escalation_pct,
+                    tier=row.tier,
+                    assigned_at=row.anchor_at,
+                    deadline_utc=row.deadline_utc,
+                    due_at=row.due_at,
                 )
             )
         session.commit()
@@ -243,17 +269,33 @@ def _claim(engine: Engine) -> list[Claim]:
 
 
 def _body(claim: Claim) -> dict[str, Any]:
-    """Exactly the spec 3.5 body. `type` is the event type (threshold_breach or monitoring_gap);
-    sent_at is the moment of this attempt."""
-    return {
+    """Exactly the spec 3.5 body, with the reminder fields of Phase 4 spec 3.5 on a reminder.
+    `type` is the event type (threshold_breach or monitoring_gap); sent_at is the moment of this
+    attempt."""
+    body: dict[str, Any] = {
         "notification_type": claim.notification_type,
         "notification_id": claim.notification_id,
         "event_id": claim.event_id,
         "system_id": claim.system_id,
         "type": claim.event_type,
         "detected_at": api_time(claim.detected_at),
-        "sent_at": api_time(clock.now()),
     }
+    if (
+        claim.assigned_at is not None
+        and claim.deadline_utc is not None
+        and claim.due_at is not None
+    ):
+        body.update(
+            {
+                "tier": claim.tier,
+                "assigned_at": api_time(claim.assigned_at),
+                "deadline_utc": api_time(claim.deadline_utc),
+                "escalation_pct": claim.escalation_pct,
+                "due_at": api_time(claim.due_at),
+            }
+        )
+    body["sent_at"] = api_time(clock.now())
+    return body
 
 
 def _record(engine: Engine, claim: Claim, status: int | None) -> None:
@@ -280,7 +322,8 @@ def _record(engine: Engine, claim: Claim, status: int | None) -> None:
         keys = {"notification_id": claim.notification_id, "webhook_id": claim.webhook_id}
         last_status = None if status is None else str(status)
         if webhooks.is_success(status):
-            latency = whole_seconds(claim.received_at, now)
+            start = claim.received_at if claim.due_at is None else claim.due_at
+            latency = whole_seconds(start, now)
             bound = config.notify_max_delay_seconds()
             within_bound = latency <= bound
             session.execute(
