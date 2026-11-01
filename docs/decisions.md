@@ -1523,4 +1523,75 @@ Decided 17 and 18 October 2026.
 
 ## Part 3 decisions (Phase 4 escalations and reminders; numbers 194 to 213)
 
+194. **Part 3 is built on `phase4-integration`, not on the bare base commit (Phase 4 Addendum
+     9.2).** Branch `phase4-part3-escalations` starts at `4580d28`, where Parts 1 and 2 are already
+     merged, because Part 3 is next in the merge order 2, 1, 3, 4. The merge into
+     `phase4-integration` adds only Part 3's commits. Part 2's eight integration tests run here
+     for real. Part 3's own branch tests still replace `dispositions.summary` (Addendum rule 3),
+     so they do not depend on Part 2's rows.
+
+195. **Part 3's tests live in `tests/part3/`.** No owner row names a Part 3 test directory
+     (Addendum 9.6). `Disposer` in its conftest stands in for Part 2: it writes the event row and
+     calls `plan`, and answers `dispositions.summary` with the tier in force.
+
+196. **ESCALATION_PERCENTAGES is strict, and a bad value stops start-up (Phase 4 spec 8).** Unset
+     or blank gives 50, 80, 100. Spaces around an item are allowed. An empty item, a non-integer,
+     a value outside 1 to 100, or an order that is not strictly ascending raises RuntimeError.
+     Spec 8 states the stop only for DEADLINE_CALENDAR. It is applied here too because otherwise a
+     typo would surface as a 500 on the first disposition, in the middle of a review. `app.main`
+     and `app.worker` both check it.
+
+197. **Two extra check constraints on `escalation`.** Not in spec 3.7. `ck_escalation_sent` says
+     notification_id, sent_at, tier and deadline_utc are set exactly on a SENT row;
+     `ck_escalation_cancelled` says cancelled_at is set exactly on a CANCELLED row. They reject
+     only rows the spec already forbids, and the reminder body depends on the first.
+
+198. **At firing, the tier comes from `dispositions.summary` and the deadline from the locked event
+     row.** Addendum rule 3 names summary for tier and assigned_at. summary returns its times as
+     API strings, and the same value is on the event row this transaction has already locked, so
+     nothing needs parsing. assigned_at is the row's anchor_at, which rule 3 says is equal.
+
+199. **The downgrade removes reminder notifications and tolerates a placeholder database.** The
+     restored one-notification-per-event constraint cannot hold reminders, so they and their
+     delivery rows are deleted; the ledger keeps their entries. Every step uses IF EXISTS, as in
+     decision 190, because a database upgraded while 0007 was the empty placeholder has no table to
+     drop. The trap of decision 190 applies: such a database is at head and never runs the real
+     upgrade, so it must be downgraded to 0006 or rebuilt.
+
+200. **One fire_due call attempts each due row once (Phase 4 spec 3.4 step 7).** The spec says to
+     repeat the listing until it returns nothing. A row that keeps failing, or that another caller
+     holds, would stay PENDING and due, and the call would never end. So each listing resumes after
+     the last row attempted, in (due_at, event_id, pct) order, and ends when nothing is left. A row
+     that failed or was skipped is picked up by the next pass, as the spec requires. A row a
+     concurrent revision moved to an earlier instant during the walk also waits for the next pass.
+
+201. **A failure on one row is logged by type name and does not stop the pass.** It rolls back and
+     the row stays PENDING. The spec's "rolled-back attempt" and the Phase 3 "one bad row must never
+     stop the pass" are the basis. Consequence: a row that can never fire (a DISPOSITIONED event
+     with no disposition row, which correct planning cannot produce) warns on every pass and shows
+     in overdue_escalations, which is the visible signal wanted.
+
+202. **Late reminders have their own counter (Phase 4 spec 3.8).** "Count it like a late delivery"
+     is read as the same kind of per-process counter, `escalations.late_reminder_count()`, not the
+     same number. One reminder can be late to fire and then late to deliver; one number would
+     count it twice and hide which stage was late.
+
+203. **A reminder notification with no escalation row is not claimed.** Its body comes from that
+     row (Addendum rule 5), and a claim without one would fail while building the body and stop the
+     pass. The row and the notification are written in one transaction, so this needs direct
+     writes to reach; such a notification stays PENDING and unclaimed.
+
+204. **Claims are ordered by next_attempt_at, created_at, escalation_pct, then ids.** Spec 3.9 "Big
+     jump" expects order 50, 80, 100 at the receiver. The previous order fell through to the random
+     notification id, because one routing pass gives all three the same next_attempt_at. A retry can
+     still reorder them; receivers read escalation_pct.
+
+205. **An empty pass logs at DEBUG (Phase 4 spec 3.8).** "Log every pass" is kept, but with no due
+     rows the line is DEBUG, because the worker runs every 5 seconds. A pass with due rows is INFO.
+
+206. **One Phase 3 test beyond Addendum 9.10 changes.**
+     `tests/worker/test_notifications.py::test_enqueue_records_the_request_and_routes_nothing`
+     compares `SELECT * FROM notification` exactly, so it gains `escalation_pct: None` (spec 3.5).
+     Rule 9.10 lists only `test_notification_references_the_event_once`. Nothing is weakened.
+
 ## Integration decisions (Phase 4 integration; numbers 214 to 233)

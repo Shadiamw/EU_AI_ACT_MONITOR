@@ -718,41 +718,87 @@ Because this branch carries Part 1's real code, Part 1's integration-marked test
 
 ## 12. Phase 4 Part 3: escalations and reminders
 
-OWNER NOTES, delete this block when your section is written.
+Part 3 of Phase 4 makes sure whoever registered for reminders hears about a deadline at 50%, 80%
+and 100% of its window: never early, never twice and never missed, including when a revision moves
+the deadline, when the test clock jumps far ahead, and when the worker and a clock advance run at
+the same moment (REQ-11, AC-12). It is built on branch `phase4-part3-escalations`, which starts at
+`phase4-integration` `4580d28` (decision 194). Decisions 194 to 206 in
+[docs/decisions.md](docs/decisions.md) record the choices the specification left open.
 
-Branch name: chosen by the owner (for example phase4-part3-escalations).
+### 12.1 What Part 3 does
 
-Stubs replaced: escalations.plan and escalations.fire_due in app/escalations.py (instant is
-already real); the ignored escalation_pct and notification_id parameters of
-notifications.enqueue; HealthValues.overdue_escalations, fixed at 0; the placeholder migration
-0007_escalations.py.
+| Behavior | What happens | Spec |
+| --- | --- | --- |
+| First plan | The plan that finds no rows inserts one PENDING row per configured percentage. That set is the event's for good. A first NOT_SERIOUS has no rows | 3.3, rule 5 |
+| Later plan | PENDING rows move to the new window; CANCELLED rows return to PENDING; SENT rows never change | 3.3 |
+| NOT_SERIOUS | Every PENDING row becomes CANCELLED. A reminder already triggered is still delivered | 3.3, rule 5 |
+| Instant | anchor + ceil((deadline - anchor) x pct / 100) in whole microseconds, always from the first assignment | 6 |
+| Firing | Each reminder in its own transaction: lock the event, lock the row (SKIP LOCKED), re-check the due time, mark SENT, enqueue, append REMINDER_TRIGGERED (actor `system`, subject the event id) | 3.4 |
+| Delivery | The Phase 3 outbox: routing by type, lease, retries at 10, 30, 60, 120 and 300 s, six attempts. At least once, so receivers de-duplicate on notification_id | 3.4, 3.5 |
+| Body | The flag fields plus tier, assigned_at, deadline_utc, escalation_pct and due_at, built from the escalation row, so a later revision never changes a retry | 3.5, rule 5 |
+| Latency | NOTIFICATION_DELIVERED measures a reminder from due_at, not received_at | 3.5 |
+| Worker | Each iteration: the sweep if due, fire_due, deliver_due. An error in fire_due is logged by type name and deliveries still run | 3.6 |
+| Health | overdue_escalations counts PENDING rows more than 60 s past due. A growing value means the worker is stopped or behind | 3.6 |
 
-Slots filled: the Phase 4 Part 3 slot in app/config.py (ESCALATION_PERCENTAGES); the Phase 4
-Part 3 slot in tests/worker/test_schema.py (escalation, notification.escalation_pct); decisions
-194 to 213 under their heading in docs/decisions.md; this section.
+### 12.2 Configuration
 
-Files owned (Phase 4 Addendum 9.6): app/escalations.py (except instant), app/notifications.py,
-app/webhooks.py, app/worker.py, worker.health_values, migration 0007, and
-tests/worker/test_schema.py::test_notification_references_the_event_once.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ESCALATION_PERCENTAGES` | 50,80,100 | Integers 1 to 100, strictly ascending. A bad value stops start-up (decision 196). Read when an event gets its first plan; later changes do not touch existing rows |
 
-Phase 3 tests changed (9.10):
-tests/worker/test_schema.py::test_notification_references_the_event_once (partial unique
-indexes instead of uq_notification_event).
+### 12.3 Where the code lives
 
-Tests to mark integration (rule 10): the stricter and looser revisions through the API (Model 5
-Ex-1 timing); NOT_SERIOUS then reopen through the API; no duplicates, and worker against clock
-advance, through the clock-advance endpoint.
+| What | Where |
+| --- | --- |
+| Plan and fire | `app/escalations.py` |
+| Enqueue parameters, reminder body, latency, claim order | `app/notifications.py` |
+| Worker pass and health value | `app/worker.py` |
+| Setting | the Phase 4 Part 3 slot in `app/config.py`; the start-up check in `app/main.py` and `app/worker.py` |
+| Table and notification changes | `migrations/versions/0007_escalations.py` |
+| Tests | `tests/part3/`, and the Phase 3 tests in 12.6 |
 
-Merge order: phase4-integration is created from main when the first part is ready; the parts
-merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
-4 Addendum 9.2).
+### 12.4 Running the tests
 
-Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
-why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
-you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
-which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+| Run | Command | Result |
+| --- | --- | --- |
+| Part 3's tests | `.venv/bin/pytest tests/part3` | 81 passed, 6 skipped |
+| The whole suite, no flag | `.venv/bin/pytest` | 1330 passed, 58 skipped, 0 failed |
+| Merged with Part 4, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1513 passed, 3 failed: Part 4 console tests, CRLF on a Windows checkout only (they pass with LF; see the report) |
 
-END OF OWNER NOTES.
+
+### 12.5 Tests that wait for integration
+
+These are in `tests/part3/test_escalations_integration.py`. They need Part 2's endpoint, already on
+this branch, and Part 4's clock-advance endpoint, which requires a key and fires due reminders, so
+they fail here until Part 4 merges.
+
+| Test | Checks |
+| --- | --- |
+| `test_model_5_ex_1_a_stricter_revision_through_the_api` | Ex-1 timing: +5d, +8d, +10d |
+| `test_a_looser_revision_with_a_rationale_through_the_api` | reminders move to the 15-day instants |
+| `test_not_serious_then_reopen_through_the_api` | D2, sent percentages are not resent |
+| `test_no_duplicates_through_the_clock_advance_endpoint` | ten further advances and worker passes |
+| `test_a_worker_pass_and_a_clock_advance_across_the_50_instant_50_times` | one reminder each time |
+| `test_healthz_shows_a_real_overdue_row` | /healthz shows a real overdue row |
+
+### 12.6 Phase 3 tests changed (Addendum 9.10)
+
+| Test | Why |
+| --- | --- |
+| `tests/worker/test_schema.py::test_notification_references_the_event_once` | the partial unique index replaces `uq_notification_event` |
+| `tests/worker/test_notifications.py::test_enqueue_records_the_request_and_routes_nothing` | exact `SELECT *`, so it gains `escalation_pct`; not listed in 9.10 (decision 206) |
+| `tests/worker/test_schema.py`, the Phase 4 Part 3 slot | the `escalation` table and `notification.escalation_pct` |
+
+### 12.7 Known limitations
+
+| Limitation | Decision or spec |
+| --- | --- |
+| **No reminders while the machines are stopped.** On wake each due reminder fires once, late; none is lost or duplicated. | spec 3.9 |
+| **Webhooks only.** There is no email or named compliance-officer account. | spec 3.9 |
+| **At-least-once delivery.** Receivers de-duplicate on notification_id. | spec 3.4 |
+| **A triggered reminder is delivered after a revision to NOT_SERIOUS.** The outbox has no cancel status. | rule 5 |
+| **Late routing.** A reminder enqueued before any matching webhook exists goes to one registered later. | rule 5 |
+| **A retry can reorder reminders.** Order holds for first attempts only; receivers read escalation_pct. | 204 |
 
 ## 13. Phase 4 Part 4: platform
 
