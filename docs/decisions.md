@@ -1503,6 +1503,20 @@ Decided 17 and 18 October 2026.
      stays. This number was reserved for model confirmation document updates after integration;
      those still wait for the integration.
 
+     **The start-up seed no longer races.** The api and worker processes both seed at start
+     (decision 109) and compose starts them together. Every seeded table used INSERT ... ON
+     CONFLICT DO NOTHING and the ledger's SEED is serialized by the append lock, except
+     api_key, which was DELETE-all then INSERT. After `prepare`, the second process's DELETE
+     waited on the first's row locks, found those rows gone, and its INSERT then hit the
+     first's new rows: UniqueViolation on `api_key_pkey`, and that process exited (seen once
+     in R4). The seed now deletes only the keys no longer configured and upserts the three
+     (`ON CONFLICT (key_hash) DO UPDATE`), so a concurrent seed waits and updates instead.
+     Stale keys are still removed and a configured key still gets its configured role.
+     `tests/test_seed_concurrency.py` holds one seed open until the other is blocked on it,
+     then commits; it failed before the change. Only `tools/seed_part1.py` changed;
+     `app/runtime.py` and the ledger files did not, and neither file is changed on
+     phase4-integration.
+
 ## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
 
 ## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)

@@ -8,8 +8,9 @@ spec 4 ("Seed fixtures") from the environment (spec 5):
   gap_timeout_intervals = GAP_TIMEOUT_INTERVALS (3), last_received_at = now. An existing row is
   left as it is.
 - api_key: exactly three rows, the SHA-256 digests of INGEST_KEY_SYS_42 (SYSTEM, sys-42),
-  REVIEWER_KEY (REVIEWER, rev-1) and VIEWER_KEY (VIEWER, viewer-1). Earlier rows are replaced,
-  so the stored keys always match the environment.
+  REVIEWER_KEY (REVIEWER, rev-1) and VIEWER_KEY (VIEWER, viewer-1). Rows for keys no longer
+  configured are deleted and the three are upserted, so the stored keys always match the
+  environment and two seeds at once do not collide (decision 153).
 - threshold_version, version 1: thr-1 accuracy_drift (drift) gt 0.30 and thr-2 accuracy
   (performance) lt 0.70. Existing rows are left as they are.
 - harm_context (Phase 4 spec 4.4): sys-42 fundamental_rights_infringement, only when the
@@ -68,16 +69,25 @@ def seed(session: Session) -> None:
             "now": now,
         },
     )
-    session.execute(text("DELETE FROM api_key"))
+    # Remove only the keys no longer configured, then upsert the configured ones. The api and
+    # worker processes both seed at start; a DELETE-all then INSERT let the second collide with
+    # the first's rows (UniqueViolation on api_key_pkey). An upsert waits and updates instead.
+    rows = [
+        {"key_hash": key_digest(key), "role": role, "actor_id": actor, "system_id": system}
+        for key, role, actor, system in keys
+    ]
+    session.execute(
+        text("DELETE FROM api_key WHERE key_hash <> ALL(:hashes)"),
+        {"hashes": [row["key_hash"] for row in rows]},
+    )
     session.execute(
         text(
             "INSERT INTO api_key (key_hash, role, actor_id, system_id)"
             " VALUES (:key_hash, :role, :actor_id, :system_id)"
+            " ON CONFLICT (key_hash) DO UPDATE SET role = EXCLUDED.role,"
+            " actor_id = EXCLUDED.actor_id, system_id = EXCLUDED.system_id"
         ),
-        [
-            {"key_hash": key_digest(key), "role": role, "actor_id": actor, "system_id": system}
-            for key, role, actor, system in keys
-        ],
+        rows,
     )
     session.execute(
         text(
