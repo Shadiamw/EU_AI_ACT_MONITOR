@@ -1,4 +1,5 @@
-"""The worker process (Part 3): the gap sweeper every minute, and the delivery pass.
+"""The worker process (Part 3): the gap sweeper every minute, the reminder pass and the delivery
+pass.
 
 Run it with `python -m app.worker`. It connects as the application role (DATABASE_URL), like
 the API. Wall-clock time only paces the loop; every decision about gaps, retries and latency
@@ -10,22 +11,28 @@ next iteration runs as usual.
 
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from time import monotonic, sleep
 
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
-from app import clock, config, db, gaps, notifications
+from app import clock, config, db, escalations, gaps, notifications
 from app.formats import whole_seconds
 
 logger = logging.getLogger("worker")
 
 
 def run_iteration(engine: Engine, *, sweep: bool) -> None:
-    """One pass: the sweeper if it is due, then deliveries (so a new gap's notification goes
-    out in the same iteration)."""
+    """One pass: the sweeper if it is due, then due reminders, then deliveries (so a new gap's
+    notification or a reminder goes out in the same iteration; Phase 4 spec 3.6). An error in the
+    reminder pass is logged by type name and the deliveries still run."""
     if sweep:
         gaps.sweep(engine)  # logs its own summary line (spec 3.8)
+    try:
+        escalations.fire_due(engine)
+    except Exception as exc:
+        logger.error("reminder pass failed: type=%s", type(exc).__name__)
     notifications.deliver_due(engine)
 
 
@@ -45,21 +52,21 @@ def run_forever(engine: Engine) -> None:
 
 @dataclass(frozen=True)
 class HealthValues:
-    """The three worker values spec 3.8 asks Part 4's health endpoint to expose, named as the
-    /healthz fields in spec 4.6 (decision 97)."""
+    """The worker values Part 4's health endpoint exposes, named as the /healthz fields in spec
+    4.6 (decision 97), plus overdue_escalations (Phase 4 spec 3.6)."""
 
     sweeper_last_ran_seconds_ago: int | None  # real time; None before the first sweep
     pending_deliveries: int
     oldest_pending_delivery_seconds: int | None  # simulated clock; None when nothing is pending
-    # STUB for Phase 4 Part 3: always 0 until Part 3 counts the PENDING escalations more than
-    # 60 s past due (Phase 4 spec 3.6, Addendum 9.1).
+    # PENDING escalations more than 60 s past due on the simulated clock. A growing value means
+    # the worker is stopped or behind.
     overdue_escalations: int = 0
 
 
 def health_values(engine: Engine) -> HealthValues:
     """Read-only. Seconds since the last sweep (wall clock, from sweeper_heartbeat), the number
-    of PENDING deliveries, and the age of the oldest one, measured from its notification's
-    created_at on clock.now()."""
+    of PENDING deliveries, the age of the oldest one, measured from its notification's
+    created_at on clock.now(), and the overdue escalations."""
     with Session(engine) as session:
         last_ran = session.execute(text("SELECT last_ran_at FROM sweeper_heartbeat")).scalar()
         pending, oldest = session.execute(
@@ -69,6 +76,10 @@ def health_values(engine: Engine) -> HealthValues:
                 " WHERE d.status = 'PENDING'"
             )
         ).one()
+        overdue = session.execute(
+            text("SELECT count(*) FROM escalation WHERE status = 'PENDING' AND due_at < :before"),
+            {"before": clock.now() - timedelta(seconds=escalations.OVERDUE_AFTER_SECONDS)},
+        ).scalar_one()
         session.rollback()
     return HealthValues(
         sweeper_last_ran_seconds_ago=(
@@ -78,11 +89,13 @@ def health_values(engine: Engine) -> HealthValues:
         oldest_pending_delivery_seconds=(
             None if oldest is None else whole_seconds(oldest, clock.now())
         ),
+        overdue_escalations=int(overdue),
     )
 
 
 def main() -> None:
     logging.basicConfig(level=config.log_level(), format="%(levelname)s [%(name)s] %(message)s")
+    config.escalation_percentages()  # a bad value stops start-up (Part 3 decision 196)
     run_forever(db.get_engine())
 
 
