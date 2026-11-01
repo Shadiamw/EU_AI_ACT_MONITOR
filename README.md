@@ -300,9 +300,10 @@ and threshold versions in the 0001 stub) and its endpoints are described in
 ```
 
 The same commands run in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on every push
-and pull request, against PostgreSQL 16. After pytest, `tools/check_acceptance.py` requires
-the AC-02, AC-04, AC-06 and AC-15 tests in that run to have passed. AC-12 is not a Phase 3
-test (section 8.2). A second job builds the image and waits until `GET /healthz` returns 200.
+and pull request, against PostgreSQL 16. After the flagged pytest run, `tools/check_acceptance.py`
+requires the AC-02, AC-04, AC-06 and AC-15 tests of Phase 3 and the Phase 4 tests of AC-07 to
+AC-12, AC-14, AC-15 and AC-17 (`PHASE4_REQUIRED`, integration decision 218) in that run to have
+passed. AC-12 is not a Phase 3 test (section 8.2). A second job builds the image and waits until `GET /healthz` returns 200.
 
 At the time of writing the suite collects 947 tests: 532 for Part 2, 229 for Part 3 in
 `tests/worker/` and 186 for Part 1 in `tests/part1/`, plus the deployment tests in
@@ -515,7 +516,7 @@ The other three fields of that event have null evidence.
 
 With the test database of section 5 running:
 
-| Run | Command | Result on this branch |
+| Run | Command | Result on Part 1's branch (`d4d8c1f`) |
 | --- | --- | --- |
 | Part 1's review tests | `.venv/bin/pytest tests/part1/test_review_*.py` | 124 passed, 44 skipped |
 | The whole suite | `.venv/bin/pytest` | 1086 passed, 44 skipped |
@@ -552,7 +553,7 @@ The two exceptions and their exact response bodies:
 | `HarmFieldsMalformed` | `parse_harm_fields` | 400 `{"error_code":"MALFORMED_BODY","message":"the request is malformed"}` |
 | `HarmFieldsUnconfirmed` | `require_complete` | 409 `{"error_code":"HARM_FIELDS_UNCONFIRMED","message":"all four harm fields must be CONFIRMED or NOT_APPLICABLE"}` |
 
-What the disposition route (Part 2) and the report (Part 3) can rely on:
+What the disposition route and the report guard (both Part 2) can rely on:
 
 - `parse_harm_fields(raw)` takes None for BOTH an absent and a null `harm_fields`: pass
   `body.get("harm_fields")`. An empty object `{}` is 409, not 400. Every value is checked
@@ -604,7 +605,7 @@ append-only revision history, the absolute Art. 73 deadline counted from the fir
 the rule that a deadline can shorten but never lengthen silently, and the report guard that
 stops an event without a disposition from advancing (REQ-08a, 08b, 09, 10, 13). It is built on
 branch `phase4-part2-dispositions`, which starts at Part 1's head `d4d8c1f`, itself on the base
-commit `4d1487e` (decision 174). Decisions 174 to 189 in [docs/decisions.md](docs/decisions.md)
+commit `4d1487e` (decision 174). Decisions 174 to 190 in [docs/decisions.md](docs/decisions.md)
 record the choices the specification left open.
 
 ### 11.1 What Part 2 does
@@ -661,7 +662,7 @@ the day after the anchor, at the anchor's UTC time of day (decision 177).
 
 With the test database of section 5 running:
 
-| Run | Command | Result on this branch |
+| Run | Command | Result on Part 2's branch |
 | --- | --- | --- |
 | Part 2's tests | `.venv/bin/pytest tests/part2` | 159 passed, 8 skipped |
 | The whole suite | `.venv/bin/pytest` | 1247 passed, 52 skipped (the base of this branch: 1086 passed, 44 skipped) |
@@ -669,8 +670,8 @@ With the test database of section 5 running:
 
 Part 2's integration-marked tests (Addendum rule 10) are in
 `tests/part2/test_disposition_integration.py`. They check the `escalation` rows that Part 3's
-migration 0007 and `escalations.plan` create, so they fail on this branch, where 0007 is still a
-placeholder:
+migration 0007 and `escalations.plan` create, so they failed on Part 2's branch, where 0007 was
+still a placeholder. With Part 3 merged they pass:
 
 | Test | Needs |
 | --- | --- |
@@ -761,16 +762,18 @@ the same moment (REQ-11, AC-12). It is built on branch `phase4-part3-escalations
 
 | Run | Command | Result |
 | --- | --- | --- |
-| Part 3's tests | `.venv/bin/pytest tests/part3` | 81 passed, 6 skipped |
-| The whole suite, no flag | `.venv/bin/pytest` | 1330 passed, 58 skipped, 0 failed |
-| Merged with Part 4, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1513 passed, 3 failed: Part 4 console tests, CRLF on a Windows checkout only (they pass with LF; see the report) |
+| Part 3's tests, on Part 3's branch | `.venv/bin/pytest tests/part3` | 81 passed, 6 skipped |
+| The whole suite, no flag, on Part 3's branch | `.venv/bin/pytest` | 1330 passed, 58 skipped, 0 failed |
+| Part 3's trial merge with Part 4, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1513 passed, 3 failed: Part 4 console tests, CRLF on a Windows checkout only (they pass with LF; see the report) |
+| All four parts merged, no flag | `.venv/bin/pytest --ignore=tests/acceptance` | 1474 passed, 71 skipped, 0 failed |
+| All four parts merged, flagged | `.venv/bin/pytest --run-integration --ignore=tests/acceptance` | 1545 passed, 0 failed |
 
 
 ### 12.5 Tests that wait for integration
 
 These are in `tests/part3/test_escalations_integration.py`. They need Part 2's endpoint, already on
 this branch, and Part 4's clock-advance endpoint, which requires a key and fires due reminders, so
-they fail here until Part 4 merges.
+they failed on Part 3's branch until Part 4 merged. They pass with all four parts merged.
 
 | Test | Checks |
 | --- | --- |
