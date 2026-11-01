@@ -909,7 +909,8 @@ Raised by the Part 1 integration (decisions 116 to 131), for the other team or P
 ## 10. Stubs to replace when Part 4 lands
 
 Part 1's stubs are all replaced (section 3.1). What remains is Part 4's. Each stub below is
-marked `STUB` in its first line. Replacing one should need no change to Part 1, 2 or 3 code, as
+marked `STUB` in its first line when it was written; Part 4's own modules no longer carry the
+mark (decision 153). Replacing one should need no change to Part 1, 2 or 3 code, as
 long as the "Keep" column holds. After each replacement, run the checks named for it, then the
 full suite, `ruff check .`, `ruff format --check .` and `mypy` (section 5.10).
 

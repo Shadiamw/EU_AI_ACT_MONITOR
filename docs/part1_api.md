@@ -10,8 +10,8 @@ clause-by-clause check is `docs/part1_spec_audit.md`.
 
 Not built here (Part 4): the real clock and `clock_state`, `POST /v1/test/reset`,
 `POST /v1/test/clock/advance`, `/healthz`, roles setup, CI, Docker and AWS, the acceptance
-runner and the sender simulator. Their stand-ins are marked STUB (integration_notes.md
-section 10).
+runner and the sender simulator. Their stand-ins are listed in integration_notes.md section 10;
+Part 4's own modules are no longer labelled stand-ins (decision 153).
 
 ## Code
 
@@ -25,10 +25,10 @@ section 10).
 | `app/jsonout.py` | JSON responses that write Decimals as exact JSON numbers (decision 124) |
 | `app/observability.py` | The request log line and counters (decision 126) |
 | `app/api/ingestion_routes.py` | The three endpoints |
-| `app/api/stub_routes.py` | The two 501 stubs (decision 125) |
+| `app/api/stub_routes.py` | The two 501 stubs (decision 125). Deleted in Phase 4: Part 2's `app/api/disposition_routes.py` replaces it |
 | `migrations/versions/0003_detection.py` | metric_sample, breach_series, event, harm_field (decision 127) |
-| `migrations/versions/0001_platform_stub.py` | Part 4's stub, with api_key and threshold_version added |
-| `tools/seed_part1.py` | STUB for Part 4: the spec's seed fixtures (decision 128) |
+| `migrations/versions/0001_platform_stub.py` | Part 4's platform tables, including api_key and threshold_version (the file keeps its stub-era name) |
+| `tools/seed_part1.py` | Part 4's seed: the spec's seed fixtures (decisions 128 and 153) |
 
 ## Run locally
 
