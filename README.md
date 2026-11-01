@@ -683,6 +683,46 @@ pytest tests/acceptance --confcutdir=tests/acceptance -p no:cacheprovider
 - The acceptance gate (`tools/check_acceptance.py`) merges the Phase 3 and Phase 4 criteria
   per criterion as a union (decision 151).
 
+**One file per criterion (spec 4.8).** The expected values come from the contract, the Phase 3
+and Phase 4 specifications and sections 10.3, 10.5, 11.2 and 11.6 of this README, never from
+the code. `tests/acceptance/api.py` holds the HTTP helpers and those values. Ids are
+`tests/acceptance/<file>::<test>`:
+
+| AC | File | Tests |
+| --- | --- | --- |
+| AC-01 | `test_ac01_ingest.py` | `test_an_hour_at_the_default_interval_is_collected_without_a_gap`, `test_every_sample_is_stored_once_with_a_distinct_id` |
+| AC-02 | `test_ac02_gaps.py` | `test_two_withheld_intervals_open_no_gap`, `test_three_withheld_intervals_open_one_gap_event`, `test_a_sample_after_the_outage_closes_the_gap`, `test_the_gap_is_notified_within_the_configured_delay` (sink) |
+| AC-03 | `test_ac03_flagging.py` | `test_contract_example_1_flags_with_sample_and_event_ids`, `test_a_value_exactly_at_the_threshold_does_not_flag` (drift, performance), `test_one_unit_beyond_the_threshold_flags_with_the_exact_fields` (drift, performance) |
+| AC-04 | `test_ac04_latency.py` | `test_the_flag_notification_is_delivered_within_the_bound` (sink), `test_a_webhook_registered_only_for_reminders_gets_no_flag` (sink) |
+| AC-06 | `test_ac06_export_verify.py` | `test_the_export_has_the_pinned_entry_format`, `test_the_export_verifies_offline_and_matches_the_server`, `test_an_edited_record_is_named_by_the_offline_verifier` |
+| AC-07 | `test_ac07_harm_fields.py` | `test_fields_with_evidence_are_prefilled_and_the_others_are_blank`, `test_the_report_before_reviewer_action_is_refused`, `test_a_field_left_pending_is_refused_and_nothing_is_recorded`, `test_each_confirmation_records_the_reviewer_and_the_time` |
+| AC-08 | `test_ac08_report_guard.py` | `test_the_report_without_a_disposition_is_409_and_changes_nothing` (flagged, under review), `test_a_gap_event_never_reaches_reporting`, `test_an_unknown_event_is_404`, `test_after_a_disposition_the_guard_passes_to_the_phase_5_report` |
+| AC-09 | `test_ac09_tiers.py` | `test_each_of_the_four_options_is_accepted`, `test_a_fifth_option_is_malformed_and_changes_nothing`, `test_not_serious_without_a_rationale_is_contract_example_3`, `test_not_serious_with_the_rationale_omitted_is_example_3`, `test_the_rationale_check_comes_before_the_event_lookup`, `test_not_serious_with_a_rationale_closes_with_no_deadline` |
+| AC-10 | `test_ac10_revisions.py` | `test_a_revision_keeps_the_original_and_records_who_and_when`, `test_the_ledger_holds_both_decisions`, `test_a_same_tier_revision_is_listed_too` |
+| AC-11 | `test_ac11_deadlines.py` | `test_the_deadline_is_exactly_the_window_after_assignment` (2, 10, 15 days), `test_a_stricter_revision_shortens_the_deadline_from_the_original_assignment`, `test_a_looser_revision_without_a_rationale_does_not_extend_the_deadline`, `test_a_looser_revision_with_a_rationale_extends_it_and_logs_the_rationale` |
+| AC-12 | `test_ac12_reminders.py` | `test_the_instants_are_the_spec_table`, `test_reminders_fire_at_50_80_and_100_percent_and_never_early` (sink), `test_the_reminder_body_is_the_pinned_shape` (sink) |
+| AC-14 | `test_ac14_role_matrix.py` | `test_role_matrix` (13 endpoints × no key, unknown key, system, viewer, reviewer), `test_a_non_reviewer_is_denied_both_actions_and_the_reviewer_is_not` (viewer, system) |
+| AC-15 | `test_ac15_audit.py` | `test_a_view_only_action_is_logged_with_the_viewer_and_the_time` (Phase 3), `test_a_view_by_one_user_and_an_edit_by_another_are_both_logged` (Phase 4 edit) |
+| AC-17 | `test_ac17_risk_gap.py` | `test_detection_and_the_assignment_deadline_are_both_visible_with_the_gap` |
+
+What the HTTP runner cannot show, and where it is shown instead:
+
+- **"(sink)" tests skip without `WEBHOOK_SINK_URL`.** The in-service run (`POST /v1/test/suite
+  {"scope":"acceptance"}`) inherits the service's environment, so it skips them unless the
+  service sets that variable. A "passed" in-service run without a sink therefore says nothing
+  about AC-02's notification, AC-04 or AC-12.
+- **AC-04's alternate bound** (for example 5 min) needs a restart with another
+  `NOTIFY_MAX_DELAY_SECONDS`. The in-process worker tests cover it.
+- **AC-06's direct modification** bypasses the application, which HTTP cannot do. The runner
+  covers the export form (export, `tools/verify_ledger.py`, edit, verify again); the storage
+  permissions and the direct edit are in-process (`tests/test_schema_permissions.py`,
+  `tests/test_verify*.py`).
+- **AC-09's on-screen options** are the manual half: the console offers exactly the four tiers.
+- **AC-11 and AC-17 assume `DEADLINE_CALENDAR=calendar_days`** (the default), as README 10.7
+  says for Part 1.
+- **AC-14's "reviewer succeeds" for the report** is 409 before a disposition and 501 after
+  (D1); the report itself is Phase 5.
+
 ### Phase 3 tests this part changed (Addendum 9.10)
 
 `tests/api/test_platform.py` and `tests/part1/test_smoke.py` now send a reviewer or viewer key,

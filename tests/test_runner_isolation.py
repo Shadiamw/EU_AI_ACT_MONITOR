@@ -9,6 +9,7 @@ tests/acceptance so that the in-process suite, which ignores that folder, still 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -54,7 +55,8 @@ def test_without_base_url_the_runner_skips_every_test_and_needs_no_database() ->
     run = _run()
     output = run.stdout + run.stderr
     assert run.returncode == 0, output
-    assert "3 skipped" in output, output
+    summary = re.search(r"^(\d+) skipped in ", output, re.MULTILINE)
+    assert summary and int(summary.group(1)) > 0, output
     assert "passed" not in output and "failed" not in output and "error" not in output, output
     assert "BASE_URL is not set" in output, output
 

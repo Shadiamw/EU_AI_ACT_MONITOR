@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
+
+from tests.acceptance.api import Api, Sink
 
 HERE = Path(__file__).resolve().parent
 
@@ -84,21 +84,10 @@ def reset(http: httpx.Client, headers: dict[str, dict[str, str]]) -> None:
     assert response.status_code == 204, response.text
 
 
-@dataclass(frozen=True)
-class Sink:
-    """One channel of tools/webhook_sink.py, seen from the API (url) and from here (read_url)."""
-
-    url: str
-    read_url: str
-
-    def clear(self) -> None:
-        httpx.delete(self.read_url, timeout=30.0).raise_for_status()
-
-    def received(self) -> list[dict[str, Any]]:
-        response = httpx.get(self.read_url, timeout=30.0)
-        response.raise_for_status()
-        items: list[dict[str, Any]] = response.json()
-        return items
+@pytest.fixture
+def api(http: httpx.Client, headers: dict[str, dict[str, str]]) -> Api:
+    """The HTTP helpers of tests/acceptance/api.py, after the reset."""
+    return Api(http, headers)
 
 
 @pytest.fixture
