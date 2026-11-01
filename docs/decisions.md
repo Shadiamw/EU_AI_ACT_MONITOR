@@ -1492,7 +1492,16 @@ Decided 17 and 18 October 2026.
      `tests/test_check_acceptance.py` covers the union, the skip rule and the usage error. The
      Phase 4 node ids themselves are filled in at the final integration.
 152. Reserved (Vercel console `API_BASE_URL` / demo recording).
-153. Reserved (model confirmation document updates after integration).
+153. **Part 4's finished modules are no longer labelled stand-ins.** `app/db.py`,
+     `tests/sql/bootstrap_roles.sql` and `tools/seed_part1.py` were written as "STUB for Part 4"
+     before Part 4 existed, and README section 1 listed them as "Part 4 stand-ins (STUB)". They
+     are Part 4's own modules now (the seed runs in `prepare`, at api and worker start and in
+     reset), so their first-line labels and the README row say so. Only docstrings, an SQL
+     comment and the README row changed; no code line did. The remaining `STUB` hits are Parts
+     1–3's (review, deadlines, escalations, the worker's overdue counter) and theirs to remove.
+     The error text "the Part 1 seed stand-in runs only in ENVIRONMENT=test" is a code line and
+     stays. This number was reserved for model confirmation document updates after integration;
+     those still wait for the integration.
 
 ## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
 

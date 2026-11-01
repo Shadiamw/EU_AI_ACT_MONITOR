@@ -1,4 +1,4 @@
-"""STUB for Part 4 (seed): the spec's baseline fixtures, until Part 4's seed and reset exist.
+"""Part 4 seed: the spec's baseline fixtures, installed at process start and by reset.
 
 Run `ENVIRONMENT=test python -m tools.seed_part1` after migrations. It uses DATABASE_ADMIN_URL
 (the owner role) and refuses to run unless ENVIRONMENT is `test`. It writes the seed fixtures of
@@ -18,8 +18,9 @@ spec 4 ("Seed fixtures") from the environment (spec 5):
 - ledger.ensure_seed with {systems: ["sys-42"], threshold_count: "2"}: SEED is appended only to
   an empty ledger (addendum rule 4).
 
-Part 4 replaces this with its startup seed and POST /v1/test/reset (spec 4.6), which also
-truncate the tables and set the clock offset to zero. Nothing here truncates.
+app/runtime.py runs it in `prepare` and at api and worker start (decision 109), and
+POST /v1/test/reset runs it after truncating the tables and zeroing the clock offset (spec 4.5,
+app/platform.py). Nothing here truncates.
 """
 
 from sqlalchemy import create_engine, text

@@ -43,7 +43,7 @@ the chain, either with `GET /v1/ledger/verify` or with the standard-library scri
 | Standalone verifier | `tools/verify_ledger.py` |
 | The three-entry fixture | `tests/fixtures/fixture_export.json` |
 | Part 1 API, authentication and event reads | `app/ingestion.py`, `app/api/ingestion_routes.py`, `app/auth.py`, `app/events.py` |
-| Part 4 stand-ins (STUB): clock, sessions, baseline migration, seed fixtures | `app/clock.py`, `app/db.py`, `migrations/versions/0001_platform_stub.py`, `tools/seed_part1.py` |
+| Part 4 platform: clock, sessions, baseline migration, seed fixtures | `app/clock.py`, `app/db.py`, `migrations/versions/0001_platform_stub.py`, `tools/seed_part1.py` |
 
 ## 2. Hash definition
 
