@@ -1,4 +1,6 @@
-"""Part 4 platform operations: test reset and clock advance (spec 4.6, decision 133)."""
+"""Part 4 platform operations: test reset and clock advance (spec 4.5, Addendum rule 7)."""
+
+from __future__ import annotations
 
 from collections.abc import Sequence
 
@@ -6,7 +8,7 @@ from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from app import clock, config, gaps, notifications, observability
+from app import clock, config, escalations, gaps, notifications, observability
 from tools.seed_part1 import seed as install_seed
 
 # Truncate order is free under CASCADE. Owner role only.
@@ -82,21 +84,24 @@ def reset() -> None:
         engine.dispose()
 
 
-def advance_clock(seconds: int) -> dict[str, int | list[str]]:
-    """POST /v1/test/clock/advance: add to the offset, then sweep and deliver once (spec 4.6)."""
+def advance_clock(seconds: int) -> dict[str, object]:
+    """POST /v1/test/clock/advance: add to the offset, then sweep, fire due reminders and
+    deliver once each, in that order (Phase 4 spec 4.5). Zero seconds is allowed (LIM-03)."""
     require_test_environment()
-    if seconds < 1:
-        raise ValueError("seconds must be at least 1")
+    if seconds < 0:
+        raise ValueError("seconds must be non-negative")
     new_offset = clock.offset_seconds() + seconds
     set_offset_seconds(new_offset)
     from app.db import get_engine
 
     engine = get_engine()
     opened = gaps.sweep(engine)
+    fired = escalations.fire_due(engine)
     delivered = notifications.deliver_due(engine)
     return {
         "seconds_advanced": seconds,
         "offset_seconds": new_offset,
         "gaps_opened": opened,
+        "reminders_fired": fired,
         "deliveries": delivered,
     }

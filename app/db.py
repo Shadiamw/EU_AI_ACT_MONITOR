@@ -1,4 +1,4 @@
-"""STUB for Part 4 (database sessions): the application engine and per-request sessions.
+"""Part 4 database sessions: the application engine and per-request sessions.
 Part 1 uses it as it is (decision 131).
 
 The engine connects as the application role (DATABASE_URL) at READ COMMITTED, which append

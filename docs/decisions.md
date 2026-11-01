@@ -1349,6 +1349,174 @@ Decided 17 and 18 October 2026.
      `default_factory=time.time` (`app/suite_runner.py:45`) is left as it is: the clock-rule
      test does not flag it and the addendum names only line 102.
 
+135. **Test endpoints require keys and return contract bodies (Phase 4 spec 4.5; Addendum
+     rule 7).** `POST /v1/test/reset` returns 204 with an empty body. `POST /v1/test/clock/advance`
+     returns only `{ "simulated_time": <ISO-8601 UTC> }`; the previous `ok`,
+     `seconds_advanced`, `offset_seconds`, `gaps_opened` and `deliveries` fields are logged on
+     the `api` logger instead. Both accept REVIEWER or VIEWER. Zero seconds is allowed so a
+     caller can read simulated now without moving the clock (LIM-03).
+
+136. **Environment check before authentication on test routes (Addendum rule 7).** Outside
+     `ENVIRONMENT=test` the handlers raise the standard 404 before any key is read, so a missing
+     key never becomes 401 on a production deploy. The check is the first statement inside the
+     route dependency, not a later body guard.
+
+137. **Seed-key bootstrap for an empty `api_key` table, restricted.** Reset needs a REVIEWER or
+     VIEWER key, but the table is empty until reset seeds it. In `ENVIRONMENT=test` only (the
+     environment check comes first, decision 136), when the database lookup finds no row for the
+     presented key, the test-route dependency also accepts the configured `REVIEWER_KEY` and
+     `VIEWER_KEY` digests, with their own roles (the same values the seed writes). It never
+     accepts the system key, a stored row always wins (a stored row for the reviewer key with
+     the VIEWER role makes it a viewer), and ordinary routes never use it. Kept by decision 5 of
+     the completion plan, with these limits pinned by tests in `tests/api/test_platform.py`.
+
+138. **Clock advance runs sweep, fire_due and deliver_due in that order (spec 4.5).** After the
+     offset is updated, `gaps.sweep`, `escalations.fire_due` and `notifications.deliver_due`
+     each run once so a reminder whose instant was crossed is delivered before the response
+     returns. Part 3's `fire_due` is still a stub on this branch and returns `[]`.
+
+139. **Simulated clock survives ordinary process start (Addendum rule 7).** `runtime.seed()` no
+     longer writes `offset_seconds = 0`. Only `prepare` (Fly `release_command`) and
+     `POST /v1/test/reset` zero the offset. An idle stop or restart mid-demo therefore keeps the
+     simulated time. Every deploy still resets it through `prepare`.
+
+140. **`/healthz` returns 503 when the database is unreachable (LIM-09).** A connection or query
+     failure yields the same body shape with zeros/`null` and status 503, instead of an uncaught
+     500. The stale-sweeper 503 rule is unchanged.
+
+141. **`/v1/test/suite` is REVIEWER only and runs only the HTTP runner (spec 4.5, LIM-02).**
+     Named exception to the common REVIEWER-or-VIEWER matrix (Addendum rule 7). The scopes are
+     `smoke` (a few HTTP calls) and `acceptance`; any other scope, including the former `full`,
+     is 400 MALFORMED_BODY. `acceptance` runs `python -m pytest tests/acceptance
+     --confcutdir=tests/acceptance -p no:cacheprovider -q --tb=short` as a subprocess against
+     this service's own URL (`SUITE_BASE_URL`, default `http://127.0.0.1:8000`), with the
+     service's keys and **without** `DATABASE_URL` and `DATABASE_ADMIN_URL`, and calls
+     `platform.reset()` before the run and again after it in a `finally`, so the seeded keys and
+     a clean state are restored even when the run fails or times out (20 minutes). The previous
+     in-process path ran `pytest tests` or a node-id subset with the container's database URLs,
+     so tests/conftest.py rebuilt the service's own database; it is removed. The database-level
+     suite runs only in CI. The image already has what the runner needs (Dockerfile copies
+     `tests/`, installs `[dev]`). The console and the smoke path send the reviewer key.
+
+142. **Console and demo_showcase send keys; the console's review panel (spec 4.6).** Requiring keys
+     would otherwise break `app/static/app.js` and `tools/demo_showcase.sh` (Addendum rule 7).
+     The review panel uses the four pinned disposition labels and shows empty harm evidence as
+     the literal `no evidence available`. Completed per spec 4.6 and decision 5 of the
+     completion plan:
+     - "Act as" defaults to Viewer, because loading as a reviewer starts the review (D3).
+     - No harm status is pre-selected; only a stored CONFIRMED or NOT_APPLICABLE is shown. An
+       unchosen field is sent as `PREFILLED_PENDING_CONFIRMATION`, so the service answers 409
+       HARM_FIELDS_UNCONFIRMED rather than the console confirming anything.
+     - Revisions are a table of the contract keys `prior_tier`, `new_tier`, `reviewer_id`,
+       `revised_at` (the earlier code read a `tier` key the contract does not have).
+     - The risk indicator's "now" is the simulated clock, read with `POST
+       /v1/test/clock/advance {"seconds": 0}` and the selected key, once per explicit event
+       load, never on a timer or a poll. Spec 4.6 names no side-effect-free source and
+       Addendum rule 7 names this call as the way to read simulated now. Its side effect is
+       recorded here and in README 13: the call also runs `gaps.sweep`, `escalations.fire_due`
+       and `notifications.deliver_due` once (spec 4.5), which is what the worker does on its
+       next pass anyway. Outside the test environment the call is 404 and the browser clock is
+       used; the indicator names the clock it used.
+     - The escalation timeline keeps Part 3's formula for display only.
+     - API errors are shown as `HTTP <status> <error_code>: <message>`.
+     - The suite panel offers smoke and acceptance only (decision 141).
+
+143. **Webhook sink is a separate standard-library process (spec 4.9).** `tools/webhook_sink.py`
+     stores POSTed JSON per channel in memory and exposes GET/DELETE. It runs as its own
+     process, never inside the API: the compose file runs it as the `sink` service (the same
+     image, its own entrypoint and healthcheck, port 8765), and the API reaches it as
+     `http://sink:8765/hook/<channel>` while the host reads the channel through the published
+     port. Channels are unauthenticated by design (LIM-06); README 13 says so. The compose `api`
+     service also gets `WEBHOOK_SINK_URL=http://sink:8765/hook/suite`, because the API process
+     runs the in-service HTTP runner (`POST /v1/test/suite`, scope acceptance) with its own
+     environment; without it that run skips the sink tests and still reports passed.
+
+144. **Model 5 fixtures are data plus an HTTP runner (spec 4.7).**
+     `tests/fixtures/phase4/model5_examples.json` holds Ex-1, Ex-2 and Ex-4 in the spec 4.7 step
+     format (`at` offset from d0, `as`, `call`, `body`, `expect`), plus two keys of this
+     branch: `sink` (what the receiver holds: a flag count or the exact reminder percentages)
+     and `expect.audit_delta` (the exact ledger entries a call appended for the event, read by
+     exporting before and after). `tools/run_model5.py` drives them against any `BASE_URL`, stops
+     an example at its first mismatch and exits 1 if any example failed;
+     `tests/acceptance/test_model5.py` runs each example as one runner test. Every expected
+     value comes from spec 4.7 (and the spec and contract sections it rests on), not from the
+     code; the fixture README lists the source per step. Ex-4's ledger follows Addendum rule 9
+     (the view is logged, the 403 and 409 append nothing). A redelivered notification_id counts
+     once (spec 3.4). They need Parts 1–3 and fail, not skip, without them.
+
+145. **HTTP acceptance lives under `tests/acceptance/`, is integration-marked and runs in
+     isolation (spec 4.8, Addendum rule 10).** Tests use only httpx and environment keys. The
+     runner is invoked as `pytest tests/acceptance --confcutdir=tests/acceptance`, so
+     `tests/conftest.py` (whose session fixture rebuilds the database named by
+     `DATABASE_ADMIN_URL`) is never loaded and no database is needed. Its own conftest
+     registers the `integration` marker, resets before every test and skips the folder when
+     `BASE_URL` is unset. The in-process CI steps run with `--ignore=tests/acceptance`; the
+     image job runs the runner against the compose stack under the Addendum 9.5 condition.
+     `tests/test_runner_isolation.py` sits outside the folder so the in-process suite checks
+     the isolation on every branch. The sink fixture still skips its tests when
+     `WEBHOOK_SINK_URL` is unset, so a runner without a sink can run the rest; instead, the image
+     job's runner step fails when a sink is configured and the JUnit file reports any skip
+     (`tests/test_stack_config.py`).
+
+146. **`tools/demo_phase4.py` is HTTP-only and walks spec section 12's ten steps in order.**
+     Each step checks its statuses, body fields, state, ledger counts and receiver content and
+     prints `step N ok` or `step N FAILED`; the first mismatch ends the demo with exit 1 (a 501
+     or a missing reminder is a failure; `--keep-going` runs the remaining steps for a report
+     and still exits 1). It uses two receiver channels: `WEBHOOK_SINK_URL` for step 2's
+     both-types webhook, and the same URL plus `-reminder` for a reminder-only webhook that must
+     hold the three reminders and no flag. Step 10 exports the ledger and runs
+     `tools/verify_ledger.py` on it, which must exit 0. `tests/acceptance/test_demo.py` runs it
+     inside the runner.
+
+147. **Part 4 branches from the base commit, not from Part 1 or Part 2 (Addendum 9.2).** The
+     branch `phase4-part4-platform` starts at `4d1487e`. Merge order into `phase4-integration`
+     remains 2, 1, 3, 4.
+
+148. **Gap events after clock advance are observed through the events API.** Because the clock
+     response no longer returns `gaps_opened`, tests and demos list
+     `GET /v1/events?type=monitoring_gap` (Addendum 9.10).
+
+149. **Decision numbers 149–153 are reserved for deployment follow-ups on this branch.** The
+     development-deploy merge, the separate Fly webhook app, and CI gating of the acceptance
+     runner onto `phase4-integration` / main land in later commits and fill these numbers when
+     the files change.
+
+150. Reserved (deployment / Fly receiver).
+151. **The acceptance gate merges Phase 3 and Phase 4 criteria per key, as a union (spec
+     4.10).** `tools/check_acceptance.py` builds its list with `required_criteria()`: every
+     Phase 3 entry in `REQUIRED` stays, and a Phase 4 entry in `PHASE4_REQUIRED` adds its node
+     ids to the same criterion, in order and without duplicates. The previous
+     `{**REQUIRED, **PHASE4_REQUIRED}` replaced a key, so a Phase 4 AC-15 list would have
+     dropped the Phase 3 `tests.api.test_audit::` requirement. An empty Phase 4 tuple adds
+     nothing. A skipped or failed required test still counts as missing.
+     `tests/test_check_acceptance.py` covers the union, the skip rule and the usage error. The
+     Phase 4 node ids themselves are filled in at the final integration.
+152. Reserved (Vercel console `API_BASE_URL` / demo recording).
+153. **Part 4's finished modules are no longer labelled stand-ins.** `app/db.py`,
+     `tests/sql/bootstrap_roles.sql` and `tools/seed_part1.py` were written as "STUB for Part 4"
+     before Part 4 existed, and README section 1 listed them as "Part 4 stand-ins (STUB)". They
+     are Part 4's own modules now (the seed runs in `prepare`, at api and worker start and in
+     reset), so their first-line labels and the README row say so. Only docstrings, an SQL
+     comment and the README row changed; no code line did. The remaining `STUB` hits are Parts
+     1–3's (review, deadlines, escalations, the worker's overdue counter) and theirs to remove.
+     The error text "the Part 1 seed stand-in runs only in ENVIRONMENT=test" is a code line and
+     stays. This number was reserved for model confirmation document updates after integration;
+     those still wait for the integration.
+
+     **The start-up seed no longer races.** The api and worker processes both seed at start
+     (decision 109) and compose starts them together. Every seeded table used INSERT ... ON
+     CONFLICT DO NOTHING and the ledger's SEED is serialized by the append lock, except
+     api_key, which was DELETE-all then INSERT. After `prepare`, the second process's DELETE
+     waited on the first's row locks, found those rows gone, and its INSERT then hit the
+     first's new rows: UniqueViolation on `api_key_pkey`, and that process exited (seen once
+     in R4). The seed now deletes only the keys no longer configured and upserts the three
+     (`ON CONFLICT (key_hash) DO UPDATE`), so a concurrent seed waits and updates instead.
+     Stale keys are still removed and a configured key still gets its configured role.
+     `tests/test_seed_concurrency.py` holds one seed open until the other is blocked on it,
+     then commits; it failed before the change. Only `tools/seed_part1.py` changed;
+     `app/runtime.py` and the ledger files did not, and neither file is changed on
+     phase4-integration.
+
 ## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
 
 154. **A lone surrogate in harm-field evidence is malformed (Phase 4 spec 1.5, first row;

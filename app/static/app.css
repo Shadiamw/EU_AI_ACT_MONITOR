@@ -127,6 +127,79 @@ main {
   animation-delay: 0.08s;
 }
 
+.panel.review {
+  animation-delay: 0.05s;
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 0.9rem;
+}
+
+.subhead {
+  margin: 0 0 0.55rem;
+  font-size: 0.95rem;
+}
+
+.harm-fields {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.harm-card {
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.75rem 0.85rem;
+}
+
+.harm-card strong {
+  display: block;
+  font-size: 0.82rem;
+  margin-bottom: 0.35rem;
+}
+
+.harm-card .evidence {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  margin-bottom: 0.55rem;
+  white-space: pre-wrap;
+}
+
+.harm-card .choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.8rem;
+}
+
+.stack {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+select,
+textarea {
+  font: 500 0.85rem/1.3 var(--sans);
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+}
+
+.risk {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.85rem;
+  border-left: 3px solid var(--accent);
+  background: rgba(15, 118, 110, 0.08);
+  font-size: 0.88rem;
+}
+
 .panel-head h1 {
   margin: 0;
   font-size: 1.15rem;
@@ -285,4 +358,27 @@ footer .api-base {
   .top {
     flex-direction: column;
   }
+}
+
+.revisions {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-collapse: collapse;
+  font: 400 0.78rem/1.4 var(--mono);
+  color: var(--ink);
+}
+
+.revisions caption {
+  text-align: left;
+  font: 600 0.8rem/1.4 var(--sans);
+  color: var(--ink-soft);
+  padding-bottom: 0.35rem;
+}
+
+.revisions th,
+.revisions td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+  overflow-wrap: anywhere;
 }

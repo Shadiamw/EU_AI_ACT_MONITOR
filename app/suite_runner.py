@@ -1,4 +1,15 @@
-"""Run the project's pytest suite from the test-environment API (UI / Pod demo).
+"""The console suite runner (Phase 4 spec 4.5 "Console suite runner", LIM-02; decision 141).
+
+Two scopes, both over HTTP against this service:
+
+- smoke: a few calls to the public surface (no pytest).
+- acceptance: the HTTP acceptance runner (tests/acceptance, spec 4.8) as a subprocess, against
+  this service's own URL, with a reset before and after the run so the seeded keys and a clean
+  state are always restored, even when the run fails or crashes.
+
+The database-level pytest suite never runs in a service: it runs only in CI. The runner is
+given no DATABASE_* variable and is started with --confcutdir=tests/acceptance, so
+tests/conftest.py (which rebuilds the database it is pointed at) is never loaded.
 
 Only one run is active at a time. Output is kept in memory for the UI to poll.
 """
@@ -7,6 +18,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -14,26 +26,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app import clock
+from app import clock, platform
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Subsets that map to the Phase 3 acceptance criteria named by tools/check_acceptance.py.
-_ACCEPTANCE_NODEIDS = (
-    "tests/worker/test_gaps.py::test_ac02_two_missed_intervals_do_not_open_a_gap_and_three_do",
-    "tests/worker/test_worker_system.py::test_gap_to_delivery_to_close_and_reverify",
-    "tests/worker/test_notifications.py::test_delivery_appends_delivered_with_integer_latency_and_boolean_bound",
-    "tests/worker/test_notifications.py::test_within_bound_compares_latency_with_the_configured_bound",
-    "tests/worker/test_notifications.py::test_ac04_the_bound_is_configurable_to_five_minutes",
-    "tests/worker/test_notifications.py::test_ac04_a_slow_receiver_with_a_low_bound_is_not_within_bound",
-    "tests/test_verify.py::test_ac06_payload_tamper_is_detected",
-    "tests/api/test_export_verify.py::test_ac06_payload_tamper_through_the_api",
-    "tests/test_schema_permissions.py::test_app_role_has_insert_and_select_only",
-    "tests/test_schema_permissions.py::test_trigger_definition_blocks_update_and_delete_but_not_truncate",
-    "tests/api/test_audit.py",
+_SCOPES = frozenset({"smoke", "acceptance"})
+DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+RUNNER_COMMAND = (
+    "-m",
+    "pytest",
+    "tests/acceptance",
+    "--confcutdir=tests/acceptance",
+    "-p",
+    "no:cacheprovider",
+    "-q",
+    "--tb=short",
 )
-
-_SCOPES = frozenset({"smoke", "acceptance", "full"})
+# Never handed to the runner: it talks HTTP only (spec 4.8).
+_DATABASE_VARIABLES = ("DATABASE_URL", "DATABASE_ADMIN_URL")
+RUNNER_TIMEOUT_SECONDS = 60 * 20
 
 _lock = threading.Lock()
 _current: SuiteRun | None = None
@@ -90,7 +101,7 @@ def _execute(run: SuiteRun) -> None:
         if run.scope == "smoke":
             code, text = _run_smoke()
         else:
-            code, text = _run_pytest(run.scope)
+            code, text = _run_acceptance()
         run.output = text
         run.exit_code = code
         run.status = "passed" if code == 0 else "failed"
@@ -121,7 +132,7 @@ def _run_smoke() -> tuple[int, str]:
     import urllib.error
     import urllib.request
 
-    base = os.environ.get("SUITE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    base = service_base_url()
     lines: list[str] = [f"smoke against {base}"]
     ok = True
 
@@ -151,9 +162,16 @@ def _run_smoke() -> tuple[int, str]:
     if status not in (200, 503):
         ok = False
 
-    status, body = post("/v1/test/reset")
+    reviewer = os.environ.get("REVIEWER_KEY", "")
+    reset_headers = {"Authorization": f"Bearer {reviewer}"} if reviewer else {}
+    req = urllib.request.Request(base + "/v1/test/reset", method="POST", headers=reset_headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            status, body = resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        status, body = exc.code, exc.read().decode("utf-8", errors="replace")
     lines.append(f"POST /v1/test/reset -> {status} {body[:200]}")
-    if status not in (200, 204):
+    if status != 204:
         ok = False
 
     viewer = os.environ.get("VIEWER_KEY", "")
@@ -174,30 +192,36 @@ def _run_smoke() -> tuple[int, str]:
     return (0 if ok else 1), "\n".join(lines)
 
 
-def _run_pytest(scope: str) -> tuple[int, str]:
-    if not (ROOT / "tests").is_dir():
-        return 1, "tests/ is not present in this image; rebuild with tests included"
+def service_base_url() -> str:
+    """This service's own URL: SUITE_BASE_URL when set, else the API's port on loopback."""
+    return os.environ.get("SUITE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+
+
+def runner_environment() -> dict[str, str]:
+    """The service's environment (its keys, any WEBHOOK_SINK_*), without the database URLs,
+    with BASE_URL set to this service."""
+    env = {k: v for k, v in os.environ.items() if k not in _DATABASE_VARIABLES}
+    env["BASE_URL"] = service_base_url()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def _run_acceptance() -> tuple[int, str]:
+    """The HTTP acceptance runner against this service, between two resets (spec 4.5)."""
+    if not (ROOT / "tests" / "acceptance").is_dir():
+        return 1, "tests/acceptance is not present in this image; rebuild with tests included"
+    platform.reset()
     try:
-        import pytest  # noqa: F401
-    except ImportError:
-        return 1, "pytest is not installed; image must install the [dev] extra"
-
-    cmd = ["python", "-m", "pytest", "-q", "--tb=line"]
-    if scope == "acceptance":
-        cmd.extend(_ACCEPTANCE_NODEIDS)
-    else:
-        cmd.append("tests")
-
-    env = os.environ.copy()
-    # Prefer the container's DATABASE_* URLs; conftest only setdefaults.
-    proc = subprocess.run(
-        cmd,
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60 * 45,
-        check=False,
-    )
+        proc = subprocess.run(
+            [sys.executable, *RUNNER_COMMAND],
+            cwd=ROOT,
+            env=runner_environment(),
+            capture_output=True,
+            text=True,
+            timeout=RUNNER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    finally:
+        platform.reset()
     text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
     return proc.returncode, text.strip() or f"pytest exited {proc.returncode}"

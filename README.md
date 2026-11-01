@@ -43,7 +43,7 @@ the chain, either with `GET /v1/ledger/verify` or with the standard-library scri
 | Standalone verifier | `tools/verify_ledger.py` |
 | The three-entry fixture | `tests/fixtures/fixture_export.json` |
 | Part 1 API, authentication and event reads | `app/ingestion.py`, `app/api/ingestion_routes.py`, `app/auth.py`, `app/events.py` |
-| Part 4 stand-ins (STUB): clock, sessions, baseline migration, seed fixtures | `app/clock.py`, `app/db.py`, `migrations/versions/0001_platform_stub.py`, `tools/seed_part1.py` |
+| Part 4 platform: clock, sessions, baseline migration, seed fixtures | `app/clock.py`, `app/db.py`, `migrations/versions/0001_platform_stub.py`, `tools/seed_part1.py` |
 
 ## 2. Hash definition
 
@@ -756,38 +756,172 @@ END OF OWNER NOTES.
 
 ## 13. Phase 4 Part 4: platform
 
-OWNER NOTES, delete this block when your section is written.
+Branch: `phase4-part4-platform`, from the Phase 4 base commit `4d1487e`. Owner: Bhanu.
 
-Branch name: chosen by the owner (for example phase4-part4-platform).
+### What this part owns
 
-Stubs replaced: none from the base commit. Part 4 extends REQUIRED in tools/check_acceptance.py
-on its own branch, and writes the HTTP acceptance runner (tests/acceptance),
-tools/demo_phase4.py and the Model 5 fixtures that the CI steps conditioned by the base commit
-run.
+Contract test endpoints, the simulated clock's process lifetime, `/healthz`, the console
+reviewer panel, the Model 5 fixtures, the HTTP acceptance runner, the webhook sink, the Phase 4
+demo script, and the deployment notes that sit on top of the base commit.
 
-Slots filled: decisions 134 to 153 under their heading in docs/decisions.md (134 is the base
-commit's); this section.
+| Surface | Contract behaviour |
+| --- | --- |
+| `POST /v1/test/reset` | REVIEWER or VIEWER; **204** empty body; truncates Phase 4 tables when present |
+| `POST /v1/test/clock/advance` | REVIEWER or VIEWER; body `{ "seconds": <int≥0> }`; **200** `{ "simulated_time" }` only; then `gaps.sweep` → `escalations.fire_due` → `notifications.deliver_due` |
+| `POST /v1/test/suite` | REVIEWER only (named exception to the common matrix). Scopes `smoke` and `acceptance` only; anything else is 400 |
+| Outside `ENVIRONMENT=test` | Standard 404 **before** any key check |
+| `/healthz` | Adds `overdue_escalations`; **503** when the database is unreachable (LIM-09) or the sweeper is stale |
 
-Files owned (Phase 4 Addendum 9.6): app/platform.py, the test routes, app/runtime.py,
-app/suite_runner.py, /healthz, app/static, tools/ (including the guarded seed row's data),
-tests/acceptance, tests/fixtures/phase4, CI, the deployment files, tests/api/test_platform.py,
-tests/part1/test_smoke.py, docs/models.
+Ordinary process start (`runtime.seed`) does **not** zero the clock offset. Only `prepare` and
+reset do, so a Fly idle stop mid-demo does not snap simulated time back to wall time.
 
-Phase 3 tests changed (9.10): tests/api/test_platform.py and tests/part1/test_smoke.py (204 on
-reset, the clock body, keys, zero allowed, gap events through GET
-/v1/events?type=monitoring_gap).
+**Test-route keys (decision 137).** In `ENVIRONMENT=test` only, when no `api_key` row matches the
+presented key, the test routes also accept the configured `REVIEWER_KEY` and `VIEWER_KEY` (with
+their roles), so a reset works on an empty key table. The system key is never accepted this way,
+a stored row always wins, and ordinary routes never use it.
 
-Tests to mark integration (rule 10): /healthz with the real overdue_escalations; the seed row
-against the real table; the acceptance runner, the Model 5 fixtures, the demo script and the
-console panel.
+**The console suite runner (LIM-02, decision 141).** `acceptance` runs the HTTP acceptance runner
+(`tests/acceptance`) as a subprocess against this service's own URL (`SUITE_BASE_URL`, default
+`http://127.0.0.1:8000`), with **a reset before and after the run**, even when it fails. The
+runner gets the service's keys and no `DATABASE_*` variable, and is started with
+`--confcutdir=tests/acceptance`. `smoke` calls `/healthz`, reset and ledger verify. **The
+database-level pytest suite never runs in a service; it runs only in CI** (there is no `full`
+scope). The image has what the runner needs: the Dockerfile copies `tests/` and installs the
+`[dev]` extra (pytest; httpx is a main dependency).
 
-Merge order: phase4-integration is created from main when the first part is ready; the parts
-merge into it in the order 2, 1, 3, 4, and it then merges into main with a merge commit (Phase
-4 Addendum 9.2).
+### Console, fixtures, demo
 
-Report contents (Phase 4 Addendum 9.8): the tests that pass; the tests marked integration and
-why; the stubs relied on; the files outside your ownership that you touched; the Phase 3 tests
-you changed and why; your UNCERTAINTIES. For every AC you cover, list the exact test node ids,
-which go into REQUIRED in tools/check_acceptance.py at integration (9.5).
+- Console (`app/static`, served at `/ui/`): event review panel with the four pinned disposition
+  labels, harm-field confirmations, risk indicator (REQ-15), a revisions table and the
+  escalation timeline (see "Console" below).
+- Model 5 fixtures: [`tests/fixtures/phase4/`](tests/fixtures/phase4/) (Ex-1, Ex-2, Ex-4; the
+  README there gives the step format and the source of every expected value), run with
+  `python tools/run_model5.py [--example ex1]` and the runner's environment variables. It exits
+  1 at the first mismatch in any example (decision 144).
+- Webhook sink: `python tools/webhook_sink.py` (POST/GET/DELETE `/hook/{channel}`), and the
+  `sink` service in `docker-compose.yml` on port 8765. **Anything sent to a channel is readable
+  by anyone who knows the channel name**: the sink has no authentication (LIM-06).
+- Demo: `python tools/demo_phase4.py [--keep-going]`, HTTP only, with `BASE_URL`, the three keys,
+  `WEBHOOK_SINK_URL` and `WEBHOOK_SINK_READ_URL`. It walks spec section 12's ten steps in order,
+  prints `step N ok` or `step N FAILED`, and exits 1 on the first mismatch (status, body field,
+  state, ledger count or receiver content); `--keep-going` reports every step and still exits 1.
+  It registers step 2's webhook on `WEBHOOK_SINK_URL` and a reminder-only webhook on the same
+  URL plus `-reminder`, and ends by exporting the ledger and running `tools/verify_ledger.py`
+  on it (decision 146). Before Parts 1–3 are merged it fails at the first step they own.
+- HTTP acceptance: `tests/acceptance/` (see below).
 
-END OF OWNER NOTES.
+### Console (spec 4.6, decision 142)
+
+- **Act as** defaults to **Viewer**. Loading an event as a reviewer starts the review (D3, an
+  audited state change), so it is an explicit choice.
+- Harm fields in contract order, each with its stored evidence or the literal `no evidence
+  available`. **No status is pre-selected**: only a decision already stored (CONFIRMED or
+  NOT_APPLICABLE) is shown. A field left unchosen is sent as pending, so the service answers
+  409 `HARM_FIELDS_UNCONFIRMED`; the console never confirms anything itself.
+- Revisions table from the contract keys `prior_tier`, `new_tier`, `reviewer_id`, `revised_at`.
+- Risk indicator text as spec 4.6, beside `deadline_utc`. **"Now" is the simulated clock, read
+  with `POST /v1/test/clock/advance {"seconds": 0}` with the selected key, once per event load**
+  (Addendum rule 7 names this as the way to read simulated now; spec 4.6 names no side-effect
+  free source). **Side effect:** that call also runs `gaps.sweep`, `escalations.fire_due` and
+  `notifications.deliver_due` once (spec 4.5), so loading an event can open a due gap and send due
+  reminders and deliveries, exactly as the worker would on its next pass. It is never called on
+  a timer or a poll. Outside `ENVIRONMENT=test` the call is 404 and the browser clock is used;
+  the indicator says which clock it used.
+- Escalation timeline: the 50/80/100 % instants with Part 3's formula (anchor = first
+  `assigned_at`, `anchor + ceil((deadline − anchor) × p / 100)` µs), for display only.
+- API errors are shown as `HTTP <status> <error_code>: <message>`.
+
+**Manual check (needs Parts 1 and 2; run on the integration branch).** Reset; ingest
+`accuracy = 0.61`; load the event as Viewer (state stays FLAGGED; rights evidence shown, the
+other three `no evidence available`; no option selected); switch to Reviewer and load (state
+UNDER_REVIEW); submit OTHER_SERIOUS with a field unchosen (409 `HARM_FIELDS_UNCONFIRMED` shown);
+choose all four and submit (deadline +15 d, three timeline instants); submit DEATH (one revisions
+row OTHER_SERIOUS → DEATH by rev-1, deadline +10 d from the same anchor); as Viewer submit (403
+`FORBIDDEN_ROLE` shown).
+
+### HTTP acceptance runner
+
+`tests/acceptance` talks to a running stack over HTTP only (spec 4.8). Run it from the
+repository root with its own conftest only:
+
+```bash
+docker compose up -d --build --wait     # API, worker, PostgreSQL and the sink
+BASE_URL=http://127.0.0.1:8000 \
+WEBHOOK_SINK_URL=http://sink:8765/hook/ci \
+WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/ci \
+pytest tests/acceptance --confcutdir=tests/acceptance -p no:cacheprovider
+```
+
+- `--confcutdir=tests/acceptance` is required. It keeps `tests/conftest.py` out, whose session
+  fixture downgrades and upgrades the database named by `DATABASE_ADMIN_URL`. The runner needs
+  no `DATABASE_*` variable and never connects to a database
+  (`tests/test_runner_isolation.py`).
+- Without `BASE_URL` every test is skipped. Each test starts with `POST /v1/test/reset`.
+- `WEBHOOK_SINK_URL` is the address the **API** posts to; `WEBHOOK_SINK_READ_URL` is where the
+  **runner** reads the same channel back (it defaults to `WEBHOOK_SINK_URL`). With compose they
+  differ, because the API container reaches the sink as `sink`. Keys come from `INGEST_KEY` (or
+  `INGEST_KEY_SYS_42`), `REVIEWER_KEY` and `VIEWER_KEY`, with the test defaults.
+- The in-process suite skips this folder: CI runs `pytest --ignore=tests/acceptance`. The image
+  job runs the runner, `tools/run_model5.py` and `tools/demo_phase4.py` against the compose
+  stack, under the Addendum 9.5 condition (main, `phase4-integration`, pull requests into main).
+- The acceptance gate (`tools/check_acceptance.py`) merges the Phase 3 and Phase 4 criteria
+  per criterion as a union (decision 151).
+
+**One file per criterion (spec 4.8).** The expected values come from the contract, the Phase 3
+and Phase 4 specifications and sections 10.3, 10.5, 11.2 and 11.6 of this README, never from
+the code. `tests/acceptance/api.py` holds the HTTP helpers and those values. Ids are
+`tests/acceptance/<file>::<test>`:
+
+| AC | File | Tests |
+| --- | --- | --- |
+| AC-01 | `test_ac01_ingest.py` | `test_an_hour_at_the_default_interval_is_collected_without_a_gap`, `test_every_sample_is_stored_once_with_a_distinct_id` |
+| AC-02 | `test_ac02_gaps.py` | `test_two_withheld_intervals_open_no_gap`, `test_three_withheld_intervals_open_one_gap_event`, `test_a_sample_after_the_outage_closes_the_gap`, `test_the_gap_is_notified_within_the_configured_delay` (sink) |
+| AC-03 | `test_ac03_flagging.py` | `test_contract_example_1_flags_with_sample_and_event_ids`, `test_a_value_exactly_at_the_threshold_does_not_flag` (drift, performance), `test_one_unit_beyond_the_threshold_flags_with_the_exact_fields` (drift, performance) |
+| AC-04 | `test_ac04_latency.py` | `test_the_flag_notification_is_delivered_within_the_bound` (sink), `test_a_webhook_registered_only_for_reminders_gets_no_flag` (sink) |
+| AC-06 | `test_ac06_export_verify.py` | `test_the_export_has_the_pinned_entry_format`, `test_the_export_verifies_offline_and_matches_the_server`, `test_an_edited_record_is_named_by_the_offline_verifier` |
+| AC-07 | `test_ac07_harm_fields.py` | `test_fields_with_evidence_are_prefilled_and_the_others_are_blank`, `test_the_report_before_reviewer_action_is_refused`, `test_a_field_left_pending_is_refused_and_nothing_is_recorded`, `test_each_confirmation_records_the_reviewer_and_the_time` |
+| AC-08 | `test_ac08_report_guard.py` | `test_the_report_without_a_disposition_is_409_and_changes_nothing` (flagged, under review), `test_a_gap_event_never_reaches_reporting`, `test_an_unknown_event_is_404`, `test_after_a_disposition_the_guard_passes_to_the_phase_5_report` |
+| AC-09 | `test_ac09_tiers.py` | `test_each_of_the_four_options_is_accepted`, `test_a_fifth_option_is_malformed_and_changes_nothing`, `test_not_serious_without_a_rationale_is_contract_example_3`, `test_not_serious_with_the_rationale_omitted_is_example_3`, `test_the_rationale_check_comes_before_the_event_lookup`, `test_not_serious_with_a_rationale_closes_with_no_deadline` |
+| AC-10 | `test_ac10_revisions.py` | `test_a_revision_keeps_the_original_and_records_who_and_when`, `test_the_ledger_holds_both_decisions`, `test_a_same_tier_revision_is_listed_too` |
+| AC-11 | `test_ac11_deadlines.py` | `test_the_deadline_is_exactly_the_window_after_assignment` (2, 10, 15 days), `test_a_stricter_revision_shortens_the_deadline_from_the_original_assignment`, `test_a_looser_revision_without_a_rationale_does_not_extend_the_deadline`, `test_a_looser_revision_with_a_rationale_extends_it_and_logs_the_rationale` |
+| AC-12 | `test_ac12_reminders.py` | `test_the_instants_are_the_spec_table`, `test_reminders_fire_at_50_80_and_100_percent_and_never_early` (sink), `test_the_reminder_body_is_the_pinned_shape` (sink) |
+| AC-14 | `test_ac14_role_matrix.py` | `test_role_matrix` (13 endpoints × no key, unknown key, system, viewer, reviewer), `test_a_non_reviewer_is_denied_both_actions_and_the_reviewer_is_not` (viewer, system) |
+| AC-15 | `test_ac15_audit.py` | `test_a_view_only_action_is_logged_with_the_viewer_and_the_time` (Phase 3), `test_a_view_by_one_user_and_an_edit_by_another_are_both_logged` (Phase 4 edit) |
+| AC-17 | `test_ac17_risk_gap.py` | `test_detection_and_the_assignment_deadline_are_both_visible_with_the_gap` |
+
+Beside the criteria, `test_model5.py::test_model5_example[ex1|ex2|ex4]` (sink) runs the Model 5
+fixtures and `test_demo.py::test_the_demo_walks_the_ten_steps` (sink) runs the demo, both
+against the same stack.
+
+What the HTTP runner cannot show, and where it is shown instead:
+
+- **"(sink)" tests skip without `WEBHOOK_SINK_URL`.** The in-service run (`POST /v1/test/suite
+  {"scope":"acceptance"}`) inherits the service's environment, so it skips them unless the
+  service sets that variable. The compose `api` service sets it
+  (`http://sink:8765/hook/suite`); a service started without it, and a "passed" from it, says
+  nothing about AC-02's notification, AC-04, AC-12, Model 5 or the demo. In CI the image job's
+  runner step fails if a sink is configured and any test skipped (decisions 143, 145).
+- **AC-04's alternate bound** (for example 5 min) needs a restart with another
+  `NOTIFY_MAX_DELAY_SECONDS`. The in-process worker tests cover it.
+- **AC-06's direct modification** bypasses the application, which HTTP cannot do. The runner
+  covers the export form (export, `tools/verify_ledger.py`, edit, verify again); the storage
+  permissions and the direct edit are in-process (`tests/test_schema_permissions.py`,
+  `tests/test_verify*.py`).
+- **AC-09's on-screen options** are the manual half: the console offers exactly the four tiers.
+- **AC-11 and AC-17 assume `DEADLINE_CALENDAR=calendar_days`** (the default), as README 10.7
+  says for Part 1.
+- **AC-14's "reviewer succeeds" for the report** is 409 before a disposition and 501 after
+  (D1); the report itself is Phase 5.
+
+### Phase 3 tests this part changed (Addendum 9.10)
+
+`tests/api/test_platform.py` and `tests/part1/test_smoke.py` now send a reviewer or viewer key,
+expect 204 on reset, `{simulated_time}` on advance (including zero seconds), and read gap events
+through `GET /v1/events?type=monitoring_gap`.
+
+### Integration-marked (Addendum rule 10)
+
+`/healthz` with real `overdue_escalations`, the seed row against the real `harm_context` table,
+`tests/acceptance`, the Model 5 runner, `tools/demo_phase4.py` and the console panel. They need
+Parts 1–3.
+
