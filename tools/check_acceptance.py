@@ -30,17 +30,60 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "AC-15": ("tests.api.test_audit::",),
 }
 
-# Filled at integration from the part reports (Addendum 9.5). Kept here so the merge of Part 4
-# only edits this mapping.
+# Filled at integration from the part reports (Addendum 9.5; integration decision 218). Merged
+# per criterion with REQUIRED, so AC-15 keeps the Phase 3 tests.api.test_audit:: entry.
 PHASE4_REQUIRED: dict[str, tuple[str, ...]] = {
-    # "AC-07": (),
-    # "AC-08": (),
-    # "AC-09": (),
-    # "AC-10": (),
-    # "AC-11": (),
-    # "AC-12": (),
-    # "AC-14": (),
-    # "AC-17": (),
+    "AC-07": (
+        "tests.part1.test_review_prefill::test_ac07_prefill_fills_the_rights_field_and_leaves_the_others_blank",
+        "tests.part1.test_review_prefill::test_no_context_row_gives_four_blank_fields",
+        "tests.part1.test_review_decisions::test_ac07_confirmation_record",
+        "tests.part1.test_review_integration::test_ac07_confirmation_record_through_the_api",
+    ),
+    "AC-08": (
+        "tests.part2.test_disposition_api::test_ac08_a_report_without_a_disposition_is_409_and_changes_nothing",
+    ),
+    "AC-09": (
+        "tests.part2.test_disposition_api::test_ac09_not_serious_without_a_rationale_is_contract_example_3",
+        "tests.part2.test_disposition_api::test_ac09_not_serious_with_a_rationale_closes_with_no_deadline",
+        "tests.part2.test_disposition_api::test_ac09_each_of_the_four_tiers_is_accepted",
+        "tests.part2.test_disposition_api::test_ac09_any_other_tier_is_malformed",
+        "tests.part2.test_disposition_integration::test_ac09_a_not_serious_first_disposition_has_no_escalation_rows",
+    ),
+    "AC-10": (
+        "tests.part2.test_disposition_api::test_ac10_a_revision_appends_a_row_and_keeps_the_original",
+        "tests.part2.test_disposition_schema::test_the_table_is_append_only",
+    ),
+    "AC-11": (
+        "tests.part2.test_disposition_api::test_ac11_the_deadline_runs_from_the_assignment_not_the_detection",
+        "tests.part2.test_disposition_api::test_ac11_revisions",
+        "tests.part2.test_deadlines::test_calendar_days_worked_examples",
+        "tests.part2.test_deadlines::test_working_days_from_a_sunday",
+        "tests.part2.test_deadlines::test_working_days_with_holidays",
+    ),
+    "AC-12": (
+        "tests.part3.test_escalations::test_ac12_fires_at_50_80_100_and_not_at_49_79_99",
+        "tests.part3.test_escalations::test_one_second_early_fires_nothing_and_the_instant_fires",
+        "tests.part3.test_escalations::test_a_big_jump_fires_every_percentage_once_in_order",
+        "tests.part3.test_escalations::test_no_duplicates_after_further_passes",
+        "tests.part3.test_escalations::test_two_callers_across_the_50_instant_fire_one_reminder_each_time",
+        "tests.part3.test_escalations_integration::test_no_duplicates_through_the_clock_advance_endpoint",
+        "tests.part3.test_escalations_integration::test_a_worker_pass_and_a_clock_advance_across_the_50_instant_50_times",
+    ),
+    "AC-14": (
+        "tests.part2.test_disposition_api::test_ac14_non_reviewers_are_denied_on_both_actions",
+        "tests.part2.test_disposition_api::test_ac14_the_reviewer_succeeds_on_both_actions",
+    ),
+    "AC-15": (
+        "tests.part2.test_disposition_api::test_ac15_a_view_by_the_viewer_and_an_edit_by_the_reviewer_are_both_audited",
+        "tests.part1.test_review_start::test_a_reviewer_view_moves_flagged_to_under_review",
+        "tests.part1.test_review_start::test_the_audit_trail_shows_the_review_start",
+        "tests.part1.test_review_start::test_a_viewer_view_changes_nothing",
+        "tests.part1.test_review_start::test_a_second_reviewer_view_appends_event_viewed_only",
+    ),
+    "AC-17": (
+        "tests.part1.test_review_integration::test_ac17_detection_time_and_assignment_anchored_deadline",
+        "tests.part1.test_review_detail::test_detected_at_survives_the_review_start_and_the_harm_decisions",
+    ),
 }
 
 
