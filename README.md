@@ -13,7 +13,7 @@ Where to look:
 - **This README:** what the ledger is, how to check it, how to run everything, and its known
   limits; section 8 covers the worker.
 - **[integration_notes.md](integration_notes.md):** what each part calls and provides, and what
-  Part 4 must do when it replaces a stub (sections 5.12 and 10).
+  Part 4 was to do when replacing a stub (sections 5.12 and 10).
 - **[docs/part1_test_map.md](docs/part1_test_map.md):** which test proves each Part 1 rule of
   the spec, and what happened to the first Part 1 tests.
 - **[docs/decisions.md](docs/decisions.md):** every settled decision, with its reason. "Decision
@@ -267,14 +267,14 @@ The three seeded keys (spec 5) are also required by the app: `INGEST_KEY_SYS_42`
 
 ```sh
 .venv/bin/alembic upgrade head      # runs as DATABASE_ADMIN_URL
-.venv/bin/alembic current           # expect: 0004 (head)
+.venv/bin/alembic current           # expect: 0007 (head)
 ```
 
-The chain follows spec 4.4: 0001 Platform (a stub for Part 4), 0002 Ledger, 0003 Detection
-(Part 1) and 0004 Notifications (Part 3, section 8). Migration 0002 grants ledger
-privileges to the user named in `DATABASE_URL`. It refuses to run if that user is the role
-running the migration. The stubs are listed in
-[integration_notes.md](integration_notes.md), section 10.
+The chain follows spec 4.4: 0001 Platform (Part 4), 0002 Ledger, 0003 Detection (Part 1) and
+0004 Notifications (Part 3, section 8), then Phase 4's 0005 Review, 0006 Dispositions and 0007
+Escalations (sections 10 to 12). Migration 0002 grants ledger privileges to the user named in
+`DATABASE_URL`. It refuses to run if that user is the role running the migration. The stubs
+Part 4 replaced are listed in [integration_notes.md](integration_notes.md), section 10.
 
 **A database built from the `development-gap-sweeper` branch** is at an older revision `0003`
 (`0003_worker.py`) that no longer exists, so `alembic downgrade base` fails with a missing
@@ -287,7 +287,7 @@ psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/boots
 ```
 
 Part 1's tables (metric samples, breach series, events and harm fields in 0003; API-key digests
-and threshold versions in the 0001 stub) and its endpoints are described in
+and threshold versions in 0001) and its endpoints are described in
 [docs/part1_api.md](docs/part1_api.md). To load the spec's seed fixtures by hand, run
 `ENVIRONMENT=test .venv/bin/python -m tools.seed_part1` after the migrations (decision 128).
 
@@ -372,7 +372,7 @@ effect at the next sweep or pass. Only the sweeper heartbeat uses real time
 | `retain_until`, the API time format and ids | `app/formats.py` |
 | Settings | `app/config.py` |
 | Tables `webhook`, `notification`, `notification_delivery` | `migrations/versions/0004_notifications.py` |
-| `monitored_system` and `sweeper_heartbeat` (Part 4's stub); `event` and `harm_field` (Part 1) | `migrations/versions/0001_platform_stub.py`, `migrations/versions/0003_detection.py` |
+| `monitored_system` and `sweeper_heartbeat` (Part 4's 0001); `event` and `harm_field` (Part 1) | `migrations/versions/0001_platform_stub.py`, `migrations/versions/0003_detection.py` |
 | Tests | `tests/worker/` |
 
 ### 8.1 Behaviour
@@ -435,7 +435,7 @@ constants, not settings.
 | Item | Decision |
 |---|---|
 | **Part 1 integration.** Ingest calls `gaps.close_if_open` and `notifications.enqueue` in its transaction; `GET /v1/events?type=monitoring_gap` lists worker gap events. | 93, 101 |
-| **Stub tables.** `monitored_system` and `sweeper_heartbeat` come from Part 4's stub migration 0001 until Part 4 replaces it ([integration_notes.md](integration_notes.md), section 10). `event` and `harm_field` are Part 1's real 0003. | 95, 127 |
+| **Platform tables.** `monitored_system` and `sweeper_heartbeat` come from Part 4's migration 0001, which keeps its stub-era file name `0001_platform_stub.py` ([integration_notes.md](integration_notes.md), section 10). `event` and `harm_field` are Part 1's real 0003. | 95, 127 |
 | **Webhooks registered after routing miss that notification.** A notification is routed once, to the webhooks subscribed at that moment. One routed to nobody waits for the first webhook. | 94 |
 | **At-least-once delivery.** A result that could not be recorded is retried when its lease runs out. | 94 |
 | **Webhook URLs are not checked for secrets.** Any http or https URL is stored as received and shown in the export; avoiding secrets in it is recommended. | 98 |
