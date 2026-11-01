@@ -46,6 +46,17 @@ def _phase3_passing() -> list[tuple[str, str, str]]:
     return cases
 
 
+def _required_passing() -> list[tuple[str, str, str]]:
+    """One passing case for every entry of the merged mapping the gate checks (REQUIRED plus
+    PHASE4_REQUIRED, per criterion)."""
+    cases = []
+    for names in gate.required_criteria().values():
+        for required in names:
+            classname, _, name = required.partition("::")
+            cases.append((classname, name or "test_anything", "passed"))
+    return cases
+
+
 @pytest.fixture
 def phase4_ac15(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gate, "PHASE4_REQUIRED", {"AC-15": (PHASE4_AC15,)})
@@ -126,7 +137,7 @@ def test_a_failed_required_test_counts_as_missing(
 
 
 def test_one_argument_is_the_results_file(tmp_path: Path) -> None:
-    assert gate.main([_junit(tmp_path, _phase3_passing())]) == 0
+    assert gate.main([_junit(tmp_path, _required_passing())]) == 0
 
 
 @pytest.mark.parametrize("argv", [[], ["a.xml", "b.xml"]])
@@ -139,6 +150,8 @@ def test_any_other_argument_count_is_a_usage_error(
 
 def test_there_is_no_ac12_note(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Spec 4.10 drops the Phase 3 AC-12 note: AC-12 is a Phase 4 criterion like the others."""
-    gate.main([_junit(tmp_path, _phase3_passing())])
+    gate.main([_junit(tmp_path, _required_passing())])
     captured = capsys.readouterr()
-    assert "AC-12" not in captured.out + captured.err
+    output = captured.out + captured.err
+    assert "AC-12 not in Phase 3" not in output
+    assert "reminders need the deadlines of REQ-10" not in output
