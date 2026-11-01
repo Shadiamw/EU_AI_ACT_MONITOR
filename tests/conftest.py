@@ -48,9 +48,23 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+ACCEPTANCE = ROOT / "tests" / "acceptance"
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip the integration-marked tests unless --run-integration is given. Selected by marker,
-    never by keyword, because a keyword also matches test names (Phase 4 Addendum 9.4)."""
+    never by keyword, because a keyword also matches test names (Phase 4 Addendum 9.4).
+
+    First, refuse to run the HTTP runner against a stack (BASE_URL set) while this file is
+    loaded: its session fixture migrated_db rebuilds the database in DATABASE_ADMIN_URL. The
+    runner is run with --confcutdir=tests/acceptance, which keeps this file out (Part 4
+    decision 145; integration decision 219)."""
+    if os.environ.get("BASE_URL") and any(item.path.is_relative_to(ACCEPTANCE) for item in items):
+        raise pytest.UsageError(
+            "tests/acceptance runs against the stack in BASE_URL: add"
+            " --confcutdir=tests/acceptance, so that tests/conftest.py (which rebuilds the"
+            " database in DATABASE_ADMIN_URL) is not loaded"
+        )
     if config.getoption("--run-integration"):
         return
     skip = pytest.mark.skip(reason="integration test: run with --run-integration")
