@@ -1,0 +1,158 @@
+---
+title: "Model 2 - Data schema as built (migrations 0001 to 0007, main 9b2e587)"
+---
+erDiagram
+    monitored_system {
+        text system_id PK
+        int sampling_interval_s
+        int gap_timeout_intervals
+        timestamptz last_received_at
+    }
+    threshold_version {
+        text threshold_version_id PK
+        text system_id "ref, no FK"
+        text metric_name
+        text metric_type "performance or drift"
+        text comparator "gt or lt"
+        numeric limit_value
+        int version
+        timestamptz valid_from
+    }
+    metric_sample {
+        text sample_id PK
+        text system_id
+        text metric_name
+        text metric_type
+        numeric value
+        timestamptz timestamp
+        timestamptz received_at
+        text event_id "ref, no FK"
+    }
+    breach_series {
+        text series_id PK
+        text system_id
+        text metric_name
+        text event_id "ref, no FK"
+        timestamptz opened_at
+        timestamptz closed_at "null while open"
+        int occurrence_count
+    }
+    event {
+        text event_id PK
+        text system_id "ref, no FK"
+        text type "threshold_breach or monitoring_gap"
+        text metric_name
+        numeric observed_value
+        numeric threshold_value
+        text threshold_version_id "ref, no FK"
+        timestamptz detected_at
+        timestamptz received_at
+        text state "FLAGGED UNDER_REVIEW DISPOSITIONED CLOSED"
+        timestamptz deadline_utc
+        jsonb evidence_bundle
+        text evidence_sha256
+        timestamptz retain_until
+    }
+    harm_field {
+        text event_id PK "ref, no FK"
+        text field_key PK
+        text status "PREFILLED_PENDING_CONFIRMATION CONFIRMED NOT_APPLICABLE"
+        text evidence
+        text prefill_evidence "0005"
+        text confirmed_by
+        timestamptz confirmed_at
+    }
+    harm_context {
+        text system_id PK,FK
+        text field_key PK
+        text context_text
+    }
+    disposition {
+        text disposition_id PK
+        text event_id FK
+        int seq_in_event
+        text tier "DEATH CRITICAL_INFRASTRUCTURE_OR_WIDESPREAD OTHER_SERIOUS NOT_SERIOUS"
+        text rationale
+        text reviewer_id
+        timestamptz assigned_at
+        timestamptz anchor_at
+        text calendar
+        timestamptz deadline_utc
+        text supersedes_id FK "unique"
+    }
+    escalation {
+        text event_id PK,FK
+        int pct PK "50 80 100 by default"
+        text status "PENDING SENT CANCELLED"
+        timestamptz due_at
+        timestamptz anchor_at
+        text tier
+        timestamptz deadline_utc
+        text notification_id "unique, no FK"
+        timestamptz sent_at
+        timestamptz cancelled_at
+        timestamptz updated_at
+    }
+    notification {
+        text notification_id PK
+        text event_id FK
+        text notification_type "flag_notification or reminder"
+        int escalation_pct "0007, reminders only"
+        timestamptz created_at
+    }
+    webhook {
+        text webhook_id PK
+        text url
+        text_array event_types
+        timestamptz created_at
+    }
+    notification_delivery {
+        text notification_id PK,FK
+        text webhook_id PK,FK
+        text status "PENDING DELIVERED FAILED"
+        int attempt_count
+        timestamptz next_attempt_at
+        timestamptz lease_until
+        timestamptz delivered_at
+        text last_status
+    }
+    ledger_entry {
+        bigint seq PK
+        text entry_type
+        text actor_id
+        text subject_id "event id when the entry is about an event"
+        jsonb payload
+        text recorded_at
+        text prev_hash
+        text hash
+    }
+    api_key {
+        text key_hash PK
+        text role "SYSTEM REVIEWER VIEWER"
+        text actor_id
+        text system_id "SYSTEM keys only"
+    }
+    clock_state {
+        bool singleton PK
+        bigint offset_seconds
+    }
+    sweeper_heartbeat {
+        bool singleton PK
+        timestamptz last_ran_at
+    }
+
+    monitored_system ||--o{ harm_context : "FK: context text for pre-fill"
+    event ||--o{ disposition : "FK: append-only decisions"
+    disposition |o--o| disposition : "FK supersedes_id: revision chain"
+    event ||--o{ escalation : "FK: reminder plan"
+    event ||--o{ notification : "FK: flag and reminders"
+    notification ||--o{ notification_delivery : "FK: one per webhook"
+    webhook ||--o{ notification_delivery : "FK"
+    monitored_system ||..o{ threshold_version : "system_id, no FK"
+    monitored_system ||..o{ metric_sample : "system_id, no FK"
+    monitored_system ||..o{ event : "system_id, no FK"
+    event ||..|{ harm_field : "event_id, 4 rows, no FK"
+    event |o..o{ metric_sample : "event_id, no FK"
+    event ||..o{ breach_series : "event_id, no FK"
+    threshold_version |o..o{ event : "threshold_version_id, no FK"
+    event |o..o{ ledger_entry : "subject_id, no FK"
