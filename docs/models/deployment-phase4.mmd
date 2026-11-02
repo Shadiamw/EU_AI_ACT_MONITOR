@@ -1,0 +1,38 @@
+---
+title: "Deployment view (Phase 4): Fly.io and Vercel, plus the Docker Compose stack used in CI"
+---
+flowchart LR
+    IMG["One Docker image (Dockerfile on main):<br/>python:3.12-slim, app, migrations, tools, tests"]
+    VER["Vercel static site<br/>app/static copied to web/ by scripts/vercel-build.mjs,<br/>config.js carries API_BASE_URL"]
+    subgraph FLY["Fly.io app eu-ai-act-monitor-api (fly.toml on development-deploy)"]
+        API["process api<br/>python -m app.runtime api (uvicorn, port 8000)"]
+        WRK["process worker<br/>python -m app.runtime worker<br/>gap sweep, fire_due reminders, deliver_due"]
+        REL["release_command prepare<br/>(alembic upgrade, seed)"]
+    end
+    subgraph CMP["docker-compose.yml on main (local runs and CI image job)"]
+        CPG[("postgres<br/>postgres:16")]
+        CMI["migrate<br/>prepare"]
+        CAPI["api<br/>port 8000"]
+        CWK["worker"]
+        CSK["sink<br/>tools/webhook_sink.py, port 8765"]
+    end
+    CL["API clients<br/>(monitored system, partner team)"]
+    RCV["Registered webhook receivers"]
+    PG[("Fly Postgres<br/>separate Fly app, attached by secrets")]
+    BR["Browser (reviewer or viewer)"]
+
+    BR -- "HTTPS: loads console" --> VER
+    BR -- "HTTPS JSON + Bearer key" --> API
+    REL -- "SQL migrations" --> PG
+    CL -- "HTTPS JSON + Bearer key" --> API
+    API -- "HTTPS POST (clock advance runs the worker steps)" --> RCV
+    CAPI -- "HTTP webhooks" --> CSK
+    CMI -- "SQL" --> CPG
+    CAPI -- "SQL" --> CPG
+    CWK -- "HTTP webhooks" --> CSK
+    WRK -- "HTTPS POST webhooks" --> RCV
+    CWK -- "SQL" --> CPG
+    WRK -- "SQL" --> PG
+    API -- "SQL" --> PG
+    IMG -. "runs as api, worker and release_command" .-> FLY
+    IMG -. "runs as migrate, api, worker and sink" .-> CMP

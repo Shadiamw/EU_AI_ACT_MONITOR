@@ -1,0 +1,40 @@
+---
+title: "Context diagram as built (Phase 4, main 9b2e587)"
+---
+flowchart TB
+    CO["Compliance officer<br/>(owner of a webhook registered for reminder)"]
+    MSA["Market surveillance authority"]
+    OP["Operator<br/>(sets environment configuration and seed data:<br/>systems, thresholds, harm context, API keys)"]
+    MS["Monitored high-risk AI system<br/>(sends metric samples; computes its own metrics)"]
+    WH["Webhook receiver<br/>(any HTTPS URL registered with POST /v1/webhooks)"]
+    PT["Partner team and CI runner<br/>(contract tests through test endpoints)"]
+    VIEW["Viewer, e.g. auditor<br/>(VIEWER key): reads events, audit, ledger export/verify"]
+    REV["Authorized reviewer<br/>(REVIEWER key; console or API directly):<br/>views events, confirms fields, records dispositions"]
+    subgraph SYS[" "]
+        SYSL["Compliance monitoring system (what we build)"]
+        CORE["REST API + worker + PostgreSQL<br/>detects breaches and gaps; pre-fills Art. 3(49) fields;<br/>records dispositions and revisions; computes Art. 73 deadlines;<br/>plans and sends 50/80/100% reminders; hash-chained ledger<br/>Never assigns severity. Report generation: Phase 5"]
+        UI["Web console (static, /ui/ or Vercel)"]
+    end
+
+    OP -- "env variables, prepare/seed at deploy" --> CORE
+    UI -- "HTTPS JSON with the user's key" --> CORE
+    REV -. "submits report manually (outside the system; report not built yet)" .-> MSA
+    WH -- "delivers" --> CO
+    PT -- "reset, clock advance, contract calls" --> CORE
+    CORE -- "flag_notification and reminder webhooks (retries)" --> WH
+    CORE -- "events, pre-filled fields, deadlines, audit, ledger" --> UI
+    VIEW -- "uses (VIEWER key)" --> UI
+    MS -- "POST /v1/metrics (SYSTEM key)" --> CORE
+    REV -- "uses (REVIEWER key)" --> UI
+    UI ~~~ SYSL
+
+    classDef person fill:#fff4cc,stroke:#8a6d00,color:#000
+    classDef ext fill:#eceff1,stroke:#455a64,color:#000
+    classDef sys fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef reg fill:#fde2e2,stroke:#b91c1c,color:#000
+    class REV,VIEW,CO,OP person
+    class MS,WH,PT ext
+    class CORE,UI sys
+    class MSA reg
+    classDef boundary fill:none,stroke:none,color:#1e3a8a,font-weight:bold
+    class SYSL boundary

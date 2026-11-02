@@ -1,0 +1,90 @@
+---
+config:
+  state:
+    nodeSpacing: 120
+    rankSpacing: 120
+title: "Model 1 - Event state machine as built (Phase 4, main 9b2e587)"
+---
+stateDiagram-v2
+    direction LR
+
+    state "Breach event (event.type = threshold_breach)" as Breach {
+        [*] --> FLAGGED: T1 breach
+        DISPOSITIONED --> CLOSED: T6 revision to NOT_SERIOUS
+        CLOSED --> CLOSED: T8 NOT_SERIOUS again
+        FLAGGED --> UNDER_REVIEW: T2 reviewer first view
+        FLAGGED --> DISPOSITIONED: T3 serious tier
+        DISPOSITIONED --> DISPOSITIONED: T5 revision
+        FLAGGED --> CLOSED: T4 NOT_SERIOUS
+        UNDER_REVIEW --> DISPOSITIONED: T3 serious tier
+        UNDER_REVIEW --> CLOSED: T4 NOT_SERIOUS
+        CLOSED --> DISPOSITIONED: T7 reopen
+    }
+
+    state "Gap event (event.type = monitoring_gap)" as Gap {
+        [*] --> GAP_FLAGGED: G1 gap sweep
+        GAP_FLAGGED --> GAP_CLOSED: G2 next sample
+    }
+
+    state "escalation row (event_id, pct)" as Esc {
+        direction TB
+        CANCELLED --> E_PENDING: E5
+        E_PENDING --> CANCELLED: E4
+        [*] --> E_PENDING: E1
+        E_PENDING --> SENT: E3
+        E_PENDING --> E_PENDING: E2
+    }
+
+    state "notification_delivery row (notification_id, webhook_id)" as Del {
+        direction TB
+        [*] --> D_PENDING: N1
+        D_PENDING --> D_PENDING: N2
+        D_PENDING --> DELIVERED: N3
+        D_PENDING --> FAILED: N4
+    }
+
+    GAP_FLAGGED: FLAGGED
+    GAP_CLOSED: CLOSED
+    E_PENDING: PENDING
+    D_PENDING: PENDING
+
+    note right of Breach
+        T1 POST /v1/metrics breaches the threshold and no breach_series is open (REQ-03)
+        T2 a REVIEWER's GET /v1/events/{event_id} of a FLAGGED breach event (spec D3)
+        T3 POST .../disposition, tier DEATH, CRITICAL_INFRASTRUCTURE_OR_WIDESPREAD or OTHER_SERIOUS,
+           all four harm fields CONFIRMED or NOT_APPLICABLE; deadline_utc from the assignment
+        T4 POST .../disposition, NOT_SERIOUS with a non-blank rationale, four fields decided; no deadline
+        T5 stricter or same tier keeps the first anchor (shorter deadline); a looser tier needs a rationale
+        T6 NOT_SERIOUS with a rationale: deadline cleared, PENDING reminders cancelled (D2)
+        T7 serious tier: deadline from the first anchor; looser than the last serious tier needs a rationale
+        T8 NOT_SERIOUS with a rationale again
+        Phase 2 names: CLASSIFIED(tier) = DISPOSITIONED, CLOSED_NOT_SERIOUS = CLOSED.
+        Not implemented (Phase 5): REPORT_READY, SUBMITTED. GET .../report gives 409 NO_DISPOSITION, then 501.
+        Responses, not states (nothing written): DENIED = 401 or 403 FORBIDDEN_ROLE;
+        REJECTED = 400 RATIONALE_REQUIRED or MALFORMED_BODY, 409 HARM_FIELDS_UNCONFIRMED,
+        409 DEADLINE_EXTENSION_REQUIRES_RATIONALE, 409 EVENT_NOT_REVIEWABLE (gap event).
+        A breach on the metric of a CLOSED event opens a new event (decision 227).
+        Every transition appends a ledger_entry (REQ-06, REQ-14).
+    end note
+
+    note left of Gap
+        G1 no sample for gap_timeout_intervals x sampling_interval (REQ-02)
+        G2 the next sample from that system closes the gap
+        A gap event is never reviewed or dispositioned.
+    end note
+
+    note left of Esc
+        E1 first serious tier: one row per ESCALATION_PERCENTAGES value (50, 80, 100)
+        E2 replan: a revision moves due_at
+        E3 due: due_at reached in a worker pass or clock advance;
+           REMINDER_TRIGGERED appended, reminder notification enqueued (REQ-11)
+        E4 revision to NOT_SERIOUS
+        E5 revision back to a serious tier. SENT rows never change.
+    end note
+
+    note left of Del
+        N1 flag_notification or reminder enqueued for each matching webhook
+        N2 retry: failed attempt, next try after 10, 30, 60, 120, 300 s
+        N3 webhook answers 2xx
+        N4 sixth failed attempt
+    end note
