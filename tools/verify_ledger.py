@@ -56,6 +56,10 @@ ENTRY_TYPES = frozenset(
         "WEBHOOK_REGISTERED",
         "EVENT_VIEWED",
         "AUDIT_VIEWED",
+        "REVIEW_STARTED",
+        "DISPOSITION_RECORDED",
+        "DISPOSITION_REVISED",
+        "REMINDER_TRIGGERED",
     }
 )
 

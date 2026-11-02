@@ -87,6 +87,7 @@ def test_enqueue_records_the_request_and_routes_nothing(
             "notification_id": notification_id,
             "event_id": "evt-1",
             "notification_type": "flag_notification",
+            "escalation_pct": None,
             "created_at": T0,
         }
     ]

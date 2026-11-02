@@ -1332,3 +1332,562 @@ Decided 17 and 18 October 2026.
      own connection (open item 9); outside test it is wall time with no database read.
      `wall_now()` stays real UTC. Reason: the Pod showcase cannot wait 15 real minutes for a
      gap, and the smoke test of spec section 9 needs these two endpoints.
+
+## Part 4 decisions (Phase 4 platform; numbers 134 to 153)
+
+134. **CI baseline for Phase 4 (Phase 4 Addendum 9.1, commit 1; spec 4.3 step 2).** Main was
+     red at 60d8d08 for two reasons (debrief LIM-05). `app/suite_runner.py` set
+     `finished_at = time.time()`, which the clock-rule test
+     (`tests/worker/test_clock_rule.py`) forbids outside `app/clock.py`; it now uses
+     `clock.wall_now().timestamp()`. This widens the stated use of `clock.wall_now()`, whose
+     docstring says "only for the sweeper heartbeat": it is now also the real time of a suite
+     run's end, which must not follow the simulated clock either. The nested `if` in
+     `_summarize` that ruff flags as SIM102 is merged into one condition with the same
+     result. ruff is pinned to exactly 0.17.1 in `pyproject.toml` (the version in use on
+     October 21, 2026; the file only required >=0.6), so a new lint rule in a later ruff
+     cannot turn a branch red with no code change. `started_at`'s
+     `default_factory=time.time` (`app/suite_runner.py:45`) is left as it is: the clock-rule
+     test does not flag it and the addendum names only line 102.
+
+135. **Test endpoints require keys and return contract bodies (Phase 4 spec 4.5; Addendum
+     rule 7).** `POST /v1/test/reset` returns 204 with an empty body. `POST /v1/test/clock/advance`
+     returns only `{ "simulated_time": <ISO-8601 UTC> }`; the previous `ok`,
+     `seconds_advanced`, `offset_seconds`, `gaps_opened` and `deliveries` fields are logged on
+     the `api` logger instead. Both accept REVIEWER or VIEWER. Zero seconds is allowed so a
+     caller can read simulated now without moving the clock (LIM-03).
+
+136. **Environment check before authentication on test routes (Addendum rule 7).** Outside
+     `ENVIRONMENT=test` the handlers raise the standard 404 before any key is read, so a missing
+     key never becomes 401 on a production deploy. The check is the first statement inside the
+     route dependency, not a later body guard.
+
+137. **Seed-key bootstrap for an empty `api_key` table, restricted.** Reset needs a REVIEWER or
+     VIEWER key, but the table is empty until reset seeds it. In `ENVIRONMENT=test` only (the
+     environment check comes first, decision 136), when the database lookup finds no row for the
+     presented key, the test-route dependency also accepts the configured `REVIEWER_KEY` and
+     `VIEWER_KEY` digests, with their own roles (the same values the seed writes). It never
+     accepts the system key, a stored row always wins (a stored row for the reviewer key with
+     the VIEWER role makes it a viewer), and ordinary routes never use it. Kept by decision 5 of
+     the completion plan, with these limits pinned by tests in `tests/api/test_platform.py`.
+
+138. **Clock advance runs sweep, fire_due and deliver_due in that order (spec 4.5).** After the
+     offset is updated, `gaps.sweep`, `escalations.fire_due` and `notifications.deliver_due`
+     each run once so a reminder whose instant was crossed is delivered before the response
+     returns. Part 3's `fire_due` is still a stub on this branch and returns `[]`.
+
+139. **Simulated clock survives ordinary process start (Addendum rule 7).** `runtime.seed()` no
+     longer writes `offset_seconds = 0`. Only `prepare` (Fly `release_command`) and
+     `POST /v1/test/reset` zero the offset. An idle stop or restart mid-demo therefore keeps the
+     simulated time. Every deploy still resets it through `prepare`.
+
+140. **`/healthz` returns 503 when the database is unreachable (LIM-09).** A connection or query
+     failure yields the same body shape with zeros/`null` and status 503, instead of an uncaught
+     500. The stale-sweeper 503 rule is unchanged.
+
+141. **`/v1/test/suite` is REVIEWER only and runs only the HTTP runner (spec 4.5, LIM-02).**
+     Named exception to the common REVIEWER-or-VIEWER matrix (Addendum rule 7). The scopes are
+     `smoke` (a few HTTP calls) and `acceptance`; any other scope, including the former `full`,
+     is 400 MALFORMED_BODY. `acceptance` runs `python -m pytest tests/acceptance
+     --confcutdir=tests/acceptance -p no:cacheprovider -q --tb=short` as a subprocess against
+     this service's own URL (`SUITE_BASE_URL`, default `http://127.0.0.1:8000`), with the
+     service's keys and **without** `DATABASE_URL` and `DATABASE_ADMIN_URL`, and calls
+     `platform.reset()` before the run and again after it in a `finally`, so the seeded keys and
+     a clean state are restored even when the run fails or times out (20 minutes). The previous
+     in-process path ran `pytest tests` or a node-id subset with the container's database URLs,
+     so tests/conftest.py rebuilt the service's own database; it is removed. The database-level
+     suite runs only in CI. The image already has what the runner needs (Dockerfile copies
+     `tests/`, installs `[dev]`). The console and the smoke path send the reviewer key.
+
+142. **Console and demo_showcase send keys; the console's review panel (spec 4.6).** Requiring keys
+     would otherwise break `app/static/app.js` and `tools/demo_showcase.sh` (Addendum rule 7).
+     The review panel uses the four pinned disposition labels and shows empty harm evidence as
+     the literal `no evidence available`. Completed per spec 4.6 and decision 5 of the
+     completion plan:
+     - "Act as" defaults to Viewer, because loading as a reviewer starts the review (D3).
+     - No harm status is pre-selected; only a stored CONFIRMED or NOT_APPLICABLE is shown. An
+       unchosen field is sent as `PREFILLED_PENDING_CONFIRMATION`, so the service answers 409
+       HARM_FIELDS_UNCONFIRMED rather than the console confirming anything.
+     - Revisions are a table of the contract keys `prior_tier`, `new_tier`, `reviewer_id`,
+       `revised_at` (the earlier code read a `tier` key the contract does not have).
+     - The risk indicator's "now" is the simulated clock, read with `POST
+       /v1/test/clock/advance {"seconds": 0}` and the selected key, once per explicit event
+       load, never on a timer or a poll. Spec 4.6 names no side-effect-free source and
+       Addendum rule 7 names this call as the way to read simulated now. Its side effect is
+       recorded here and in README 13: the call also runs `gaps.sweep`, `escalations.fire_due`
+       and `notifications.deliver_due` once (spec 4.5), which is what the worker does on its
+       next pass anyway. Outside the test environment the call is 404 and the browser clock is
+       used; the indicator names the clock it used.
+     - The escalation timeline keeps Part 3's formula for display only.
+     - API errors are shown as `HTTP <status> <error_code>: <message>`.
+     - The suite panel offers smoke and acceptance only (decision 141).
+
+143. **Webhook sink is a separate standard-library process (spec 4.9).** `tools/webhook_sink.py`
+     stores POSTed JSON per channel in memory and exposes GET/DELETE. It runs as its own
+     process, never inside the API: the compose file runs it as the `sink` service (the same
+     image, its own entrypoint and healthcheck, port 8765), and the API reaches it as
+     `http://sink:8765/hook/<channel>` while the host reads the channel through the published
+     port. Channels are unauthenticated by design (LIM-06); README 13 says so. The compose `api`
+     service also gets `WEBHOOK_SINK_URL=http://sink:8765/hook/suite`, because the API process
+     runs the in-service HTTP runner (`POST /v1/test/suite`, scope acceptance) with its own
+     environment; without it that run skips the sink tests and still reports passed.
+
+144. **Model 5 fixtures are data plus an HTTP runner (spec 4.7).**
+     `tests/fixtures/phase4/model5_examples.json` holds Ex-1, Ex-2 and Ex-4 in the spec 4.7 step
+     format (`at` offset from d0, `as`, `call`, `body`, `expect`), plus two keys of this
+     branch: `sink` (what the receiver holds: a flag count or the exact reminder percentages)
+     and `expect.audit_delta` (the exact ledger entries a call appended for the event, read by
+     exporting before and after). `tools/run_model5.py` drives them against any `BASE_URL`, stops
+     an example at its first mismatch and exits 1 if any example failed;
+     `tests/acceptance/test_model5.py` runs each example as one runner test. Every expected
+     value comes from spec 4.7 (and the spec and contract sections it rests on), not from the
+     code; the fixture README lists the source per step. Ex-4's ledger follows Addendum rule 9
+     (the view is logged, the 403 and 409 append nothing). A redelivered notification_id counts
+     once (spec 3.4). They need Parts 1–3 and fail, not skip, without them.
+
+145. **HTTP acceptance lives under `tests/acceptance/`, is integration-marked and runs in
+     isolation (spec 4.8, Addendum rule 10).** Tests use only httpx and environment keys. The
+     runner is invoked as `pytest tests/acceptance --confcutdir=tests/acceptance`, so
+     `tests/conftest.py` (whose session fixture rebuilds the database named by
+     `DATABASE_ADMIN_URL`) is never loaded and no database is needed. Its own conftest
+     registers the `integration` marker, resets before every test and skips the folder when
+     `BASE_URL` is unset. The in-process CI steps run with `--ignore=tests/acceptance`; the
+     image job runs the runner against the compose stack under the Addendum 9.5 condition.
+     `tests/test_runner_isolation.py` sits outside the folder so the in-process suite checks
+     the isolation on every branch. The sink fixture still skips its tests when
+     `WEBHOOK_SINK_URL` is unset, so a runner without a sink can run the rest; instead, the image
+     job's runner step fails when a sink is configured and the JUnit file reports any skip
+     (`tests/test_stack_config.py`).
+
+146. **`tools/demo_phase4.py` is HTTP-only and walks spec section 12's ten steps in order.**
+     Each step checks its statuses, body fields, state, ledger counts and receiver content and
+     prints `step N ok` or `step N FAILED`; the first mismatch ends the demo with exit 1 (a 501
+     or a missing reminder is a failure; `--keep-going` runs the remaining steps for a report
+     and still exits 1). It uses two receiver channels: `WEBHOOK_SINK_URL` for step 2's
+     both-types webhook, and the same URL plus `-reminder` for a reminder-only webhook that must
+     hold the three reminders and no flag. Step 10 exports the ledger and runs
+     `tools/verify_ledger.py` on it, which must exit 0. `tests/acceptance/test_demo.py` runs it
+     inside the runner.
+
+147. **Part 4 branches from the base commit, not from Part 1 or Part 2 (Addendum 9.2).** The
+     branch `phase4-part4-platform` starts at `4d1487e`. Merge order into `phase4-integration`
+     remains 2, 1, 3, 4.
+
+148. **Gap events after clock advance are observed through the events API.** Because the clock
+     response no longer returns `gaps_opened`, tests and demos list
+     `GET /v1/events?type=monitoring_gap` (Addendum 9.10).
+
+149. **Decision numbers 149–153 are reserved for deployment follow-ups on this branch.** The
+     development-deploy merge, the separate Fly webhook app, and CI gating of the acceptance
+     runner onto `phase4-integration` / main land in later commits and fill these numbers when
+     the files change.
+
+150. Reserved (deployment / Fly receiver).
+151. **The acceptance gate merges Phase 3 and Phase 4 criteria per key, as a union (spec
+     4.10).** `tools/check_acceptance.py` builds its list with `required_criteria()`: every
+     Phase 3 entry in `REQUIRED` stays, and a Phase 4 entry in `PHASE4_REQUIRED` adds its node
+     ids to the same criterion, in order and without duplicates. The previous
+     `{**REQUIRED, **PHASE4_REQUIRED}` replaced a key, so a Phase 4 AC-15 list would have
+     dropped the Phase 3 `tests.api.test_audit::` requirement. An empty Phase 4 tuple adds
+     nothing. A skipped or failed required test still counts as missing.
+     `tests/test_check_acceptance.py` covers the union, the skip rule and the usage error. The
+     Phase 4 node ids themselves are filled in at the final integration.
+152. Reserved (Vercel console `API_BASE_URL` / demo recording).
+153. **Part 4's finished modules are no longer labelled stand-ins.** `app/db.py`,
+     `tests/sql/bootstrap_roles.sql` and `tools/seed_part1.py` were written as "STUB for Part 4"
+     before Part 4 existed, and README section 1 listed them as "Part 4 stand-ins (STUB)". They
+     are Part 4's own modules now (the seed runs in `prepare`, at api and worker start and in
+     reset), so their first-line labels and the README row say so. Only docstrings, an SQL
+     comment and the README row changed; no code line did. The remaining `STUB` hits are Parts
+     1–3's (review, deadlines, escalations, the worker's overdue counter) and theirs to remove.
+     The error text "the Part 1 seed stand-in runs only in ENVIRONMENT=test" is a code line and
+     stays. This number was reserved for model confirmation document updates after integration;
+     those still wait for the integration.
+
+     **The start-up seed no longer races.** The api and worker processes both seed at start
+     (decision 109) and compose starts them together. Every seeded table used INSERT ... ON
+     CONFLICT DO NOTHING and the ledger's SEED is serialized by the append lock, except
+     api_key, which was DELETE-all then INSERT. After `prepare`, the second process's DELETE
+     waited on the first's row locks, found those rows gone, and its INSERT then hit the
+     first's new rows: UniqueViolation on `api_key_pkey`, and that process exited (seen once
+     in R4). The seed now deletes only the keys no longer configured and upserts the three
+     (`ON CONFLICT (key_hash) DO UPDATE`), so a concurrent seed waits and updates instead.
+     Stale keys are still removed and a configured key still gets its configured role.
+     `tests/test_seed_concurrency.py` holds one seed open until the other is blocked on it,
+     then commits; it failed before the change. Only `tools/seed_part1.py` changed;
+     `app/runtime.py` and the ledger files did not, and neither file is changed on
+     phase4-integration.
+
+## Part 1 decisions (Phase 4 review and harm fields; numbers 154 to 173)
+
+154. **A lone surrogate in harm-field evidence is malformed (Phase 4 spec 1.5, first row;
+     plan G2).** Spec 1.5 lists evidence over 2,000 characters or containing U+0000 as 400
+     MALFORMED_BODY and is silent on lone UTF-16 surrogates. `review.parse_harm_fields` also
+     rejects an evidence string holding any code point from U+D800 to U+DFFF with 400
+     MALFORMED_BODY, matching decision 121 for the metric body. Reason: PostgreSQL text cannot
+     hold a lone surrogate, so storing it would fail as a 500 after the checks had passed.
+     Length counts code points, so a character outside the BMP counts once.
+
+155. **The evidence template is one line with plain decimal strings (Phase 4 spec 1.3).** The
+     two parts the spec prints on separate lines are joined with one space, and one space
+     separates the sentence from the context text. Observed and threshold values are written
+     with `format(value, 'f')`, so they keep their stored digits (0.30, never 0.3 or 3E-1), the
+     same strings as the EVENT_FLAGGED payload; the time uses the API format.
+
+156. **Evidence length counts code points, and any string within it is accepted as given
+     (Phase 4 spec 1.5).** 2,000 code points is accepted and 2,001 is 400, whatever the UTF-8 or
+     UTF-16 size; an empty or all-space evidence is not malformed and is stored unchanged.
+
+157. **The review start is one conditional UPDATE (Phase 4 spec 1.4, D3).**
+     `review.start_if_reviewer` returns False for any role but REVIEWER before any SQL, and
+     otherwise runs `UPDATE event SET state = 'UNDER_REVIEW' WHERE event_id = … AND type =
+     'threshold_breach' AND state = 'FLAGGED' RETURNING event_id`. At READ COMMITTED a parallel
+     view waits for the first one's commit and then matches nothing, so twenty parallel
+     reviewer views start the review once.
+
+158. **CONFIRMED with null evidence over an earlier override restores the pre-fill and counts as
+     a change (Phase 4 spec 1.5).** The stored evidence goes back to `prefill_evidence`, and the
+     field gets the caller as `confirmed_by` and `now` as `confirmed_at`, because its stored
+     evidence differs.
+
+159. **`harm_context.context_text` is NOT NULL (Phase 4 spec 1.7).** A field with nothing to say
+     has no row, which the pre-fill already turns into null evidence, so a null text row would
+     only be a second way to say the same thing.
+
+160. **`harm_context` is read without a lock (Phase 4 spec 1.3).** It is changed only by
+     migration or seed, never by the API or the worker, so the pre-fill reads it with a plain
+     SELECT inside the ingest transaction and takes no row lock.
+
+161. **REVIEW_STARTED is appended by the event-detail route, after EVENT_VIEWED (Phase 4 spec
+     1.4, Addendum rule 4).** `start_if_reviewer` appends nothing; when it reports a start, the
+     route appends REVIEW_STARTED with `{"event_id", "prior_state": "FLAGGED", "new_state":
+     "UNDER_REVIEW"}` after `audit.record_view`, in the same transaction, so a failed view
+     rolls back the state change and both entries.
+
+162. **Log lines and commits (Phase 4 spec 1.8).** The review-start INFO line is written after
+     the route's commit, so it is never logged for a start that was rolled back. The
+     field-change INFO lines are written inside the caller's transaction by
+     `apply_harm_fields`, before Part 2 commits.
+
+163. **apply_harm_fields locks in field_key order and reports in contract order (Phase 4 spec
+     1.2 and 1.5).** The four harm_field rows are locked with one `SELECT … ORDER BY field_key
+     FOR UPDATE`, after the caller's event lock; the changed keys it returns and its log lines
+     follow the contract's order of the four fields.
+
+## Part 2 decisions (Phase 4 dispositions and deadlines; numbers 174 to 193)
+
+174. **Part 2 is built on Part 1's head, not on the bare base commit (Phase 4 Addendum 9.2).**
+     Branch `phase4-part2-dispositions` starts at `phase4-part1-review` (`d4d8c1f`), which sits
+     on the base commit (`4d1487e`). The owner asked for this, because the disposition handler
+     calls Part 1's `parse_harm_fields`, `require_complete` and `apply_harm_fields`. The tests
+     here therefore run against Part 1's real code (pre-fill, review start, harm-field writes)
+     instead of the section 11 stubs, and Part 1's integration-marked tests run on this branch
+     with `--run-integration`. Consequence for integration: merging Part 2 first also brings
+     Part 1's commits up to `d4d8c1f`, and the later Part 1 merge adds only what Part 1
+     committed after that. The merge order 2, 1, 3, 4 still works. Risk: a rebase or force-push
+     of Part 1's branch would duplicate commits, so Part 1 must only add commits.
+
+175. **The request is read as raw JSON after authentication (Phase 4 spec 2.3, 2.4 steps 2 and
+     3).** A body that is not JSON or not an object is 400 MALFORMED_BODY. `tier` must be one of
+     the four contract strings exactly (case-sensitive, not trimmed), so `"DEATH "`, `true` and a
+     list are 400. `rationale` is absent, null or a string; anything else is 400. Unknown
+     top-level keys are ignored. `harm_fields` goes to Part 1's `parse_harm_fields` as sent,
+     with absent and null both passed as None (409, not 400, for missing fields). The
+     NOT_SERIOUS rationale check runs after every shape check, so a malformed body is 400
+     MALFORMED_BODY before 400 RATIONALE_REQUIRED, and both come before the event lookup (404).
+
+176. **DEADLINE_HOLIDAYS is strict and is checked at start-up whatever the calendar (Phase 4
+     spec 8).** Each comma-separated item, after trimming spaces, must be a valid `YYYY-MM-DD`
+     date. An empty item (`a,,b` or a trailing comma) or any other form stops start-up with an
+     error, as a bad DEADLINE_CALENDAR does. Repeats are dropped and the list is sorted. It is
+     checked even with `calendar_days`, so a typo is found at start-up rather than when the
+     calendar is switched. `app.main.create_app` calls `deadlines.current_calendar()` once to
+     make the check (a two-line edit of app/main.py beside Part 2's router line).
+
+177. **Working days are counted on UTC dates from the day after the anchor (Phase 4 spec 2.5).**
+     The anchor is converted to UTC first. Its own date is never counted, even when it is a
+     working day. The result is the n-th counted date at the anchor's UTC time of day,
+     microseconds included. The recorded calendar with no holidays is exactly
+     `working_days;holidays=` (nothing after the `=`), so a recorded calendar has one form.
+
+178. **A rationale is at most 4,000 code points, counted before trimming, and may not contain
+     U+0000 or a lone surrogate (Phase 4 spec 2.3).** Both are 400 MALFORMED_BODY, as for
+     harm-field evidence (decision 154). PostgreSQL text cannot store them and the ledger's
+     canonical JSON refuses them, so storing one would be a 500 after every check had passed.
+     Trimming uses Python's `str.strip()`, so any Unicode whitespace (U+3000 included) is
+     blank. A blank rationale on a serious tier is stored as null.
+
+179. **The disposition table carries its invariants as constraints (Phase 4 spec 2.9).** Beyond
+     spec 2.9: `supersedes_id` is also a foreign key to `disposition.disposition_id` (the
+     previous row must exist); `deadline_utc` is null exactly when the tier is NOT_SERIOUS
+     (INV-2); a NOT_SERIOUS row always has a rationale; and a rationale is never the empty
+     string. `event_id` is a plain foreign key to event (Addendum rule 5). The unique
+     `(event_id, seq_in_event)` constraint is the index spec 2.9 asks for. The trigger and the
+     grants copy `ledger_entry` (0002).
+
+180. **EVENT_NOT_REVIEWABLE's message is "a monitoring gap event cannot be dispositioned"
+     (Phase 4 spec 7).** The spec names the code but not the message.
+
+181. **Addendum rule 1 is a pure function over the event's disposition rows.**
+     `deadlines.extends_deadline(prior_tiers, new_tier)` takes the tiers of the rows, oldest
+     first, finds the latest one that is not NOT_SERIOUS and says whether the new tier's window
+     is longer. It never reads a revision's `prior_tier` or the event state. The handler calls
+     it at step 8, after the harm-field completeness check, and only when the rationale is
+     blank.
+
+182. **Every new deadline is `compute(anchor, tier, recorded calendar)` (Phase 4 spec 2.5).** The
+     anchor and the calendar come from the first row, so spec 2.5's "same tier: unchanged" and
+     "stricter: the minimum" hold by construction, and a reopen from NOT_SERIOUS gets its
+     deadline from the first anchor even when that instant has passed.
+
+183. **The disposition rows are read without a row lock (Phase 4 spec 10).** The application
+     role has no UPDATE privilege on `disposition`, so it cannot `SELECT … FOR UPDATE` there.
+     The event row lock (`SELECT … FOR UPDATE`, step 4) serializes every disposition call on an
+     event, and the rows are read in a later statement, which at READ COMMITTED sees everything
+     the previous lock holder committed. Twenty parallel calls give `seq_in_event` 1 to 20 with
+     no fork.
+
+184. **The response is built inside the transaction and appends nothing (Phase 4 spec 2.4 step
+     16).** `events.detail` runs before the commit, as in the event-detail route, so the body is
+     what was committed. It is not a view, so there is no EVENT_VIEWED.
+
+185. **The ledger payloads (Phase 4 spec 2.10).** `harm_fields` maps each of the four fields, in
+     contract order, to the status decided in this call. `harm_fields_changed` is the result of
+     `apply_harm_fields` (contract order, `[]` when nothing changed). `prior_deadline_utc` is
+     the previous row's `deadline_utc`. Times use the API format. No evidence text is copied.
+
+186. **The report guard is one read-only query (Phase 4 spec 2.8).** It answers 404 for an
+     unknown event, 409 NO_DISPOSITION when the event has no disposition row, and otherwise 501
+     NOT_IMPLEMENTED with the Phase 3 stub's message ("not implemented in this phase"). It
+     writes and appends nothing, and accepts REVIEWER only (Addendum rule 6).
+
+187. **One INFO line per recorded disposition, after the commit, on `api.disposition` (Phase 4
+     spec 7).** It names the event, the disposition id, `seq_in_event`, the tier and the actor,
+     and says whether the call recorded or revised. It never carries the rationale or the
+     evidence. Because it follows the commit, a rolled-back call writes no such line (Part 1's
+     field-change lines are the exception, decision 162).
+
+188. **The Phase 3 stub tests now expect the Phase 4 behavior (Addendum 9.10).** In
+     `tests/part1/test_auth.py` the report is REVIEWER only, and the allowed role gets 400 on
+     the disposition (the metric body has no tier) and 409 NO_DISPOSITION on the report,
+     instead of 501. `tests/part1/test_events_api.py::test_disposition_and_report_stubs` is
+     renamed `test_disposition_and_report_check_the_key_and_role_first` and expects 400, 409 or
+     404, 403 and 401. The 501 half of
+     `tests/part1/test_observability.py::test_a_stub_501_is_logged_at_info_and_a_500_at_error`
+     takes its 501 from the report guard after a recorded disposition.
+
+189. **One edit outside Part 2's slot in app/config.py.** The slot's functions need `re` and
+     `datetime.date`, which are imported at the top of the module; ruff (E402) forbids imports
+     inside the slot.
+
+190. **Migration 0006's downgrade tolerates a database where only the placeholder ran.** A
+     database upgraded while 0006 was the base commit's empty placeholder (any test database
+     shared between part branches) is at 0006 or later with no `disposition` table. The
+     downgrade therefore uses `DROP TABLE IF EXISTS` and `DROP FUNCTION IF EXISTS`, so
+     `alembic downgrade base` and the test suite's rebuild work there. The upgrade is
+     unchanged. The opposite case is not repaired: such a database never runs the real 0006
+     upgrade, because alembic sees it at head, so it must be downgraded to 0005 (or rebuilt)
+     before the real migration applies. No deployed database is affected as long as no image
+     with the placeholders is deployed.
+
+## Part 3 decisions (Phase 4 escalations and reminders; numbers 194 to 213)
+
+194. **Part 3 is built on `phase4-integration`, not on the bare base commit (Phase 4 Addendum
+     9.2).** Branch `phase4-part3-escalations` starts at `4580d28`, where Parts 1 and 2 are already
+     merged, because Part 3 is next in the merge order 2, 1, 3, 4. The merge into
+     `phase4-integration` adds only Part 3's commits. Part 2's eight integration tests run here
+     for real. Part 3's own branch tests still replace `dispositions.summary` (Addendum rule 3),
+     so they do not depend on Part 2's rows.
+
+195. **Part 3's tests live in `tests/part3/`.** No owner row names a Part 3 test directory
+     (Addendum 9.6). `Disposer` in its conftest stands in for Part 2: it writes the event row and
+     calls `plan`, and answers `dispositions.summary` with the tier in force.
+
+196. **ESCALATION_PERCENTAGES is strict, and a bad value stops start-up (Phase 4 spec 8).** Unset
+     or blank gives 50, 80, 100. Spaces around an item are allowed. An empty item, a non-integer,
+     a value outside 1 to 100, or an order that is not strictly ascending raises RuntimeError.
+     Spec 8 states the stop only for DEADLINE_CALENDAR. It is applied here too because otherwise a
+     typo would surface as a 500 on the first disposition, in the middle of a review. `app.main`
+     and `app.worker` both check it.
+
+197. **Two extra check constraints on `escalation`.** Not in spec 3.7. `ck_escalation_sent` says
+     notification_id, sent_at, tier and deadline_utc are set exactly on a SENT row;
+     `ck_escalation_cancelled` says cancelled_at is set exactly on a CANCELLED row. They reject
+     only rows the spec already forbids, and the reminder body depends on the first.
+
+198. **At firing, the tier comes from `dispositions.summary` and the deadline from the locked event
+     row.** Addendum rule 3 names summary for tier and assigned_at. summary returns its times as
+     API strings, and the same value is on the event row this transaction has already locked, so
+     nothing needs parsing. assigned_at is the row's anchor_at, which rule 3 says is equal.
+
+199. **The downgrade removes reminder notifications and tolerates a placeholder database.** The
+     restored one-notification-per-event constraint cannot hold reminders, so they and their
+     delivery rows are deleted; the ledger keeps their entries. Every step uses IF EXISTS, as in
+     decision 190, because a database upgraded while 0007 was the empty placeholder has no table to
+     drop. The trap of decision 190 applies: such a database is at head and never runs the real
+     upgrade, so it must be downgraded to 0006 or rebuilt.
+
+200. **One fire_due call attempts each due row once (Phase 4 spec 3.4 step 7).** The spec says to
+     repeat the listing until it returns nothing. A row that keeps failing, or that another caller
+     holds, would stay PENDING and due, and the call would never end. So each listing resumes after
+     the last row attempted, in (due_at, event_id, pct) order, and ends when nothing is left. A row
+     that failed or was skipped is picked up by the next pass, as the spec requires. A row a
+     concurrent revision moved to an earlier instant during the walk also waits for the next pass.
+
+201. **A failure on one row is logged by type name and does not stop the pass.** It rolls back and
+     the row stays PENDING. The spec's "rolled-back attempt" and the Phase 3 "one bad row must never
+     stop the pass" are the basis. Consequence: a row that can never fire (a DISPOSITIONED event
+     with no disposition row, which correct planning cannot produce) warns on every pass and shows
+     in overdue_escalations, which is the visible signal wanted.
+
+202. **Late reminders have their own counter (Phase 4 spec 3.8).** "Count it like a late delivery"
+     is read as the same kind of per-process counter, `escalations.late_reminder_count()`, not the
+     same number. One reminder can be late to fire and then late to deliver; one number would
+     count it twice and hide which stage was late.
+
+203. **A reminder notification with no escalation row is not claimed.** Its body comes from that
+     row (Addendum rule 5), and a claim without one would fail while building the body and stop the
+     pass. The row and the notification are written in one transaction, so this needs direct
+     writes to reach; such a notification stays PENDING and unclaimed.
+
+204. **Claims are ordered by next_attempt_at, created_at, escalation_pct, then ids.** Spec 3.9 "Big
+     jump" expects order 50, 80, 100 at the receiver. The previous order fell through to the random
+     notification id, because one routing pass gives all three the same next_attempt_at. A retry can
+     still reorder them; receivers read escalation_pct.
+
+205. **An empty pass logs at DEBUG (Phase 4 spec 3.8).** "Log every pass" is kept, but with no due
+     rows the line is DEBUG, because the worker runs every 5 seconds. A pass with due rows is INFO.
+
+206. **One Phase 3 test beyond Addendum 9.10 changes.**
+     `tests/worker/test_notifications.py::test_enqueue_records_the_request_and_routes_nothing`
+     compares `SELECT * FROM notification` exactly, so it gains `escalation_pct: None` (spec 3.5).
+     Rule 9.10 lists only `test_notification_references_the_event_once`. Nothing is weakened.
+
+## Integration decisions (Phase 4 integration; numbers 214 to 233)
+
+214. **Part 4 is merged before Part 3 (Phase 4 Addendum 9.2 departure, accepted by SS on 31
+     October 2026).** The order became 2, 1, 4, 3 instead of 2, 1, 3, 4. Consequences, as
+     approved: Part 3 merges onto Part 4's keyed test endpoints; reset's `to_regclass` guard and
+     `fire_due` are proved only when 0007 lands; Part 4's items that need reminders (runner AC-12,
+     demo step 9, Model 5 Ex-1 reminders) could not be shown before Part 3; the flagged run carried
+     Part 2's eight escalation failures until then. Part 3 merged as `8fe01ee`, after which all
+     of these ran: the flagged suite passed with no failure, the HTTP runner passed 133 with none
+     skipped, and the demo's ten steps and Model 5 Ex-1, Ex-2 and Ex-4 passed on a local stack.
+
+215. **The Part 3 merged is `a1c4af1` on `phase4-part3-escalations`.** It was written by Arvind
+     at his own request; Arnav's version, if any, is not merged. Merged into
+     `phase4-integration` (`5791bf8`) with a plain merge commit, `8fe01ee`, tree `30f8c5d`, with no
+     conflict and one alembic head, 0007.
+
+216. **Part 3 stacked on `phase4-integration` is accepted (Part 3 decision 194).** Addendum 9.2
+     expects part branches to start at the base commit. Part 3 starts at `4580d28`, where Parts 1
+     and 2 were already merged, so the merge brings only Part 3's commits on top of Part 4's. Part 2
+     was built the same way on Part 1's head (decision 174).
+
+217. **The Phase 3 test changed beyond Addendum 9.10 is accepted (Part 3 decision 206).**
+     `tests/worker/test_notifications.py::test_enqueue_records_the_request_and_routes_nothing`
+     compares `SELECT * FROM notification` exactly, so it gains `escalation_pct: None`. Rule 9.10
+     lists only `test_notification_references_the_event_once`. No assertion is removed or
+     loosened.
+
+218. **`PHASE4_REQUIRED` is filled, and two gate tests follow the merged mapping (Addendum 9.5,
+     decision 151).** `tools/check_acceptance.py` now requires the Phase 4 tests of AC-07 to
+     AC-12, AC-14, AC-15 and AC-17 from the part reports, including AC-09's escalation-row test,
+     Part 3's seven AC-12 tests, and for AC-15 Part 2's test and Part 1's four review-start tests.
+     They are merged per criterion with `REQUIRED`, so AC-15 keeps Phase 3's
+     `tests.api.test_audit::` entry. In `tests/test_check_acceptance.py`,
+     `test_one_argument_is_the_results_file` builds its passing cases from
+     `required_criteria()`, and `test_there_is_no_ac12_note` asserts that the old note's text is
+     absent instead of the word AC-12, because a wired gate prints "AC-12 passed" lines. That
+     change was committed first, so every commit stays green.
+
+219. **The root conftest refuses the HTTP runner without `--confcutdir` (Part 4 decision 145).**
+     `tests/conftest.py`'s session fixture `migrated_db` rebuilds the database named by
+     `DATABASE_ADMIN_URL`. When `BASE_URL` is set and a collected test is under
+     `tests/acceptance`, collection now stops with a usage error that names
+     `--confcutdir=tests/acceptance`, before any fixture runs. A run without `BASE_URL` is
+     unchanged. `tests/test_confcutdir_guard.py` checks both cases in subprocesses pointed at a
+     closed port.
+
+220. **A committed test checks the standalone verifier against a real Phase 4 ledger.**
+     `tests/api/test_phase4_ledger_verify.py` writes REVIEW_STARTED, DISPOSITION_RECORDED,
+     DISPOSITION_REVISED and REMINDER_TRIGGERED through the real app and the clock-advance
+     endpoint, then requires the server's verify, a direct `verify_ledger` call and
+     `tools/verify_ledger.py` run as a process on the export to agree that it is valid. For each
+     of the four types, one character of one payload is changed in a copy of the file and in the
+     database, and all of them must name the same `first_mismatch`. No ledger file is touched.
+
+221. **Part 2's four coverage gaps are tested in a new file (parts12-verification section 6).**
+     `tests/part2/test_disposition_gaps.py`, so no Part 2 test file changes: a blank rationale
+     never extends a deadline, directly or on a reopen (N5); the harm fields, the disposition row
+     and the event update are in place, and no ledger entry yet, when `escalations.plan` runs
+     (M14); a revision with unconfirmed harm fields is 409 and writes nothing (N1); same-tier and
+     looser-with-rationale revisions stay DISPOSITIONED (N2, N3). They test existing behaviour, so
+     each was shown to fail against a changed production line, which was then restored.
+
+222. **The pinned lock order is tested for the disposition and for `fire_due` (Guide 8,
+     parts12-verification N4).** `tests/test_phase4_lock_order.py`, integration-marked, stops a
+     disposition inside `escalations.plan` and `fire_due` inside `notifications.enqueue`, and
+     probes from second connections with `FOR UPDATE NOWAIT`: the event row and the event's
+     harm-field or escalation rows are held, the `monitored_system` row is free, and the ledger
+     lock is still free (append comes last). Two more tests hold the event row first and show
+     that a revision and `fire_due` wait on it while holding none of the later rows. Waiting is
+     read from `pg_locks` (`NOT granted`), because `pg_stat_activity` hides another role's wait.
+
+223. **docs/models/phase4_models.md is written from the merged tests (spec 4.12).** It replaces
+     Part 4's pre-integration version. Each Model 1 transition, each Model 3 rule and each of
+     INV-1 to INV-13 names the tests that show it; an invariant without a test is marked Partly
+     with the Phase 5 part named, or Differs with the rule that wins, and the document lists
+     what could not be shown.
+
+224. **The part reports leave the repository (Integration Guide 3 and 12).**
+     `phase4-part2-report.md` and `phase4-part3-report.md` were committed at the repository
+     root by their parts. They are removed; copies are kept with the integration records outside
+     the repository, as Part 4 did with its own report.
+
+225. **The console static tests read the served files with either line ending.** `_block` in
+     `tests/api/test_console_static.py` looked for `"\n  }\n"`, so on a Windows checkout with
+     `core.autocrlf` (app.js served with CRLF) three tests raised `ValueError: substring not
+     found`. `_block` now changes CRLF to LF in the text it searches. Test-only: the served files
+     and the console are unchanged. Checked on a scratch copy whose app.js was converted to
+     CRLF: 3 failed before, 12 passed after.
+
+226. **A clock advance past the representable time is 400 and writes nothing.** POST
+     /v1/test/clock/advance with `{"seconds": 10**13}` stored the offset and then failed with 500
+     (OverflowError in the sweep and the request log), and every later advance and POST
+     /v1/metrics was 500 until a reset; `2**63` was 500 from the BIGINT insert.
+     `platform.advance_clock` now checks the new offset before it writes: more than 2^63 − 1
+     (the `clock_state.offset_seconds` BIGINT) or a simulated time past 9999-12-31 (Python's
+     `datetime.max`) is a ValueError, which the route already maps to 400 MALFORMED_BODY with
+     the same body as the other bad values. The offset is unchanged, and advance 0 and ingest
+     still work; `2 * 10**11` (year 8364) still works. Tests in `tests/api/test_platform.py`.
+     Not covered by this rule: a simulated time in the last six months of year 9999 is accepted,
+     but an ingest there is still 500, because `retain_until` adds six calendar months.
+
+227. **A breach after the event is CLOSED creates a new FLAGGED event.** Phase 3 spec 1.4
+     steps 9 to 11 join a breach to the open `breach_series` of its (system, metric), and only a
+     healthy sample closes a series; the event's state is not part of that rule, because Phase 3
+     events never left FLAGGED. In Phase 4 a NOT_SERIOUS disposition closes the event, and with
+     the Phase 3 rule a later breach was absorbed by the CLOSED event: no new event, no
+     EVENT_FLAGGED, no notification. Phase 4 spec 2 says a breach "creates a FLAGGED event", and
+     no specification, contract or decision says a closed event keeps absorbing breaches. Now,
+     in `app/ingestion.py`, the open-series read also reads the event's state (only the series
+     row is locked, `FOR UPDATE OF`). While the event is FLAGGED, UNDER_REVIEW or DISPOSITIONED
+     a breach joins it as before (step 10: same id, nothing appended). When it is CLOSED the
+     series is closed (closed_at = now) and the breach takes step 11: a new event with its
+     pre-fill, a new series, EVENT_FLAGGED, NOTIFICATION_REQUESTED and a flag notification. A
+     series closed this way stays closed if the old event is later reopened by a revision (D2);
+     the new event is the open incident. Gap events have no series and are unchanged. Tests:
+     `tests/part1/test_breach_after_close.py`. No README or docs/models/phase4_models.md line
+     stated the old rule, so neither changes.
+
+228. **A reminder retry's sent_at is the attempt time; its other fields are fixed (Addendum
+     rule 5).** In the reminder webhook body, `sent_at` is the time of the delivery attempt, so
+     a retry carries a later `sent_at` than the first attempt. `tier`, `deadline_utc`,
+     `escalation_pct`, `due_at` and `notification_id` come from the SENT escalation row and
+     never change after a revision, so every retry of one reminder carries the same values for
+     them. Text only; no code changes.
+
+229. **GET /livez is not part of this merge.** It is on `development-deploy`, which is not
+     merged into this tree, by decision of the project owner (1 November 2026), so on this tree
+     GET /livez is 404. Whoever deploys must bring /livez in from `development-deploy`, or point
+     the Fly health check at /healthz.

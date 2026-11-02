@@ -78,16 +78,19 @@ def test_concurrent_audits_and_views_keep_a_clean_chain(
     responses = asyncio.run(fire())
     assert [r.status_code for r in responses] == [200] * (2 * calls)
 
-    # Each request appended exactly one entry: 20 audit views and 20 event views.
+    # Each request appended exactly one view entry: 20 audit views and 20 event views. The
+    # first rev-1 event view of the FLAGGED evt-a also appended REVIEW_STARTED (Phase 4 spec
+    # 1.4); the later ones find it UNDER_REVIEW and append nothing more.
     assert count_entries(owner_engine, "AUDIT_VIEWED") == calls
     assert count_entries(owner_engine, "EVENT_VIEWED") == calls
+    assert count_entries(owner_engine, "REVIEW_STARTED") == 1
     rows = owner_rows(owner_engine)
-    # 3 entries before, then 40 appends with no duplicate or missing seq.
-    assert [row["seq"] for row in rows] == list(range(1, 3 + 2 * calls + 1))
+    # 3 entries before, then 41 appends with no duplicate or missing seq.
+    assert [row["seq"] for row in rows] == list(range(1, 3 + 2 * calls + 1 + 1))
     with ApiClient(api_app) as client:
         verified = client.get("/v1/ledger/verify", headers=as_actor("viewer-1")).json()
         exported = client.get("/v1/ledger/export", headers=as_actor("viewer-1")).json()
-    expected = {"valid": True, "entries_checked": 3 + 2 * calls, "first_mismatch": None}
+    expected = {"valid": True, "entries_checked": 3 + 2 * calls + 1, "first_mismatch": None}
     assert verified == expected
     # The exported chain recomputes on its own.
     assert verify_entries(exported) == expected

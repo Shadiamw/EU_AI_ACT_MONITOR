@@ -298,7 +298,7 @@ def fresh_database(owner_engine: Engine) -> Iterator[None]:
     command.downgrade(alembic_config(), "base")
     command.upgrade(alembic_config(), "head")
     with owner_engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0007"
     yield
     with owner_engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE ledger_entry ENABLE TRIGGER {TRIGGER_NAME}"))

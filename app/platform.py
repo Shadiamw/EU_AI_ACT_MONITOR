@@ -1,10 +1,15 @@
-"""Part 4 platform operations: test reset and clock advance (spec 4.6, decision 133)."""
+"""Part 4 platform operations: test reset and clock advance (spec 4.5, Addendum rule 7)."""
 
-from sqlalchemy import Engine, create_engine, text
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import timedelta
+
+from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from app import clock, config, gaps, notifications, observability
+from app import clock, config, escalations, gaps, notifications, observability
 from tools.seed_part1 import seed as install_seed
 
 # Truncate order is free under CASCADE. Owner role only.
@@ -23,6 +28,21 @@ RESET_TABLES = (
     "threshold_version",
     "clock_state",
 )
+
+# The Phase 4 tables (Phase 4 Addendum 9.1). Migrations 0005 to 0007 create them, so on a
+# branch where a migration is still a placeholder its table does not exist yet.
+PHASE4_TABLES = ("harm_context", "disposition", "escalation")
+
+
+def with_phase4_tables(conn: Connection, tables: Sequence[str] = ()) -> tuple[str, ...]:
+    """`tables` followed by each Phase 4 table that exists (to_regclass). Every truncate list
+    (RESET_TABLES and the test fixtures' own lists) goes through this, so a table that
+    references event or monitored_system is emptied with them."""
+    exists = text("SELECT to_regclass(:table) IS NOT NULL")
+    existing = tuple(
+        table for table in PHASE4_TABLES if conn.execute(exists, {"table": table}).scalar_one()
+    )
+    return (*tables, *existing)
 
 
 def _admin_engine() -> Engine:
@@ -55,7 +75,7 @@ def reset() -> None:
     engine = _admin_engine()
     try:
         with engine.begin() as conn:
-            conn.execute(text(f"TRUNCATE {', '.join(RESET_TABLES)}"))
+            conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, RESET_TABLES))}"))
         with Session(engine) as session:
             install_seed(session)
             session.commit()
@@ -65,21 +85,40 @@ def reset() -> None:
         engine.dispose()
 
 
-def advance_clock(seconds: int) -> dict[str, int | list[str]]:
-    """POST /v1/test/clock/advance: add to the offset, then sweep and deliver once (spec 4.6)."""
+# clock_state.offset_seconds is a BIGINT (migration 0001).
+MAX_OFFSET_SECONDS = 2**63 - 1
+
+
+def _check_representable(offset: int) -> None:
+    """ValueError, before anything is written, if `offset` overflows the stored BIGINT or puts
+    the simulated time past the year 9999 (datetime.max; decision 226)."""
+    if offset > MAX_OFFSET_SECONDS:
+        raise ValueError("offset overflows the stored offset")
+    try:
+        clock.wall_now() + timedelta(seconds=offset)
+    except OverflowError:
+        raise ValueError("simulated time past the year 9999") from None
+
+
+def advance_clock(seconds: int) -> dict[str, object]:
+    """POST /v1/test/clock/advance: add to the offset, then sweep, fire due reminders and
+    deliver once each, in that order (Phase 4 spec 4.5). Zero seconds is allowed (LIM-03)."""
     require_test_environment()
-    if seconds < 1:
-        raise ValueError("seconds must be at least 1")
+    if seconds < 0:
+        raise ValueError("seconds must be non-negative")
     new_offset = clock.offset_seconds() + seconds
+    _check_representable(new_offset)
     set_offset_seconds(new_offset)
     from app.db import get_engine
 
     engine = get_engine()
     opened = gaps.sweep(engine)
+    fired = escalations.fire_due(engine)
     delivered = notifications.deliver_due(engine)
     return {
         "seconds_advanced": seconds,
         "offset_seconds": new_offset,
         "gaps_opened": opened,
+        "reminders_fired": fired,
         "deliveries": delivered,
     }

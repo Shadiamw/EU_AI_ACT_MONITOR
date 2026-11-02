@@ -110,6 +110,60 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     },
 }
 
+# Phase 4 slots (Phase 4 Addendum 9.1). Each part adds the tables its migration creates, as
+# EXPECTED_COLUMNS["table"] = {...}, and the columns it adds to existing tables, as
+# EXPECTED_COLUMNS["table"]["column"] = "type", on its own lines between its two markers.
+# Phase 4 Part 1 slot (migration 0005).
+EXPECTED_COLUMNS["harm_context"] = {
+    "system_id": "text",
+    "field_key": "text",
+    "context_text": "text",
+}
+EXPECTED_COLUMNS["harm_field"]["prefill_evidence"] = "text"
+# End of the Phase 4 Part 1 slot.
+
+# Phase 4 Part 2 slot (migration 0006).
+EXPECTED_COLUMNS["disposition"] = {
+    "disposition_id": "text",
+    "event_id": "text",
+    "seq_in_event": "integer",
+    "tier": "text",
+    "rationale": "text",
+    "reviewer_id": "text",
+    "assigned_at": TIMESTAMPTZ,
+    "anchor_at": TIMESTAMPTZ,
+    "calendar": "text",
+    "deadline_utc": TIMESTAMPTZ,
+    "supersedes_id": "text",
+}
+# End of the Phase 4 Part 2 slot.
+
+# Phase 4 Part 3 slot (migration 0007).
+EXPECTED_COLUMNS["escalation"] = {
+    "event_id": "text",
+    "pct": "integer",
+    "status": "text",
+    "due_at": TIMESTAMPTZ,
+    "anchor_at": TIMESTAMPTZ,
+    "tier": "text",
+    "deadline_utc": TIMESTAMPTZ,
+    "notification_id": "text",
+    "sent_at": TIMESTAMPTZ,
+    "cancelled_at": TIMESTAMPTZ,
+    "updated_at": TIMESTAMPTZ,
+}
+EXPECTED_COLUMNS["notification"]["escalation_pct"] = "integer"
+# End of the Phase 4 Part 3 slot.
+
+# The application role's privileges where they are not normal read and write (spec 4.4). A table
+# is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
+# migration does not create yet is inert.
+GRANT_EXCEPTIONS: dict[str, list[str]] = {
+    "clock_state": ["SELECT"],  # only reset and clock advance write it (decision 133)
+    "harm_context": ["SELECT"],  # Phase 4 spec 1.7: changed only by migration or seed
+    "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
+}
+
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)
 
 
@@ -144,10 +198,11 @@ def test_the_schema_has_exactly_the_ledger_stub_and_part3_tables(owner_engine: E
     assert tables == sorted([*NON_LEDGER_TABLES, "ledger_entry", "alembic_version"])
 
 
-def test_migration_head_is_0004(owner_engine: Engine) -> None:
-    """Spec 4.4: 0001 Platform, 0002 Ledger, 0003 Detection, 0004 Notifications."""
+def test_migration_head_is_0007(owner_engine: Engine) -> None:
+    """Spec 4.4: 0001 Platform, 0002 Ledger, 0003 Detection, 0004 Notifications; Phase 4
+    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations."""
     [row] = rows(owner_engine, "SELECT version_num FROM alembic_version")
-    assert row == {"version_num": "0004"}
+    assert row == {"version_num": "0007"}
 
 
 def index_definitions(owner_engine: Engine, table: str) -> dict[str, str]:
@@ -197,7 +252,8 @@ def test_harm_field_key_and_status_check(owner_engine: Engine) -> None:
 
 
 def test_notification_references_the_event_once(owner_engine: Engine) -> None:
-    """Spec 3.7: one notification row per event, with a foreign key to event."""
+    """Phase 4 spec 3.5: one flag_notification per event, by the partial unique index that
+    replaces uq_notification_event, with a foreign key to event."""
     insert = (
         "INSERT INTO notification (notification_id, event_id, notification_type, created_at)"
         " VALUES (:id, :event_id, 'flag_notification', :t)"
@@ -207,7 +263,7 @@ def test_notification_references_the_event_once(owner_engine: Engine) -> None:
     add_event(owner_engine, "evt-1")
     with owner_engine.begin() as conn:
         conn.execute(text(insert), {"id": "ntf-1", "event_id": "evt-1", "t": T0})
-    with pytest.raises(IntegrityError, match="uq_notification_event"), owner_engine.begin() as c:
+    with pytest.raises(IntegrityError, match="uq_notification_flag"), owner_engine.begin() as c:
         c.execute(text(insert), {"id": "ntf-2", "event_id": "evt-1", "t": T0})
 
 
@@ -242,7 +298,8 @@ def test_application_role_has_normal_read_write_outside_the_ledger(
 ) -> None:
     """Spec 4.4: normal read/write on every table except the ledger; PUBLIC has nothing.
 
-    clock_state is SELECT-only for the application role: only reset and clock advance write it
+    The tables in GRANT_EXCEPTIONS have the privileges listed there instead: clock_state is
+    SELECT-only for the application role because only reset and clock advance write it
     (decision 133).
     """
 
@@ -258,8 +315,6 @@ def test_application_role_has_normal_read_write_outside_the_ledger(
             )
         )
 
-    if table == "clock_state":
-        assert privileges("monitor_app") == ["SELECT"]
-    else:
-        assert privileges("monitor_app") == ["DELETE", "INSERT", "SELECT", "UPDATE"]
+    expected = GRANT_EXCEPTIONS.get(table, ["DELETE", "INSERT", "SELECT", "UPDATE"])
+    assert privileges("monitor_app") == expected
     assert privileges("PUBLIC") == []

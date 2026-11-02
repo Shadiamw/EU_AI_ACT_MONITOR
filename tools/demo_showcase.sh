@@ -14,7 +14,10 @@ echo "== health =="
 curl -fsS "$BASE/healthz"; echo
 
 echo "== reset =="
-curl -fsS -X POST "$BASE/v1/test/reset"; echo
+code=$(curl -sS -o /tmp/eu_reset.body -w "%{http_code}" -X POST "$BASE/v1/test/reset" \
+  -H "$(auth "$REVIEWER_KEY")")
+echo "HTTP $code"
+test "$code" = "204"
 
 echo "== verify after seed =="
 curl -fsS -H "$(auth "$VIEWER_KEY")" "$BASE/v1/ledger/verify"; echo
@@ -61,7 +64,8 @@ curl -fsS -H "$(auth "$VIEWER_KEY")" "$BASE/v1/events/$EVENT_ID"; echo
 
 echo "== advance 900s (three missed intervals) =="
 curl -fsS -X POST "$BASE/v1/test/clock/advance" \
-  -H 'Content-Type: application/json' -d '{"seconds":900}'; echo
+  -H "$(auth "$REVIEWER_KEY")" -H 'Content-Type: application/json' \
+  -d '{"seconds":900}'; echo
 sleep 2
 
 echo "== monitoring gaps =="

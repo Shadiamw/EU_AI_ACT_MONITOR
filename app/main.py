@@ -7,12 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import config, errors, observability
+from app import config, deadlines, errors, observability
 from app.api import (
+    disposition_routes,
     health_routes,
     ingestion_routes,
     ledger_routes,
-    stub_routes,
     test_routes,
     webhook_routes,
 )
@@ -21,11 +21,14 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def create_app() -> FastAPI:
+    # DEADLINE_CALENDAR and DEADLINE_HOLIDAYS: a bad value stops start-up (Phase 4 spec 8).
+    deadlines.current_calendar()
+    config.escalation_percentages()  # the same for a bad ESCALATION_PERCENTAGES (Part 3)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(ingestion_routes.router)
     app.include_router(ledger_routes.router)
     app.include_router(webhook_routes.router)
-    app.include_router(stub_routes.router)
+    app.include_router(disposition_routes.router)
     app.include_router(health_routes.router)
     app.include_router(test_routes.router)
 

@@ -1,6 +1,8 @@
 """Environment configuration (spec: Configuration table)."""
 
 import os
+import re
+from datetime import date
 
 
 def _required(name: str) -> str:
@@ -112,3 +114,77 @@ def cors_origins() -> list[str]:
     if raw.strip() == "*":
         return ["*"]
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+# Phase 4 slots (Phase 4 Addendum 9.1). Each owner writes its settings between its own two
+# marker lines, and edits nothing else in this file.
+
+# Phase 4 Part 2 slot: DEADLINE_CALENDAR and DEADLINE_HOLIDAYS (Phase 4 spec 8).
+
+DEADLINE_CALENDARS = ("calendar_days", "working_days")
+_HOLIDAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def deadline_calendar() -> str:
+    """DEADLINE_CALENDAR (calendar_days): calendar_days or working_days (REQ-10). Anything else
+    is an error, which stops start-up (app.main checks it)."""
+    raw = os.environ.get("DEADLINE_CALENDAR")
+    if raw is None or raw == "":
+        return "calendar_days"
+    if raw not in DEADLINE_CALENDARS:
+        raise RuntimeError(
+            "environment variable DEADLINE_CALENDAR must be calendar_days or working_days"
+        )
+    return raw
+
+
+def deadline_holidays() -> tuple[date, ...]:
+    """DEADLINE_HOLIDAYS (empty): comma-separated YYYY-MM-DD dates that are not working days,
+    sorted and without repeats. Spaces around a date are allowed; an empty item or any other
+    form is an error (Part 2 decision 176). Checked whatever the calendar, so a typo is found at
+    start-up and not when the calendar is switched."""
+    raw = os.environ.get("DEADLINE_HOLIDAYS")
+    if raw is None or raw.strip() == "":
+        return ()
+    holidays = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not _HOLIDAY.fullmatch(item):
+            raise RuntimeError("environment variable DEADLINE_HOLIDAYS must be YYYY-MM-DD dates")
+        try:
+            holidays.add(date.fromisoformat(item))
+        except ValueError:
+            raise RuntimeError(
+                "environment variable DEADLINE_HOLIDAYS must be YYYY-MM-DD dates"
+            ) from None
+    return tuple(sorted(holidays))
+
+
+# End of the Phase 4 Part 2 slot.
+
+# Phase 4 Part 3 slot: ESCALATION_PERCENTAGES (Phase 4 spec 8).
+_PERCENTAGE = re.compile(r"[0-9]{1,3}")
+
+
+def escalation_percentages() -> tuple[int, ...]:
+    """ESCALATION_PERCENTAGES (50,80,100): comma-separated integers 1 to 100, strictly ascending
+    (REQ-11). Spaces around an item are allowed; anything else is an error, which stops start-up
+    (app.main and app.worker check it; Part 3 decision 196)."""
+    raw = os.environ.get("ESCALATION_PERCENTAGES")
+    if raw is None or raw.strip() == "":
+        return (50, 80, 100)
+    items = [item.strip() for item in raw.split(",")]
+    values = [int(item) for item in items if _PERCENTAGE.fullmatch(item)]
+    if (
+        len(values) != len(items)
+        or any(not 1 <= value <= 100 for value in values)
+        or any(a >= b for a, b in zip(values, values[1:], strict=False))
+    ):
+        raise RuntimeError(
+            "environment variable ESCALATION_PERCENTAGES must be integers from 1 to 100,"
+            " strictly ascending"
+        )
+    return tuple(values)
+
+
+# End of the Phase 4 Part 3 slot.

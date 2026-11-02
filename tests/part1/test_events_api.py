@@ -262,35 +262,38 @@ def test_gap_events_in_list_and_detail(
     }
 
 
+NO_DISPOSITION = {
+    "error_code": "NO_DISPOSITION",
+    "message": "no disposition has been recorded for this event",
+}
+
+
 @pytest.mark.parametrize("exists", [True, False], ids=["existing-event", "unknown-event"])
-def test_disposition_and_report_stubs(
+def test_disposition_and_report_check_the_key_and_role_first(
     client: ApiClient, owner_engine: Engine, exists: bool
 ) -> None:
-    """Auth and role first, then 501 whether or not the event exists (spec 1.6). The body is
-    never read, so even a broken one gets 501 (decision 125)."""
+    """Phase 4 Part 2 (Addendum 9.10; was the 501 stub test of spec 1.6). Both routes accept
+    REVIEWER only, and check the key and the role before anything else (Phase 4 spec 2.4 and
+    2.8). After the role check the disposition reads its body, so a broken one is 400 whether or
+    not the event exists (the pinned order puts 400 before 404); the report looks the event up,
+    so it is 409 NO_DISPOSITION for an event without a disposition and 404 for an unknown one.
+    Nothing is appended."""
     event_id = post(client).json()["flagged_event_id"] if exists else "evt-nope"
     before = entry_types(owner_engine)
     disposition = f"/v1/events/{event_id}/disposition"
     report = f"/v1/events/{event_id}/report"
     cases = [
-        ("POST", disposition, "rev-1", 501),
-        ("POST", disposition, "viewer-1", 403),
-        ("POST", disposition, "sys-42", 403),
-        ("POST", disposition, None, 401),
-        ("GET", report, "rev-1", 501),
-        ("GET", report, "viewer-1", 501),
-        ("GET", report, "sys-42", 403),
-        ("GET", report, None, 401),
+        ("POST", disposition, "rev-1", 400, MALFORMED),
+        ("POST", disposition, "viewer-1", 403, FORBIDDEN),
+        ("POST", disposition, "sys-42", 403, FORBIDDEN),
+        ("POST", disposition, None, 401, UNAUTHORIZED),
+        ("GET", report, "rev-1", *((409, NO_DISPOSITION) if exists else (404, NOT_FOUND))),
+        ("GET", report, "viewer-1", 403, FORBIDDEN),
+        ("GET", report, "sys-42", 403, FORBIDDEN),
+        ("GET", report, None, 401, UNAUTHORIZED),
     ]
-    for method, url, actor, status in cases:
+    for method, url, actor, status, error in cases:
         headers = {} if actor is None else bearer(actor)
         response = client.request(method, url, headers=headers, content="{not json")
-        assert response.status_code == status, (method, url, actor)
-        if status == 501:
-            assert set(response.json()) == {"error_code", "message"}
-            assert response.json()["error_code"] == "NOT_IMPLEMENTED"
-        elif status == 403:
-            assert response.json() == FORBIDDEN
-        else:
-            assert response.json() == UNAUTHORIZED
+        assert (response.status_code, response.json()) == (status, error), (method, url, actor)
     assert entry_types(owner_engine) == before

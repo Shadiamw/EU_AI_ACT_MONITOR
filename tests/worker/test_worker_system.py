@@ -16,6 +16,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
 from app import gaps, worker
+from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient, as_actor, build_app, seed
 from tests.script_helpers import run_subprocess
 from tests.worker.conftest import (
@@ -185,7 +186,7 @@ RESET_TABLES = (
 def reset_tables(owner_engine: Engine) -> None:
     """What Part 4's test reset does to the tables (spec 4.6), as the owner role."""
     with owner_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {RESET_TABLES}"))
+        conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, (RESET_TABLES,)))}"))
 
 
 def test_the_loop_survives_a_reset_that_empties_the_tables(

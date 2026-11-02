@@ -171,6 +171,7 @@ def test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields(
             "evidence": None,
             "confirmed_by": None,
             "confirmed_at": None,
+            "prefill_evidence": None,
         }
         for key in HARM_FIELD_KEYS
     ]

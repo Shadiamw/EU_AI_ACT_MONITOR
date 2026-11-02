@@ -1,4 +1,4 @@
--- STUB for Part 4 (migration 0001 owns the real database roles).
+-- Part 4 database roles for the test and local databases (migration 0001 assumes them).
 -- Creates the two roles the ledger depends on and an empty test database.
 -- Run once as a PostgreSQL superuser against the "postgres" database:
 --   psql "postgresql://postgres:postgres@localhost:5432/postgres" -f tests/sql/bootstrap_roles.sql
