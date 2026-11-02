@@ -1850,3 +1850,15 @@ Decided 17 and 18 October 2026.
      found`. `_block` now changes CRLF to LF in the text it searches. Test-only: the served files
      and the console are unchanged. Checked on a scratch copy whose app.js was converted to
      CRLF: 3 failed before, 12 passed after.
+
+226. **A clock advance past the representable time is 400 and writes nothing.** POST
+     /v1/test/clock/advance with `{"seconds": 10**13}` stored the offset and then failed with 500
+     (OverflowError in the sweep and the request log), and every later advance and POST
+     /v1/metrics was 500 until a reset; `2**63` was 500 from the BIGINT insert.
+     `platform.advance_clock` now checks the new offset before it writes: more than 2^63 − 1
+     (the `clock_state.offset_seconds` BIGINT) or a simulated time past 9999-12-31 (Python's
+     `datetime.max`) is a ValueError, which the route already maps to 400 MALFORMED_BODY with
+     the same body as the other bad values. The offset is unchanged, and advance 0 and ingest
+     still work; `2 * 10**11` (year 8364) still works. Tests in `tests/api/test_platform.py`.
+     Not covered by this rule: a simulated time in the last six months of year 9999 is accepted,
+     but an ingest there is still 500, because `retain_until` adds six calendar months.

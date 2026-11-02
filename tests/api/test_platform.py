@@ -510,3 +510,66 @@ def test_reset_empties_escalation_while_reminders_are_due(owner_engine: Engine) 
             text("SELECT count(*) FROM notification WHERE notification_type = 'reminder'")
         ).scalar_one()
     assert (escalations, reminders) == (0, 0)
+
+
+# Decision 226: an advance that would take the simulated time past the year 9999, or the
+# stored offset past a signed 64-bit integer, is 400 MALFORMED_BODY and writes nothing.
+
+
+def _ingest_now(client: ApiClient) -> int:
+    """Advance 0, then ingest one sample at the simulated time; returns the status code."""
+    now = client.request("POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": 0})
+    assert now.status_code == 200, now.text
+    ingest = client.request(
+        "POST",
+        "/v1/metrics",
+        headers=bearer("sys-42"),
+        json={
+            "system_id": "sys-42",
+            "metric_name": "accuracy",
+            "metric_type": "performance",
+            "value": 0.61,
+            "timestamp": now.json()["simulated_time"],
+        },
+    )
+    return ingest.status_code
+
+
+@pytest.mark.parametrize("seconds", [10**13, 2**63], ids=["past-year-9999", "past-int64"])
+def test_an_advance_past_the_representable_time_is_400_and_writes_nothing(seconds: int) -> None:
+    with ApiClient(create_app()) as client:
+        assert client.request("POST", RESET, headers=bearer("rev-1")).status_code == 204
+        assert (
+            client.request("POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": 60})
+        ).status_code == 200
+        response = client.request(
+            "POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": seconds}
+        )
+        assert (response.status_code, response.json()) == (400, MALFORMED)
+        assert clock.offset_seconds() == 60
+        assert _ingest_now(client) == 201
+    assert clock.offset_seconds() == 60
+
+
+def test_an_advance_just_past_the_year_9999_is_400() -> None:
+    with ApiClient(create_app()) as client:
+        assert client.request("POST", RESET, headers=bearer("rev-1")).status_code == 204
+        to_the_limit = datetime.max.replace(tzinfo=clock.wall_now().tzinfo) - clock.wall_now()
+        seconds = int(to_the_limit.total_seconds()) + 3600
+        response = client.request(
+            "POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": seconds}
+        )
+    assert (response.status_code, response.json()) == (400, MALFORMED)
+    assert clock.offset_seconds() == 0
+
+
+def test_a_large_advance_that_stays_before_the_year_9999_still_works() -> None:
+    seconds = 2 * 10**11
+    with ApiClient(create_app()) as client:
+        assert client.request("POST", RESET, headers=bearer("rev-1")).status_code == 204
+        response = client.request(
+            "POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": seconds}
+        )
+        assert response.status_code == 200, response.text
+        assert clock.offset_seconds() == seconds
+        assert _ingest_now(client) == 201
