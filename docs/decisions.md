@@ -1862,3 +1862,20 @@ Decided 17 and 18 October 2026.
      still work; `2 * 10**11` (year 8364) still works. Tests in `tests/api/test_platform.py`.
      Not covered by this rule: a simulated time in the last six months of year 9999 is accepted,
      but an ingest there is still 500, because `retain_until` adds six calendar months.
+
+227. **A breach after the event is CLOSED creates a new FLAGGED event.** Phase 3 spec 1.4
+     steps 9 to 11 join a breach to the open `breach_series` of its (system, metric), and only a
+     healthy sample closes a series; the event's state is not part of that rule, because Phase 3
+     events never left FLAGGED. In Phase 4 a NOT_SERIOUS disposition closes the event, and with
+     the Phase 3 rule a later breach was absorbed by the CLOSED event: no new event, no
+     EVENT_FLAGGED, no notification. Phase 4 spec 2 says a breach "creates a FLAGGED event", and
+     no specification, contract or decision says a closed event keeps absorbing breaches. Now,
+     in `app/ingestion.py`, the open-series read also reads the event's state (only the series
+     row is locked, `FOR UPDATE OF`). While the event is FLAGGED, UNDER_REVIEW or DISPOSITIONED
+     a breach joins it as before (step 10: same id, nothing appended). When it is CLOSED the
+     series is closed (closed_at = now) and the breach takes step 11: a new event with its
+     pre-fill, a new series, EVENT_FLAGGED, NOTIFICATION_REQUESTED and a flag notification. A
+     series closed this way stays closed if the old event is later reopened by a revision (D2);
+     the new event is the open incident. Gap events have no series and are unchanged. Tests:
+     `tests/part1/test_breach_after_close.py`. No README or docs/models/phase4_models.md line
+     stated the old rule, so neither changes.

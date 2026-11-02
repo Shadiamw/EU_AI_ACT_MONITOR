@@ -132,10 +132,12 @@ def ingest(session: Session, principal: Principal, sample: MetricIn) -> IngestRe
         return IngestResult(200, original.sample_id, original.event_id, "duplicate")
     observability.count(observability.SAMPLES_ACCEPTED)
 
+    # The open series and its event's state; only the series row is locked (FOR UPDATE OF).
     series = session.execute(
         text(
-            "SELECT series_id, event_id FROM breach_series WHERE system_id = :system_id"
-            " AND metric_name = :metric_name AND closed_at IS NULL FOR UPDATE"
+            "SELECT s.series_id, s.event_id, e.state FROM breach_series s"
+            " JOIN event e ON e.event_id = s.event_id WHERE s.system_id = :system_id"
+            " AND s.metric_name = :metric_name AND s.closed_at IS NULL FOR UPDATE OF s"
         ),
         keys,
     ).one_or_none()
@@ -181,8 +183,18 @@ def ingest(session: Session, principal: Principal, sample: MetricIn) -> IngestRe
             )
         return IngestResult(201, sample_id, None, "healthy")
 
+    if series is not None and series.state == "CLOSED":
+        # A CLOSED event (NOT_SERIOUS) ends its series: this breach is a new incident and
+        # takes step 11 (Phase 4 spec 2; decision 227).
+        session.execute(
+            text("UPDATE breach_series SET closed_at = :now WHERE series_id = :series_id"),
+            {"now": now, "series_id": series.series_id},
+        )
+        series = None
+
     if series is not None:
-        # Step 10: join the open series. No new event, notification or ledger entry.
+        # Step 10: join the open series (its event is FLAGGED, UNDER_REVIEW or DISPOSITIONED).
+        # No new event, notification or ledger entry.
         session.execute(
             text(
                 "UPDATE breach_series SET occurrence_count = occurrence_count + 1"
