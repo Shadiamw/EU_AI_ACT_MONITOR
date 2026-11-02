@@ -1879,3 +1879,15 @@ Decided 17 and 18 October 2026.
      the new event is the open incident. Gap events have no series and are unchanged. Tests:
      `tests/part1/test_breach_after_close.py`. No README or docs/models/phase4_models.md line
      stated the old rule, so neither changes.
+
+228. **A reminder retry's sent_at is the attempt time; its other fields are fixed (Addendum
+     rule 5).** In the reminder webhook body, `sent_at` is the time of the delivery attempt, so
+     a retry carries a later `sent_at` than the first attempt. `tier`, `deadline_utc`,
+     `escalation_pct`, `due_at` and `notification_id` come from the SENT escalation row and
+     never change after a revision, so every retry of one reminder carries the same values for
+     them. Text only; no code changes.
+
+229. **GET /livez is not part of this merge.** It is on `development-deploy`, which is not
+     merged into this tree, by decision of the project owner (1 November 2026), so on this tree
+     GET /livez is 404. Whoever deploys must bring /livez in from `development-deploy`, or point
+     the Fly health check at /healthz.
