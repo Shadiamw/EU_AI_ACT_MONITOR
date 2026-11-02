@@ -48,6 +48,7 @@ def _squash(text: str) -> str:
 
 def _block(source: str, start: str, end: str) -> str:
     """The source text from `start` up to (not including) `end`."""
+    source = source.replace("\r\n", "\n")
     begin = source.index(start)
     return source[begin : source.index(end, begin + len(start))]
 

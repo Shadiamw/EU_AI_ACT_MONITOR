@@ -1843,3 +1843,10 @@ Decided 17 and 18 October 2026.
      `phase4-part2-report.md` and `phase4-part3-report.md` were committed at the repository
      root by their parts. They are removed; copies are kept with the integration records outside
      the repository, as Part 4 did with its own report.
+
+225. **The console static tests read the served files with either line ending.** `_block` in
+     `tests/api/test_console_static.py` looked for `"\n  }\n"`, so on a Windows checkout with
+     `core.autocrlf` (app.js served with CRLF) three tests raised `ValueError: substring not
+     found`. `_block` now changes CRLF to LF in the text it searches. Test-only: the served files
+     and the console are unchanged. Checked on a scratch copy whose app.js was converted to
+     CRLF: 3 failed before, 12 passed after.
