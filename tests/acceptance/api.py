@@ -67,7 +67,6 @@ NO_DISPOSITION = {
     "error_code": "NO_DISPOSITION",
     "message": "no disposition has been recorded for this event",
 }
-NOT_IMPLEMENTED = {"error_code": "NOT_IMPLEMENTED", "message": "not implemented in this phase"}
 
 _API_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,6})?Z$")
 _LEDGER_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")

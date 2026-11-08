@@ -32,6 +32,9 @@ RESET_TABLES = (
 # The Phase 4 tables (Phase 4 Addendum 9.1). Migrations 0005 to 0007 create them, so on a
 # branch where a migration is still a placeholder its table does not exist yet.
 PHASE4_TABLES = ("harm_context", "disposition", "escalation")
+# The Phase 5 tables (Phase 5 spec 11.1 step 2); each part appends the tables its migration
+# creates. They go through the same to_regclass check, for the same reason.
+PHASE5_TABLES = ("report", "report_submission")
 
 
 def with_phase4_tables(conn: Connection, tables: Sequence[str] = ()) -> tuple[str, ...]:
@@ -40,7 +43,9 @@ def with_phase4_tables(conn: Connection, tables: Sequence[str] = ()) -> tuple[st
     references event or monitored_system is emptied with them."""
     exists = text("SELECT to_regclass(:table) IS NOT NULL")
     existing = tuple(
-        table for table in PHASE4_TABLES if conn.execute(exists, {"table": table}).scalar_one()
+        table
+        for table in (*PHASE4_TABLES, *PHASE5_TABLES)
+        if conn.execute(exists, {"table": table}).scalar_one()
     )
     return (*tables, *existing)
 

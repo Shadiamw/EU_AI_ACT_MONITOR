@@ -1891,3 +1891,112 @@ Decided 17 and 18 October 2026.
      merged into this tree, by decision of the project owner (1 November 2026), so on this tree
      GET /livez is 404. Whoever deploys must bring /livez in from `development-deploy`, or point
      the Fly health check at /healthz.
+
+## Part 1 decisions (Phase 5 reports and submission; numbers 254 to 273)
+
+254. **Part 1 is built on main plus the part of the base commit it needs.** The Phase 5 base
+     commit (spec 11.1, Part 4) has not landed, so this branch adds the pieces Part 1 cannot
+     work without: the three new ledger types in `app/ledger/canonical.py` and
+     `tools/verify_ledger.py` (REPORT_ASSEMBLED, REPORT_SUBMITTED and RECORD_ERASED, and the
+     count test, now 17); migration `0008_reports.py` (head pins moved from 0007 to 0008);
+     `app/personal_data.py` as the identity stub of spec 11.3; `PHASE5_TABLES = ("report",
+     "report_submission")` in `app/platform.py`, which `with_phase4_tables` also checks with
+     `to_regclass`; and the dependencies reportlab (runtime), jsonschema and pypdf (dev), with
+     a mypy override for the two that ship no types. Not added: placeholders 0009 and 0010,
+     the other parts' tables, the `/healthz` fields, the CI branch conditions and
+     `PHASE5_REQUIRED`. When the base commit lands, take its version of every shared file and
+     keep the 0008 content and the Part 1 slot in `tests/worker/test_schema.py`.
+
+255. **The report route moved to `app/api/report_routes.py` and the Phase 4 guard is gone.**
+     `dispositions.report_guard` and the 501 branch of `observability.py` (decision 126) are
+     removed; a 5xx is always logged at ERROR. The Phase 4 tests that expected 501 now expect
+     200 (the list is spec 10.2): `test_a_report_after_any_disposition_is_501_until_phase_5`
+     is replaced by `test_report_after_a_disposition_is_200_not_501`; the observability test
+     uses a 410 RECORD_ERASED as its INFO example; the AC-08 and AC-14 acceptance tests expect
+     200. `tests/fixtures/phase4/model5_examples.json` still expects 501 at Ex-2's report step.
+     It is left unchanged (spec 10.2) and Part 4's Phase 5 fixture replaces it (spec 8.6), so
+     the HTTP Model 5 run fails at that step until then.
+
+256. **A stored report is read without a lock; only assembly locks.** `assemble_or_get` checks
+     404, 410 and 409 NO_DISPOSITION, then looks for a report bound to the latest disposition
+     row and serves it. Only when there is none does it lock the event row (`FOR UPDATE`, the
+     lock the disposition transaction takes), read the dispositions and the report again, and
+     assemble. A concurrent first request therefore waits, finds the winner's report and serves
+     it; `report.disposition_id` is unique as the backstop. Twenty parallel first requests give
+     one row and one REPORT_ASSEMBLED (test).
+
+257. **The report status is derived when listed, never stored (spec 3.2).** ASSEMBLED when the
+     report is bound to the latest disposition row and has no submission; SUBMITTED when it also
+     has one; SUPERSEDED or SUBMITTED_SUPERSEDED when a later disposition row exists. The report
+     tables are insert-only (INV-4), so there is no status column to update.
+
+258. **The ledger lock is held through rendering.** The report records the ledger head as
+     `ledger_anchor`, and spec 3.8 says it is read under the append lock immediately before
+     REPORT_ASSEMBLED is appended. Because the anchor is inside the bytes that are hashed and
+     then named in that entry, the lock is taken (`pg_advisory_xact_lock`, which `ledger.append`
+     takes again at no cost) before the report is built and held until the commit. Every append
+     waits for one PDF render (about 0.1 to 0.3 s in the tests). Spec 3.8 pins this order. An
+     empty ledger gives the anchor `{seq: 0, hash: 64 zeros}`, the genesis value.
+
+259. **Details of the Article 73 mapping that the spec leaves open.** (a) Each entry has the four
+     keys of the example and, for a field whose status needs a reason, an additive `note`.
+     (b) Sub-fields are listed one by one (1.3.2 a to l, 1.3.3 a to l, 1.3.4 a to l, 2.2 c to
+     h, 3.3 a to k), as the example's `"1.3.2 a"` shows; headings are rows with status `section`
+     or `group`, and section rows are named `§1` to `§5`. (c) Field 1.2 a is `derivable` with a
+     null value, because the submission does not exist when the bytes are assembled.
+     (d) Field 4.2 b is listed in a serious report as `not_available` (it is for a Final
+     non-reportable report) and is `mapped` to the rationale in a closure report. (e) The `§5`
+     value is `{report_id, report_version, ledger_anchor}`; the JSON hash cannot be inside its
+     own bytes, so it is in the `X-Report-Sha256` header and printed in the PDF. (f) 1.2 b is
+     the date part of `detected_at`. (g) The `3.1 a` value is `{what_went_wrong, effects,
+     likely_causality}`: a plain statement of metric, system, observed value, threshold and
+     time; the evidence texts of CONFIRMED fields; and null for causality, which is never
+     asserted.
+
+260. **Timestamps.** `assembled_at` is read once from `clock.now()` after the lock is taken and
+     is written with `api_time`, so it keeps microseconds and is never rounded to seconds
+     (spec 3.3.3, Q-3). The REPORT_ASSEMBLED entry takes its own `recorded_at` inside
+     `ledger.append`, truncated to milliseconds, so on the real clock the two can differ by
+     microseconds (they are equal on the fake clock). `determined_at` is the first disposition
+     row's `assigned_at`; `last_revised_at` is the latest row's, or null without a revision.
+     The ordering `detected_at < determined_at < assembled_at` is a test assertion, not a
+     schema rule, and the code does not refuse to assemble if a clock jump breaks it.
+
+261. **Submission checks.** A `json_sha256` that is not the stored hash, whatever its format
+     (upper case, 63 characters, the PDF hash), is 409 REPORT_HASH_MISMATCH, as spec 3.7 step 8
+     says; only a field of the wrong type is 400. `authority_reference` is at most 200
+     characters with no U+0000 or lone surrogate (not in the spec; the same text rule as the
+     rationale). `report_type` must equal one of the four template strings exactly (case
+     included). The first submission of an event is INITIAL and every later one FOLLOW_UP,
+     whatever `report_type` says. A report of another event is 404, as an unknown id.
+
+262. **The PDF.** reportlab (D5) in invariant mode, so the same dict gives the same bytes; the
+     creation date is therefore reportlab's fixed one, not `assembled_at` (spec 3.4 item 5 says
+     SHOULD; the stored bytes are the record either way). A4, tables only, no images. A closure
+     report draws "NOT FOR SUBMISSION" in 18 pt red bold at the top of every page, larger than
+     the 15 pt title. The footer carries the report id, version and page number. The tests read
+     every page back with pypdf.
+
+263. **The schema file** (`docs/contract/phase5/report.schema.json`, Draft 2020-12) is
+     `additionalProperties: false` on every object, requires every REQ-12 part non-null, and
+     branches on `report_kind`: a serious report has `submission_marking` null, a tier other
+     than NOT_SERIOUS and a deadline; a closure report has the exact marking, tier NOT_SERIOUS,
+     a rationale and a null deadline and window. `event.type` is `threshold_breach`, the only
+     kind that can be reported. It is a proposal (C3) until both teams agree.
+
+264. **The report holds personal data and is sealed at rest.** It contains the reviewer's
+     rationale and the evidence text of the harm fields, so both byte strings go through
+     `personal_data.seal_bytes` (identity until Part 2 lands) and every read goes through
+     `open_bytes`. The two hashes are over the plaintext. `is_erased` is checked at every
+     route (410 RECORD_ERASED, spec 3.6 step 5), so Part 2 only has to make it true.
+
+265. **`reports.verify_stored(session)`** returns `{report_id, which}` for every non-erased
+     report whose `json_bytes` or `pdf_bytes` hash differs from the row, or whose
+     REPORT_ASSEMBLED payload is missing or has other hashes (`ledger_payload`). It reads only.
+     Part 3's nightly job calls it. The tests change a byte, and a hash, as the owner with the
+     trigger disabled.
+
+266. **Not done here (other parts).** The AC-13 and AC-16 acceptance files, the console
+     views, the Model 5 Phase 5 fixture, `tools/demo_phase5.py`, `PHASE5_REQUIRED`, the manual
+     checklist M3 and the contract-delta document are Part 4's. Erasure and the sealing itself
+     are Part 2's. The nightly job, the anchor and the dashboard are Part 3's.

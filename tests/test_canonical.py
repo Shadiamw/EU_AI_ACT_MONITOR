@@ -344,14 +344,18 @@ def test_entry_type_rejections(entry_type: Any) -> None:
         canonical_json(**(entry_with({}) | {"entry_type": entry_type}))
 
 
-def test_all_fourteen_entry_types_are_accepted() -> None:
-    # The ten Phase 3 types plus the four Phase 4 types (Phase 4 Addendum 9.1).
-    assert len(ENTRY_TYPES) == 14
+def test_all_seventeen_entry_types_are_accepted() -> None:
+    # The ten Phase 3 types, the four Phase 4 types (Phase 4 Addendum 9.1) and the three Phase 5
+    # types (Phase 5 spec 11.1 step 1).
+    assert len(ENTRY_TYPES) == 17
     assert {
         "REVIEW_STARTED",
         "DISPOSITION_RECORDED",
         "DISPOSITION_REVISED",
         "REMINDER_TRIGGERED",
+        "REPORT_ASSEMBLED",
+        "REPORT_SUBMITTED",
+        "RECORD_ERASED",
     } <= ENTRY_TYPES
     for entry_type in ENTRY_TYPES:
         assert validate_entry_type(entry_type) == entry_type

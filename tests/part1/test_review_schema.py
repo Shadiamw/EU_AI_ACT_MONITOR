@@ -194,4 +194,4 @@ def test_the_chain_runs_0004_then_0005_then_0006() -> None:
     dispositions = script.get_revision("0006")
     assert dispositions is not None
     assert dispositions.down_revision == "0005"
-    assert script.get_heads() == ["0007"]
+    assert script.get_heads() == ["0008"]

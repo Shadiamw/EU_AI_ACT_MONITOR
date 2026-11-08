@@ -54,6 +54,9 @@ ENTRY_TYPES: frozenset[str] = frozenset(
         "DISPOSITION_RECORDED",
         "DISPOSITION_REVISED",
         "REMINDER_TRIGGERED",
+        "REPORT_ASSEMBLED",
+        "REPORT_SUBMITTED",
+        "RECORD_ERASED",
     }
 )
 

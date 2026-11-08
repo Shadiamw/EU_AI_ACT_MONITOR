@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from sqlalchemy import Engine, text
 
-from app import observability
+from app import observability, personal_data
 from app.platform import with_phase4_tables
 from tests.api.conftest import ApiClient
 from tests.db_helpers import HARM_FIELDS, bearer
@@ -108,13 +108,16 @@ def test_request_log_never_contains_the_authorization_header(
     assert headers["Authorization"].split()[1] not in caplog.text
 
 
-def test_a_stub_501_is_logged_at_info_and_a_500_at_error(
-    client: ApiClient, owner_engine: Engine, caplog: pytest.LogCaptureFixture
+def test_a_410_is_logged_at_info_and_a_500_at_error(
+    client: ApiClient,
+    owner_engine: Engine,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 4 Part 2 (Addendum 9.10): the disposition stub is gone, so the 501 comes from the
-    report guard, which stays 501 once a disposition exists until Phase 5 (D1, spec 2.8 step
-    4). The disposition is recorded first and its lines are cleared before the two checked
-    here."""
+    """Phase 5 Part 1 (spec 3.6): the 501 stub is gone, so a 4xx that was only ever INFO needs
+    another example: a 410 RECORD_ERASED from the report route. Erasure is Part 2's, so the
+    erased state is faked here. The disposition is recorded first and its lines are cleared
+    before the two checked here."""
     event_id = post(client).json()["flagged_event_id"]
     harm_fields = {key: {"status": "NOT_APPLICABLE", "evidence": None} for key in HARM_FIELDS}
     recorded = client.request(
@@ -126,6 +129,7 @@ def test_a_stub_501_is_logged_at_info_and_a_500_at_error(
     assert recorded.status_code == 200
     caplog.set_level(logging.INFO, logger="api.request")
     caplog.clear()
+    monkeypatch.setattr(personal_data, "is_erased", lambda session, event_id: True)
     client.request("GET", f"/v1/events/{event_id}/report", headers=bearer("rev-1"))
     with owner_engine.begin() as conn:
         if "harm_context" in with_phase4_tables(conn):  # its system_id references the system
@@ -133,7 +137,7 @@ def test_a_stub_501_is_logged_at_info_and_a_500_at_error(
         conn.execute(text("DELETE FROM monitored_system"))
     post(client)  # a valid key for a system with no row: 500 (spec 1.4 step 4)
     stub, failure = request_lines(caplog)
-    assert (stub["status"], stub["level"], stub["error_code"]) == (501, "INFO", "NOT_IMPLEMENTED")
+    assert (stub["status"], stub["level"], stub["error_code"]) == (410, "INFO", "RECORD_ERASED")
     assert (failure["status"], failure["level"], failure["error_code"]) == (
         500,
         "ERROR",

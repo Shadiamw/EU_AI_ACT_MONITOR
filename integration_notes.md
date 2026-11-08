@@ -133,9 +133,9 @@ appended is open (spec, 'Transactions and lock order (Pinned)'). The ledger func
 - There is no per-type payload shape check: a misspelled or missing payload key is stored
   without error (decision 11). Your own tests must check your payload keys.
 
-### 2.5 The fourteen entry types
+### 2.5 The seventeen entry types
 
-entry_type must be one of these fourteen (the ten Phase 3 types and the four Phase 4 types); anything else raises LedgerError (`app/ledger/canonical.py`).
+entry_type must be one of these seventeen (the ten Phase 3 types, the four Phase 4 types and the three Phase 5 types); anything else raises LedgerError (`app/ledger/canonical.py`).
 "Written by" and the payload keys come from spec, 'Entry types and payloads'. The allowed
 actor ids are rev-1, viewer-1, sys-42, or `system` for background work (spec, 'Ledger entry
 format'). The spec says notification entries use the event id as subject_id, webhook entries
@@ -157,6 +157,9 @@ use the webhook id, and SEED uses null (same section).
 | DISPOSITION_RECORDED | Phase 4 Part 2, the first disposition of an event | the reviewer | event id | `event_id`, `disposition_id`, `tier`, `rationale` (or null), `deadline_utc` (or null), `anchor_at`, `calendar`, `harm_fields` (each key to its status) (Phase 4 spec 2.10) |
 | DISPOSITION_REVISED | Phase 4 Part 2, every later disposition of the event | the reviewer | event id | `event_id`, `disposition_id`, `supersedes_id`, `prior_tier`, `new_tier`, `rationale` (or null), `prior_deadline_utc` (or null), `deadline_utc` (or null), `anchor_at`, `calendar`, `harm_fields`, `harm_fields_changed` (Phase 4 spec 2.10) |
 | REMINDER_TRIGGERED | Phase 4 Part 3, `escalations.fire_due` | `system` (background work) | event id | `event_id`, `escalation_pct` (integer), `due_at`, `tier`, `anchor_at`, `deadline_utc`, `notification_id` (Phase 4 spec 3.4; tier and deadline_utc are the values on the escalation row, Phase 4 Addendum rule 5) |
+| REPORT_ASSEMBLED | Phase 5 Part 1, `reports.assemble_or_get`, on the first report request after a disposition | the reviewer | event id | `event_id`, `report_id`, `report_version`, `report_kind`, `disposition_id`, `json_sha256`, `pdf_sha256`, `assembled_at`, `ledger_anchor_seq` (Phase 5 spec 3.8) |
+| REPORT_SUBMITTED | Phase 5 Part 1, `reports.submit` | the reviewer | event id | `event_id`, `report_id`, `submission_id`, `submission_kind`, `report_type`, `json_sha256`, `pdf_sha256` (Phase 5 spec 3.8; no report content and no authority reference) |
+| RECORD_ERASED | Phase 5 Part 2, erasure (not built yet) | the reviewer | event id | `event_id`, `erased_at`, `retain_until`, `key_destroyed`, `erased_fields` (Phase 5 spec 4.4) |
 
 The audit endpoint lists every entry whose subject_id is the event id (spec, 'Endpoints you
 own'), so an entry about an event must use that event's id as subject_id or it will not appear

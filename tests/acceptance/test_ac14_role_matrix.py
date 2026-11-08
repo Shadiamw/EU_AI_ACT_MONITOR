@@ -6,8 +6,8 @@ Role matrix, spec section 7 and Addendum rules 6 and 7: POST /v1/metrics SYSTEM 
 GET /v1/events any role; POST .../disposition and GET .../report REVIEWER only; GET and
 POST /v1/test/suite REVIEWER only; every other endpoint REVIEWER or VIEWER. Wrong role: 403
 FORBIDDEN_ROLE; missing or unknown key: 401 MISSING_OR_INVALID_KEY. An allowed caller gets the
-endpoint's own answer, listed per row. D1: the reviewer's report passes the role check (409
-before a disposition, 501 after); "reviewer succeeds" for reports completes in Phase 5.
+endpoint's own answer, listed per row. The reviewer's report is 409 before a disposition and
+200 after one (Phase 5 spec 3.6).
 
 The suite row posts {"scope": "full"}, which is 400 for the reviewer, so no run starts. The
 webhook row uses an address that refuses connections, so the allowed answer is 422.
@@ -141,4 +141,4 @@ def test_a_non_reviewer_is_denied_both_actions_and_the_reviewer_is_not(api: Api,
     assigned = api.disposed(event_id, "OTHER_SERIOUS")
     assert assigned["state"] == "DISPOSITIONED"
     assert assigned["disposition"]["reviewer_id"] == "rev-1"
-    assert api.report(event_id).status_code == 501  # passes the guard; the report is Phase 5
+    assert api.report(event_id).status_code == 200  # the reviewer succeeds (Phase 5)
