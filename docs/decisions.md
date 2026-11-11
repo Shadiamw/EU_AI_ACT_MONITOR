@@ -1891,3 +1891,42 @@ Decided 17 and 18 October 2026.
      merged into this tree, by decision of the project owner (1 November 2026), so on this tree
      GET /livez is 404. Whoever deploys must bring /livez in from `development-deploy`, or point
      the Fly health check at /healthz.
+
+## Part 3 decisions (Phase 5 ledger operations; numbers 294 to 313)
+
+296. **The harness format and clock-rule fix is carried by branching from `fix/harness-ci`.**
+     Main `a9bf283` fails CI at `ruff format --check` (`app/harness.py:91` and `:117`) and, once
+     past that step, at `tests/worker/test_clock_rule.py` (`app/harness.py:167` called
+     `time.time()`). The fix is commit `aa89f5e` on `fix/harness-ci` (PR #7, not yet merged into
+     main), and `phase5-part3-ledger-ops` is cut from it, so no Part 3 commit touches
+     `app/harness.py`. If PR #7 is merged with a merge commit, `aa89f5e` is shared history. If
+     PR #7 is changed or squash-merged, this branch must be re-checked against main.
+
+297. **The Phase 4 Addendum 9.9 ledger gate is widened for `--anchor`.** The gate
+     (`git diff --stat 2cea34f..HEAD -- app/ledger app/audit.py tools/verify_ledger.py
+     migrations/versions/0002_ledger.py`) allowed only the entry-type lines. Spec 11.4 gives
+     Part 3 an edit to `tools/verify_ledger.py` for `--anchor` (spec 6.2, Delta 11), so the gate
+     now also allows one purely additive block in that file: new lines only, zero deletions, no
+     existing line changed, `USAGE` unchanged. Without `--anchor` the script's stdout, stderr
+     and exit codes stay byte-identical, which `test_verifier_output_without_anchor_is_unchanged`
+     and `tests/test_verify_script.py` check. `app/ledger/*`, `app/audit.py` and migration 0002
+     are untouched. The part report gives the exact gate output.
+
+298. **What `--anchor` compares and prints.** Form: `verify_ledger.py EXPORT_FILE --anchor
+     HEADS_FILE`. The heads file is JSON lines; blank lines are ignored. The head is the last
+     line that has `seq` (an integer of at least 1) and `hash` (64 lowercase hex) and no
+     `new_series` key. The export is verified exactly as without the option and the same lines
+     are printed; then one line follows on stdout: `anchor: OK seq=<s>` when entry `s` is inside
+     the verified part of the export (all of it when valid, the entries before
+     `first_mismatch` when not) and its stored hash equals the head's hash, otherwise
+     `anchor: MISMATCH seq=<s>`. A shorter chain has no entry `s` and is a mismatch (spec 6.2
+     case 2); a rewritten entry at or below `s` changes entry `s`'s hash even when the later
+     hashes are recomputed (case 3). The exit code is 0 only when the export is valid and the
+     anchor is OK, otherwise 1. Only the seq is printed, never a hash or payload value.
+
+299. **The first head comes only from a manual new-series run.** A heads file that cannot be
+     read, has a line that is not a JSON object, has a head line with a malformed `seq` or
+     `hash`, or has no head line at all, gives exit 2 with a reason on stderr (`anchor: ...`)
+     and nothing on stdout, so it can never pass as OK. The workflow (M8) therefore fails a
+     scheduled run when `heads.jsonl` has no head yet; the first head, like every restart after
+     a test reset, is written by a `workflow_dispatch` run with `new_series: true` and a reason.
