@@ -3,6 +3,7 @@
 
 Usage:
     python verify_ledger.py EXPORT_FILE
+    python verify_ledger.py EXPORT_FILE --anchor HEADS_FILE
 
 EXPORT_FILE is the JSON array returned by GET /v1/ledger/export. The script prints one JSON
 object on stdout, {"valid": ..., "entries_checked": ..., "first_mismatch": ...}, and exits 0
@@ -31,6 +32,14 @@ Checks, for each entry in ascending stored seq; verification stops at the first 
    or format) fails this check as "uncanonicalizable".
 
 Unknown extra keys in an entry are ignored: the hash covers only the six content fields.
+
+--anchor HEADS_FILE (Phase 5 spec 6.2; docs/decisions.md 297 to 299) also compares the export
+with the last committed chain head. HEADS_FILE is JSON lines; the head is the last line with
+"seq" and "hash" and no "new_series" key. The verify output above is printed unchanged, then one
+line, "anchor: OK seq=<s>" if entry s is in the verified part of the export and has the head's
+hash, otherwise "anchor: MISMATCH seq=<s>". Exit 0 only if the export is valid and the anchor
+is OK, 1 otherwise, and 2 if HEADS_FILE cannot be read or has no head line. Without --anchor
+nothing changes.
 """
 
 from __future__ import annotations
@@ -198,6 +207,8 @@ def hash_check(row: Mapping[str, Any]) -> str | None:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "--anchor":
+        return _main_with_anchor(argv[0], argv[2])
     if len(argv) != 1:
         print(USAGE, file=sys.stderr)
         return 2
@@ -277,6 +288,66 @@ def _unusable(reason: str) -> int:
     print(f"unusable input: {reason}", file=sys.stderr)
     print(json.dumps(_result(False, 0, None)))
     return 1
+
+
+class _HeadsError(Exception):
+    """The heads file cannot be used: unreadable, malformed, or without a head line."""
+
+
+def _main_with_anchor(export_path: str, heads_path: str) -> int:
+    """Verify the export exactly as main() does, then compare it with the last chain head."""
+    try:
+        head_seq, head_hash = _read_head(heads_path)
+    except _HeadsError as exc:
+        print(f"anchor: {exc}", file=sys.stderr)
+        return 2
+    code = main([export_path])
+    try:
+        with open(export_path, "rb") as export_file:
+            rows = load_export(export_file.read())
+    except (OSError, UnusableInput):
+        rows = []
+    result, _ = check_entries(rows)
+    ordered = sorted(rows, key=_order_key)
+    verified = ordered if result["valid"] else ordered[: result["entries_checked"] - 1]
+    anchored = [row for row in verified if _is_integer(row.get("seq")) and row["seq"] == head_seq]
+    matches = len(anchored) == 1 and anchored[0].get("hash") == head_hash
+    print(f"anchor: {'OK' if matches else 'MISMATCH'} seq={head_seq}")
+    return 0 if code == 0 and matches else 1
+
+
+def _read_head(heads_path: str) -> tuple[int, str]:
+    """The (seq, hash) of the last head line, or raise _HeadsError with a reason."""
+    try:
+        with open(heads_path, "rb") as heads_file:
+            text = heads_file.read().decode("utf-8")
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        raise _HeadsError(f"cannot read the heads file ({reason})") from None
+    except UnicodeDecodeError:
+        raise _HeadsError("the heads file is not valid UTF-8") from None
+    head: tuple[int, str] | None = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.strip() == "":
+            continue
+        try:
+            item = json.loads(line, parse_float=NonInteger, parse_constant=NonInteger)
+        except (ValueError, RecursionError):
+            raise _HeadsError(f"line {number} of the heads file is not valid JSON") from None
+        if not isinstance(item, dict):
+            raise _HeadsError(f"line {number} of the heads file is not a JSON object")
+        if "new_series" in item or ("seq" not in item and "hash" not in item):
+            continue
+        seq = item.get("seq")
+        entry_hash = item.get("hash")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+            raise _HeadsError(f"line {number} of the heads file has no usable seq")
+        if not (isinstance(entry_hash, str) and _LOWER_HEX_64.fullmatch(entry_hash)):
+            raise _HeadsError(f"line {number} of the heads file has no usable hash")
+        head = (seq, entry_hash)
+    if head is None:
+        raise _HeadsError("the heads file has no head line (start a new series by hand)")
+    return head
 
 
 if __name__ == "__main__":
