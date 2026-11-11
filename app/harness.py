@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app import platform
+from app import clock, platform
 
 _lock = threading.Lock()
 _sessions: dict[str, Session] = {}
@@ -88,9 +88,7 @@ def _pick_testtype(body: dict[str, Any]) -> Any:
 
 
 def _default_self_url() -> str:
-    return (
-        os.environ.get("SUITE_BASE_URL") or "https://eu-ai-act-monitor-api.fly.dev"
-    ).rstrip("/")
+    return (os.environ.get("SUITE_BASE_URL") or "https://eu-ai-act-monitor-api.fly.dev").rstrip("/")
 
 
 def setup(role: str, body: dict[str, Any] | None) -> Session:
@@ -117,9 +115,7 @@ def setup(role: str, body: dict[str, Any] | None) -> Session:
     else:
         target = _pick_target(body)
         if target is None:
-            target = (
-                os.environ.get("TESTER_TARGET_URL") or _default_self_url()
-            ).rstrip("/")
+            target = (os.environ.get("TESTER_TARGET_URL") or _default_self_url()).rstrip("/")
         session.target_url = target
         session.status = "ready"
         session.message = f"tester ready against {target}"
@@ -164,7 +160,7 @@ def _execute(session: Session) -> None:
         session.results.append({"name": "harness", "passed": False, "detail": session.message})
         session.coverage = {"code": 0.0, "component": 0.0, "system": 0.0}
     finally:
-        session.finished_at = time.time()
+        session.finished_at = clock.wall_now().timestamp()
         if not session.coverage:
             session.coverage = {"code": 0.0, "component": 0.0, "system": 0.0}
         if session.target_url is None:
