@@ -1952,3 +1952,22 @@ Decided 17 and 18 October 2026.
      and nothing on stdout, so it can never pass as OK. The workflow (M8) therefore fails a
      scheduled run when `heads.jsonl` has no head yet; the first head, like every restart after
      a test reset, is written by a `workflow_dispatch` run with `new_series: true` and a reason.
+
+304. **How the projection check replays gap events.** `ledger_ops.projection_check` (spec 6.3,
+     D13) replays the ledger entries of each event in `seq` order and compares the result with
+     the `event`, `disposition` and `harm_field` rows. A monitoring gap has no `EVENT_FLAGGED`
+     entry, so its `event.system_id` is expected from the `GAP_OPENED` payload and its
+     `metric_name`, `observed_value` and `threshold_value` are expected null. Harm fields are
+     compared only for an event with at least one `DISPOSITION_*` entry, because before that no
+     payload carries them (a breach's are pre-filled, a gap's are four NOT_APPLICABLE, and
+     neither is in the ledger). Timestamps are compared as instants and reported in the API
+     form; decimals are compared as exact strings (`format(value, "f")` against the payload).
+     A mismatch is `{event_id, column, expected, actual}` and nothing else (spec 6.1).
+
+305. **Tables of other parts that are absent are skipped, with zero counts.** Part 3's branch
+     runs without Part 1's `report` and `report_submission` tables and without Part 2b's
+     `event.erased_at`. Each is looked up first (`to_regclass` for a table, the catalog for a
+     column); when it is absent, the comparison or count that needs it is skipped and counts
+     as zero, never as an error. In M3 this covers the `report` rows of the projection check
+     (count and hashes against `REPORT_ASSEMBLED`); M4 and M7 use the same rule for their
+     counts. After the integration merge every lookup finds its table and nothing is skipped.
