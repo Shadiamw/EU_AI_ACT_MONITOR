@@ -188,3 +188,8 @@ def escalation_percentages() -> tuple[int, ...]:
 
 
 # End of the Phase 4 Part 3 slot.
+
+
+# Phase 5 Part 3 slot: ledger operations (Phase 5 spec 6 and 7; Part 3 decision 294).
+
+# End of the Phase 5 Part 3 slot.

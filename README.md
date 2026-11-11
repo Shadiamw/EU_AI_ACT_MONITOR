@@ -974,3 +974,5 @@ through `GET /v1/events?type=monitoring_gap`.
 `tests/acceptance`, the Model 5 runner, `tools/demo_phase4.py` and the console panel. They need
 Parts 1–3.
 
+
+## 16. Phase 5 Part 3: ledger operations

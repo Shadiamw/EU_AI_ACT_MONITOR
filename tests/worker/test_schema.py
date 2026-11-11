@@ -198,11 +198,12 @@ def test_the_schema_has_exactly_the_ledger_stub_and_part3_tables(owner_engine: E
     assert tables == sorted([*NON_LEDGER_TABLES, "ledger_entry", "alembic_version"])
 
 
-def test_migration_head_is_0007(owner_engine: Engine) -> None:
+def test_migration_head_is_0010(owner_engine: Engine) -> None:
     """Spec 4.4: 0001 Platform, 0002 Ledger, 0003 Detection, 0004 Notifications; Phase 4
-    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations."""
+    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations; Phase 5 spec 11.1: 0008
+    Reports, 0009 Personal data, 0010 Ledger operations."""
     [row] = rows(owner_engine, "SELECT version_num FROM alembic_version")
-    assert row == {"version_num": "0007"}
+    assert row == {"version_num": "0010"}
 
 
 def index_definitions(owner_engine: Engine, table: str) -> dict[str, str]:

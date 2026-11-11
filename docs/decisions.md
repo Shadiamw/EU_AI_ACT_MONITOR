@@ -1894,6 +1894,28 @@ Decided 17 and 18 October 2026.
 
 ## Part 3 decisions (Phase 5 ledger operations; numbers 294 to 313)
 
+294. **Part 3 carries the part of the Phase 5 base commit it needs.** The base commit (spec
+     11.1, Part 4) has not landed, so one prerequisites commit on this branch adds only what
+     Part 3 cannot work without: the placeholder migrations `0008_reports.py` (revises 0007)
+     and `0009_personal_data.py` (revises 0008) and Part 3's own `0010_ledger_ops.py` (revises
+     0009), all with empty upgrade and downgrade; the head pins of spec 10.2 moved from 0007 to
+     0010 (`test_migration_head_is_0007` renamed `test_migration_head_is_0010`,
+     `test_alembic_chain_is_0001_to_0007_with_one_head` renamed
+     `test_alembic_chain_is_0001_to_0010_with_one_head`, `test_database_is_at_head_0007`
+     renamed `test_database_is_at_head_0010`); `PHASE5_TABLES = ("ledger_verification_run",
+     "platform_counter")` in `app/platform.py` (Part 4's file, approved minimal edit), with the
+     comment and the `with_phase4_tables` loop copied byte for byte from Part 1's hunk so that
+     only the tuple line differs; `app/reports.py` as the spec 11.3 stub (`verify_stored`
+     returns []); the "Phase 5 Part 3" slot markers in `app/config.py`; the README section 16
+     heading; and this decision block. Not carried, because Part 3 does not need them: the
+     three new ledger entry types, `app/personal_data.py`, the other parts' tables and slots,
+     `PHASE5_REQUIRED`, the `phase5-integration` CI conditions and the new dependencies.
+     At integration with Part 1 the integrator keeps Part 1's `0008_reports.py` and
+     `app/reports.py`, sets the head pins to "0010", takes the union of the two `PHASE5_TABLES`
+     tuples, and keeps both blocks in `docs/decisions.md` and both sections in README.md. If
+     the base commit lands first, its version of every shared file wins and this branch keeps
+     only its own 0010 content and slots.
+
 296. **The harness format and clock-rule fix is carried by branching from `fix/harness-ci`.**
      Main `a9bf283` fails CI at `ruff format --check` (`app/harness.py:91` and `:117`) and, once
      past that step, at `tests/worker/test_clock_rule.py` (`app/harness.py:167` called
