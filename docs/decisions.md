@@ -1916,6 +1916,19 @@ Decided 17 and 18 October 2026.
      the base commit lands first, its version of every shared file wins and this branch keeps
      only its own 0010 content and slots.
 
+295. **OD-1 was overtaken by main `a9bf283`; the Dockerfile gains only the build version.**
+     Spec 6.5 (OD-1) kept `fly.toml` and `GET /livez` on `development-deploy`, but main
+     `a9bf283` already has both, with `scripts/deploy-fly.sh`, `fly-wake.sh`, `fly-sleep.sh` and
+     `cloud-bootstrap-db.sql`. Part 3 builds on main as it is and leaves deployment config
+     untouched: `fly.toml`, `/livez`, the harness and the Dockerfile `HEALTHCHECK` are not
+     changed. The Dockerfile gains only `ARG GIT_SHA` and `ENV APP_VERSION=$GIT_SHA`, and
+     `config.app_version()` reads `APP_VERSION` (unset or empty is None; never read from git at
+     run time), which `/healthz` reports as `version`. The deployer passes
+     `--build-arg GIT_SHA=<the main commit being deployed>` explicitly.
+     `scripts/deploy-fly.sh` passes no build argument, so a deploy made with it shows
+     `"version": null`; Part 3 does not edit deployment scripts, and the operations note (M8)
+     gives the exact command.
+
 296. **The harness format and clock-rule fix is carried by branching from `fix/harness-ci`.**
      Main `a9bf283` fails CI at `ruff format --check` (`app/harness.py:91` and `:117`) and, once
      past that step, at `tests/worker/test_clock_rule.py` (`app/harness.py:167` called
@@ -1952,6 +1965,21 @@ Decided 17 and 18 October 2026.
      and nothing on stdout, so it can never pass as OK. The workflow (M8) therefore fails a
      scheduled run when `heads.jsonl` has no head yet; the first head, like every restart after
      a test reset, is written by a `workflow_dispatch` run with `new_series: true` and a reason.
+
+300. **`platform.reset()` keeps `reset_count` across the truncate.** `platform_counter` is in
+     `PHASE5_TABLES`, so every truncate list (reset's and the test fixtures') empties it. In
+     `reset()`'s owner transaction, `reset_count` is read before the `TRUNCATE`, the `TRUNCATE`
+     runs as before, and a row with the count plus one is inserted after it; a missing row
+     counts as 0. One transaction, so a failed reset changes neither the tables nor the count.
+     A test fixture that truncates the table sets the count back to 0, which `/healthz` shows
+     as `"reset_count": 0`.
+
+301. **Migration 0010 creates `platform_counter`.** No migration owned the table that spec 6.5
+     names, so Part 3's own `0010_ledger_ops.py` creates it: `singleton boolean` primary key,
+     default true, with the check `ck_platform_counter_single_row` (`singleton` must be true),
+     which keeps it to one row as `clock_state` does in migration 0001, and `reset_count bigint`
+     not null, default 0. The application role gets SELECT only; only `reset()` writes it, as
+     the owner. The migration inserts no row.
 
 302. **The nightly run happens once per wall-clock UTC day, from `NIGHTLY_VERIFY_HOUR_UTC`.**
      `ledger_ops.nightly_due(engine)` is true when the wall-clock hour is at least
@@ -1994,3 +2022,14 @@ Decided 17 and 18 October 2026.
      as zero, never as an error. In M3 this covers the `report` rows of the projection check
      (count and hashes against `REPORT_ASSEMBLED`); M4 and M7 use the same rule for their
      counts. After the integration merge every lookup finds its table and nothing is skipped.
+
+306. **The `/healthz` 503 body for an unreachable database.** The old four fields keep their
+     503 values (decision 111, LIM-09). Of the four new ones, `version` comes from the
+     environment, because it needs no database, and `last_verification`,
+     `last_verification_age_seconds` and `reset_count` are null, because they could not be
+     read. When the database is reachable, all four come from the database and environment as
+     in spec 6.5, also on the stale-sweeper 503. `last_verification` is the latest
+     `ledger_verification_run` of any trigger (by `started_at`, then `finished_at`, then
+     `run_id`), shown as `{finished_at, valid, head_check}` only, never a hash or mismatch;
+     `last_verification_age_seconds` is whole seconds from its `finished_at` to
+     `clock.wall_now()`. Ledger integrity never makes `/healthz` 503 (spec 6.5).

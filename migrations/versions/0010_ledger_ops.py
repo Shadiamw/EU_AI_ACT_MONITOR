@@ -8,7 +8,10 @@ step 2; Part 3 decision 294); Part 3 fills in upgrade() and downgrade() in this 
   disposition; the application role gets INSERT and SELECT only. A unique index on the
   wall-clock UTC date of started_at, for NIGHTLY rows only, allows one nightly run per day
   (decision 302).
-- platform_counter (M6, spec 6.5): not created yet.
+- platform_counter (M6, spec 6.5; decision 301): a single row holding reset_count, the
+  number of POST /v1/test/reset calls, shown by /healthz. The singleton key and its check keep
+  it to one row, as clock_state does in migration 0001. platform.reset() writes it as the owner
+  (decision 300); the application role gets SELECT only. No row means 0.
 
 Revision ID: 0010
 Revises: 0009
@@ -33,6 +36,7 @@ TABLE = "ledger_verification_run"
 TRIGGER_FUNCTION = "ledger_verification_run_block_update_delete_fn"
 TRIGGER_NAME = "ledger_verification_run_block_update_delete"
 NIGHTLY_INDEX = "uq_ledger_verification_run_one_nightly_per_utc_date"
+COUNTER_TABLE = "platform_counter"
 
 TRIGGERS = ("NIGHTLY", "MANUAL")
 HEAD_CHECKS = ("OK", "REGRESSED", "FIRST_RUN")
@@ -103,7 +107,18 @@ def upgrade() -> None:
     op.execute(f'REVOKE ALL ON TABLE {TABLE} FROM "{app_role}"')
     op.execute(f'GRANT SELECT, INSERT ON TABLE {TABLE} TO "{app_role}"')
 
+    op.create_table(
+        COUNTER_TABLE,
+        sa.Column("singleton", sa.Boolean, primary_key=True, server_default=sa.true()),
+        sa.Column("reset_count", sa.BigInteger, nullable=False, server_default="0"),
+        sa.CheckConstraint("singleton", name="ck_platform_counter_single_row"),
+    )
+    op.execute(f"REVOKE ALL ON TABLE {COUNTER_TABLE} FROM PUBLIC")
+    op.execute(f'REVOKE ALL ON TABLE {COUNTER_TABLE} FROM "{app_role}"')
+    op.execute(f'GRANT SELECT ON TABLE {COUNTER_TABLE} TO "{app_role}"')
+
 
 def downgrade() -> None:
+    op.execute(f"DROP TABLE IF EXISTS {COUNTER_TABLE}")
     op.execute(f"DROP TABLE IF EXISTS {TABLE}")
     op.execute(f"DROP FUNCTION IF EXISTS {TRIGGER_FUNCTION}()")

@@ -80,7 +80,14 @@ def reset() -> None:
     engine = _admin_engine()
     try:
         with engine.begin() as conn:
+            # platform_counter is in the truncate list, so reset_count is read first and
+            # written back as count + 1 in the same transaction (Part 3 decision 300).
+            count = conn.execute(text("SELECT reset_count FROM platform_counter")).scalar()
             conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, RESET_TABLES))}"))
+            conn.execute(
+                text("INSERT INTO platform_counter (reset_count) VALUES (:count)"),
+                {"count": (count or 0) + 1},
+            )
         with Session(engine) as session:
             install_seed(session)
             session.commit()

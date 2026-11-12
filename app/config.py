@@ -205,4 +205,11 @@ def nightly_verify_hour_utc() -> int:
     return int(raw)
 
 
+def app_version() -> str | None:
+    """APP_VERSION: the deployed main commit, set at image build from the Dockerfile's ARG
+    GIT_SHA (Phase 5 spec 6.5, D15; Part 3 decision 295). Unset or empty is None. Never read
+    from git at run time."""
+    return os.environ.get("APP_VERSION") or None
+
+
 # End of the Phase 5 Part 3 slot.

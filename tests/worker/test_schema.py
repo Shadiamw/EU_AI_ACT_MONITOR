@@ -170,6 +170,8 @@ EXPECTED_COLUMNS["ledger_verification_run"] = {
     "projection_mismatches": "jsonb",
     "report_mismatches": "jsonb",
 }
+# Phase 5 spec 6.5: reset_count; `singleton` keeps it to one row (Part 3 decision 301)
+EXPECTED_COLUMNS["platform_counter"] = {"singleton": "boolean", "reset_count": "bigint"}
 # End of the Phase 5 Part 3 slot.
 
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
@@ -180,6 +182,7 @@ GRANT_EXCEPTIONS: dict[str, list[str]] = {
     "harm_context": ["SELECT"],  # Phase 4 spec 1.7: changed only by migration or seed
     "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
     "ledger_verification_run": ["INSERT", "SELECT"],  # Phase 5 spec 6.1: insert-only
+    "platform_counter": ["SELECT"],  # Phase 5 spec 6.5: only reset writes it (decision 300)
 }
 
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)

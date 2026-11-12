@@ -3,6 +3,8 @@ FROM python:3.12-slim-bookworm
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+ARG GIT_SHA
+ENV APP_VERSION=$GIT_SHA
 
 RUN useradd --create-home --uid 10001 monitor
 
