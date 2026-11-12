@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     # DEADLINE_CALENDAR and DEADLINE_HOLIDAYS: a bad value stops start-up (Phase 4 spec 8).
     deadlines.current_calendar()
     config.escalation_percentages()  # the same for a bad ESCALATION_PERCENTAGES (Part 3)
+    config.check_ledger_ops_settings()  # and the Phase 5 Part 3 settings (decision 302)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(ingestion_routes.router)
     app.include_router(ledger_routes.router)

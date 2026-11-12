@@ -195,10 +195,11 @@ def escalation_percentages() -> tuple[int, ...]:
 
 def nightly_verify_hour_utc() -> int:
     """NIGHTLY_VERIFY_HOUR_UTC: the wall-clock UTC hour from which the nightly ledger
-    verification is due (Phase 5 spec 6.1; Part 3 decision 302). Default 2; an integer from 0
-    to 23, otherwise start-up fails."""
+    verification is due (Phase 5 spec 6.1; Part 3 decision 302). Default 2 when unset; anything
+    but an integer from 0 to 23, the empty string included, is an error, which stops start-up
+    (check_ledger_ops_settings)."""
     raw = os.environ.get("NIGHTLY_VERIFY_HOUR_UTC")
-    if raw is None or raw == "":
+    if raw is None:
         return 2
     if not raw.isascii() or not raw.isdigit() or not 0 <= int(raw) <= 23:
         raise RuntimeError("environment variable NIGHTLY_VERIFY_HOUR_UTC must be an integer 0-23")
@@ -207,16 +208,23 @@ def nightly_verify_hour_utc() -> int:
 
 def alert_deadline_warning_hours() -> int:
     """ALERT_DEADLINE_WARNING_HOURS: alert A7's window before a reporting deadline (Phase 5
-    spec 7.3). Default 24; a positive integer, otherwise it raises, as NIGHTLY_VERIFY_HOUR_UTC
-    does."""
+    spec 7.3). Default 24 when unset; anything but a positive integer, the empty string included,
+    is an error, which stops start-up, as NIGHTLY_VERIFY_HOUR_UTC does."""
     raw = os.environ.get("ALERT_DEADLINE_WARNING_HOURS")
-    if raw is None or raw == "":
+    if raw is None:
         return 24
     if not raw.isascii() or not raw.isdigit() or int(raw) < 1:
         raise RuntimeError(
             "environment variable ALERT_DEADLINE_WARNING_HOURS must be a positive integer"
         )
     return int(raw)
+
+
+def check_ledger_ops_settings() -> None:
+    """Read both Part 3 settings once, so a bad value stops start-up: app.main.create_app and
+    app.worker.main call this, as they call escalation_percentages (decision 302)."""
+    nightly_verify_hour_utc()
+    alert_deadline_warning_hours()
 
 
 def app_version() -> str | None:

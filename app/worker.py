@@ -122,6 +122,7 @@ def health_values(engine: Engine) -> HealthValues:
 def main() -> None:
     logging.basicConfig(level=config.log_level(), format="%(levelname)s [%(name)s] %(message)s")
     config.escalation_percentages()  # a bad value stops start-up (Part 3 decision 196)
+    config.check_ledger_ops_settings()  # the same for the Phase 5 Part 3 settings (decision 302)
     run_forever(db.get_engine())
 
 

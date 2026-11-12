@@ -1054,9 +1054,9 @@ approval (decisions 311, 312).
 | `ALERT_DEADLINE_WARNING_HOURS` | 24 | Window of alert A7 before a reporting deadline; a positive integer |
 | `APP_VERSION` | unset | The deployed main commit, set by the Dockerfile from `ARG GIT_SHA`; never read from git at run time |
 
-A bad `NIGHTLY_VERIFY_HOUR_UTC` or `ALERT_DEADLINE_WARNING_HOURS` raises when it is read (in the
-worker's nightly or alert step, which logs the error by type name, and in the dashboard); it is
-not checked at start-up.
+A bad `NIGHTLY_VERIFY_HOUR_UTC` or `ALERT_DEADLINE_WARNING_HOURS`, the empty string included,
+stops the API and the worker at start-up with an error naming the setting, as a bad
+`ESCALATION_PERCENTAGES` does (decision 302). Unset, the defaults apply.
 
 ### 16.6 Where the code lives
 

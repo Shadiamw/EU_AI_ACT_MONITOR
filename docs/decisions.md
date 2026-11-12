@@ -2002,7 +2002,11 @@ Decided 17 and 18 October 2026.
      cannot look like a mismatch); the result is then inserted by the transaction that holds the
      lock. Results go to `ledger_verification_run`, never into the ledger (spec 6.1). The worker
      step runs after the deliveries, in its own try/except, and logs a failure by type name
-     only, so a failed nightly run never affects the other passes.
+     only, so a failed nightly run never affects the other passes. `NIGHTLY_VERIFY_HOUR_UTC` and
+     `ALERT_DEADLINE_WARNING_HOURS` are checked at start-up by `config.check_ledger_ops_settings()`,
+     called by `app.main.create_app` and `app.worker.main` next to `escalation_percentages()`, so
+     a bad value (anything but an integer 0 to 23, or a positive integer; the empty string
+     included) stops both processes, and an unset one takes the default 2 or 24.
 
 303. **`clock.wall_now()` is also used by the nightly step and alerts A2 and A3.** Its docstring
      in `app/clock.py` still says "Only for the sweeper heartbeat"; `app/clock.py` is not
