@@ -15,8 +15,8 @@ primary_region = "iad"
   REVIEWER_KEY = "test-reviewer-key-rev-1-5a7e3b9c1d2f4086"
   VIEWER_KEY = "test-viewer-key-viewer-1-8c4d2e6f0a1b3957"
   SUITE_BASE_URL = "https://eu-ai-act-monitor-api.fly.dev"
-  # Default peer SUT for our tester when setup body omits target.
-  TESTER_TARGET_URL = "https://34-57-175-31.sslip.io"
+  # Default peer system base (includes /system) when setup omits target_url.
+  TESTER_TARGET_URL = "https://34-57-175-31.sslip.io/system"
   DEADLINE_CALENDAR = "calendar_days"
   DEADLINE_HOLIDAYS = ""
   ESCALATION_PERCENTAGES = "50,80,100"

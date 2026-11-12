@@ -1,21 +1,30 @@
-"""Staff project-tester harness mounted under /system and /tester.
+"""Staff / cross-team harness mounted under /system and /tester.
 
-Staff registry bases should be:
+Registry bases (no /test suffix):
   https://<host>/system
   https://<host>/tester
-The autograder appends /test, /test/setup, /test/run, or /test/report.
+
+Interface: student-facing Cross-team Testing Interface v2.
+Error bodies for these endpoints use {message, source} (not project error_code).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app import config, harness
-from app.errors import ApiError, not_found
+from app.errors import not_found
+
+
+async def _run_sync(fn: Callable[..., Any], *args: Any) -> Any:
+    """Run blocking harness work off the event loop (enables loopback HTTP)."""
+    return await asyncio.to_thread(fn, *args)
 
 
 def _require_test() -> None:
@@ -29,17 +38,23 @@ async def _json_body(request: Request) -> dict[str, Any]:
         return {}
     try:
         body = json.loads(raw.decode("utf-8"))
-    except Exception:
-        raise ApiError(400, "MALFORMED_BODY", "the request is malformed") from None
+    except Exception as exc:
+        raise harness.HarnessError(400, "the request is malformed", "unknown") from exc
     if body is None:
         return {}
     if not isinstance(body, dict):
-        raise ApiError(400, "MALFORMED_BODY", "the request is malformed")
+        raise harness.HarnessError(400, "the request is malformed", "unknown")
     return body
 
 
+def _err(exc: harness.HarnessError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status,
+        content={"message": exc.message, "source": exc.source},
+    )
+
+
 def build_router(role: str) -> APIRouter:
-    """role is 'system' or 'tester'. Mounted at /{role} so paths become /{role}/test/..."""
     router = APIRouter()
 
     @router.api_route("/test", methods=["GET", "POST"])
@@ -47,66 +62,84 @@ def build_router(role: str) -> APIRouter:
         _require_test()
         return JSONResponse(harness.service_info(role))
 
-    @router.post("/test/setup")
-    async def test_setup(request: Request) -> JSONResponse:
-        _require_test()
-        body = await _json_body(request)
-        try:
-            session = harness.setup(role, body)
-        except Exception as exc:  # noqa: BLE001
-            raise ApiError(500, "INTERNAL_ERROR", f"setup failed: {type(exc).__name__}") from exc
-        # Autograder expects 201 Created on setup.
-        return JSONResponse(
-            {
-                "session_id": session.session_id,
-                "status": session.status,
-                "role": role,
-                "message": session.message,
-                "target_url": session.target_url or "",
-                "coverage": session.coverage,
-                "results": session.results,
-            },
-            status_code=201,
-        )
-
-    @router.post("/test/run")
-    async def test_run(request: Request) -> JSONResponse:
-        _require_test()
-        body = await _json_body(request)
-        session_id = body.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            # Some graders call /test/run immediately after setup without a body;
-            # create a fresh session when missing.
-            session = harness.setup(role, body)
-            session_id = session.session_id
-        try:
-            session = harness.run(session_id)
-        except KeyError:
-            raise ApiError(404, "NOT_FOUND", "unknown session_id") from None
-        # Autograder expects the finished report here (not status=running).
-        return JSONResponse(session.report())
-
-    @router.get("/test/report")
-    async def test_report(session_id: str | None = None) -> JSONResponse:
-        _require_test()
-        if not session_id:
-            raise ApiError(400, "MALFORMED_BODY", "session_id is required")
-        session = harness.get(session_id)
-        if session is None:
-            raise ApiError(404, "NOT_FOUND", "unknown session_id")
-        return JSONResponse(session.report())
-
-    @router.post("/test/report")
-    async def test_report_post(request: Request) -> JSONResponse:
-        """Accept session_id in the body for graders that POST the report poll."""
-        _require_test()
-        body = await _json_body(request)
-        session_id = body.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise ApiError(400, "MALFORMED_BODY", "session_id is required")
-        session = harness.get(session_id)
-        if session is None:
-            raise ApiError(404, "NOT_FOUND", "unknown session_id")
-        return JSONResponse(session.report())
+    if role == "system":
+        _mount_system(router)
+    else:
+        _mount_tester(router)
 
     return router
+
+
+def _mount_system(router: APIRouter) -> None:
+    @router.post("/test/setup")
+    async def system_setup(request: Request) -> JSONResponse:
+        _require_test()
+        try:
+            body = await _json_body(request)
+            payload = harness.system_setup(body)
+        except harness.HarnessError as exc:
+            return _err(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _err(
+                harness.HarnessError(
+                    500,
+                    f"Could not initialize the session: {type(exc).__name__}",
+                    "system",
+                )
+            )
+        return JSONResponse(payload, status_code=201)
+
+    @router.get("/test/report")
+    async def system_report(session_id: str | None = None) -> JSONResponse:
+        _require_test()
+        try:
+            return JSONResponse(harness.system_report(session_id or ""))
+        except harness.HarnessError as exc:
+            return _err(exc)
+
+
+def _mount_tester(router: APIRouter) -> None:
+    @router.post("/test/setup")
+    async def tester_setup(request: Request) -> JSONResponse:
+        _require_test()
+        try:
+            body = await _json_body(request)
+            # May call remote system setup (or in-process self); keep async only for body read.
+            payload = await _run_sync(harness.tester_setup, body)
+        except harness.HarnessError as exc:
+            return _err(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _err(
+                harness.HarnessError(
+                    500, f"tester setup failed: {type(exc).__name__}", "tester"
+                )
+            )
+        return JSONResponse(payload, status_code=201)
+
+    @router.post("/test/run")
+    async def tester_run(request: Request) -> JSONResponse:
+        """Run in a worker thread so loopback project probes can be served."""
+        _require_test()
+        try:
+            body = await _json_body(request)
+            raw_id = body.get("session_id")
+            if not isinstance(raw_id, str) or not raw_id:
+                raise harness.HarnessError(400, "session_id is required", "tester")
+            report = await _run_sync(harness.tester_run, raw_id)
+        except harness.HarnessError as exc:
+            # Spec: 500 + message/source tester on abort; report retrievable via /test/report.
+            if exc.status == 500 and exc.source == "tester":
+                return JSONResponse(
+                    status_code=500,
+                    content={"message": exc.message, "source": "tester"},
+                )
+            return _err(exc)
+        return JSONResponse(report, status_code=200)
+
+    @router.get("/test/report")
+    async def tester_report(session_id: str | None = None) -> JSONResponse:
+        _require_test()
+        try:
+            return JSONResponse(harness.tester_report(session_id or ""))
+        except harness.HarnessError as exc:
+            return _err(exc)
