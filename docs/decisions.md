@@ -2074,3 +2074,43 @@ Decided 17 and 18 October 2026.
      expected-red test. Until then, decision 305 applies: with no `report` or
      `report_submission` table, every DISPOSITIONED event counts as unsubmitted for A6, A7 and
      the deadlines block, and the reports block is all zero.
+
+311. **The anchor workflow's base URL is a repository variable, never a dispatch input.**
+     `chain-head.yml` reads the service URL from `vars.POD_BASE_URL` and the viewer key from
+     `secrets.POD_VIEWER_KEY`, both through the job's `env`, so neither is written into a shell
+     script, and `reason` reaches the script through `env` as well. A dispatch input for the URL
+     would let a manual run anchor another service's export into the same series. The variable
+     and the secret are deploy-time steps that need the team's approval (hard rule 3); neither is
+     created by this branch.
+
+312. **The anchor workflow is checked by hand; its first live run is deploy-time.** GitHub runs
+     scheduled and `workflow_dispatch` workflows only from the default branch, so
+     `chain-head.yml` cannot run before it reaches main. Its comparison logic is
+     `tools/verify_ledger.py --anchor`, tested in M1; at M8 the YAML was parsed and its shell
+     steps were run by hand against a local API with a scratch heads file. Choices made in the
+     YAML: job-level `permissions: contents: write` only; one `concurrency` group without
+     cancelling; the same action versions as `ci.yml` (`actions/checkout@v4`,
+     `actions/setup-python@v5`); main is checked out without persisted credentials and
+     `chain-heads` in a second directory; the export and `/healthz` go to the runner's temporary
+     directory and are deleted at the end, so they are never printed, uploaded or committed;
+     `/healthz` is logged (`reset_count`, `version`) but its status never fails the run; the head
+     line is the export's highest-seq entry; an empty export fails; a `new_series` run needs a
+     non-empty `reason`, verifies the export without `--anchor` and appends two lines (the
+     `new_series` line, then the head); `actor` is `github.actor`. The workflow does not create
+     `chain-heads`: the branch must exist before the first run, which is a deploy-time step with
+     the secret and the variable.
+
+313. **M7 interpretations of spec 7.2 and 7.3.** Where the spec was silent, M7 chose:
+     - the dashboard's `ledger.last_verification` is the latest run without `head_hash`, with
+       the projection and report mismatch lists shown as counts;
+     - `since` for A2 to A9 is the moment the threshold was crossed (A2 with no run at all:
+       null), and for A1 the failing run's `finished_at`;
+     - A7 is not raised once the deadline has passed; then only A6 holds;
+     - A9 (info) is logged at WARNING, the level for every severity other than critical;
+     - the three `reports` counts are independent totals: all report rows, rows with a
+       submission, and rows not bound to their event's latest disposition;
+     - `generated_at` is wall-clock time;
+     - a failing run gives two ERROR lines: the `alert: code=LEDGER_INTEGRITY` run line,
+       written once by `ledger_ops` when the run is recorded, and the `alert: code=A1 run_id=…`
+       line of the worker's alert step, repeated once per wall-clock UTC day while that run is
+       the latest (decision 309).

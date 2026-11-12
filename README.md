@@ -976,3 +976,97 @@ Parts 1–3.
 
 
 ## 16. Phase 5 Part 3: ledger operations
+
+Part 3 of Phase 5 makes ledger tampering visible to operators: a nightly verification with a
+projection check, an external chain head on the `chain-heads` branch, `/healthz` fields that tie
+the service to a commit, and a dashboard with alerts A1 to A9 (spec 6, 7; D11 to D15). It is
+built on branch `phase5-part3-ledger-ops`. Decisions 294 to 313 in
+[docs/decisions.md](docs/decisions.md) record the choices the specification left open, and
+[docs/operations.md](docs/operations.md) is the operations note (release, alerts runbook,
+anchor restart, backups, secrets).
+
+### 16.1 Endpoints
+
+| Endpoint | Roles | Answer |
+| --- | --- | --- |
+| `POST /v1/ledger/verifications` | REVIEWER (SYSTEM and VIEWER 403, no key 401) | 201 with the stored run (trigger `MANUAL`) |
+| `GET /v1/ledger/verifications?limit=n` | REVIEWER or VIEWER | 200, bare array, newest first; `limit` default 10, maximum 100 |
+| `GET /v1/ops/dashboard` | REVIEWER or VIEWER | 200 with exactly the spec 7.2 keys; `clock` only when `ENVIRONMENT=test`; ids, counts, codes and timestamps only |
+| `GET /healthz` | no key | The four Phase 4 fields, then `version`, `last_verification`, `last_verification_age_seconds`, `reset_count` |
+| `GET /v1/ledger/verify` | unchanged | Exactly three fields, as before |
+
+A run stores `run_id`, `trigger`, `started_at`, `finished_at` (wall clock), verify's three
+fields, `head_seq`, `head_hash`, `head_check` (`OK`, `REGRESSED` or `FIRST_RUN`) and the
+projection and report mismatches, in `ledger_verification_run` (migration 0010), never in the
+ledger. The worker runs one `NIGHTLY` run per wall-clock UTC day.
+
+### 16.2 `/healthz` fields
+
+| Field | Meaning |
+| --- | --- |
+| `version` | `APP_VERSION`, set at image build from `--build-arg GIT_SHA=<commit>`; null when unset |
+| `last_verification` | `{finished_at, valid, head_check}` of the latest run, or null |
+| `last_verification_age_seconds` | Wall-clock seconds since that run finished, or null |
+| `reset_count` | Number of test resets the database has seen |
+
+Ledger integrity never makes `/healthz` 503. With the database unreachable the 503 body keeps
+`version` and sets the other three to null (decision 306).
+
+### 16.3 Alerts
+
+| Code | Severity | Raised when |
+| --- | --- | --- |
+| A1 | critical | The latest verification run is invalid, REGRESSED, or has a projection or report mismatch |
+| A2 | warning | No verification run for more than 26 hours (wall clock), or none at all |
+| A3 | critical | The sweeper has not run for more than 3 × `SWEEP_INTERVAL_SECONDS` |
+| A4 | warning | The oldest pending delivery is older than `NOTIFY_MAX_DELAY_SECONDS` |
+| A5 | warning | `overdue_escalations > 0` |
+| A6 | critical | A DISPOSITIONED event is past its deadline with no submitted report bound to its latest disposition |
+| A7 | warning | Such an event is due within `ALERT_DEADLINE_WARNING_HOURS` and not yet past it |
+| A8 | warning | A delivery failed in the last 24 hours |
+| A9 | info | Events are past `retain_until` and not erased |
+
+The dashboard lists the alerts that hold now. The worker logs each once per code and subject per
+wall-clock UTC day as `alert: code=<code> <name>=<value> …` (ERROR for critical, WARNING
+otherwise). A failing run also logs one `alert: code=LEDGER_INTEGRITY …` line when it is
+recorded; the runbook for each alert is item 4 of the operations note.
+
+### 16.4 The anchor tool and workflow
+
+`python tools/verify_ledger.py EXPORT_FILE --anchor HEADS_FILE` verifies the export exactly as
+without the option, then prints `anchor: OK seq=<s>` or `anchor: MISMATCH seq=<s>` for the last
+head in the JSON-lines heads file. Exit 0 only when the export is valid and the anchor is OK, 1
+otherwise, 2 when the heads file cannot be read or has no head line. Without `--anchor` nothing
+changes. Standard library only.
+
+`.github/workflows/chain-head.yml` runs it daily at 03:17 UTC and by hand, and appends each new
+head to `heads.jsonl` on `chain-heads`. A test reset makes the next run fail; a person restarts
+the series by hand with `new_series: true` and a reason (operations note item 5). The workflow
+runs only from main, and needs the repository variable `POD_BASE_URL`, the secret
+`POD_VIEWER_KEY` and the `chain-heads` branch, which are deploy-time steps that need the team's
+approval (decisions 311, 312).
+
+### 16.5 Settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NIGHTLY_VERIFY_HOUR_UTC` | 2 | Wall-clock UTC hour from which the day's nightly run is due; an integer 0 to 23 |
+| `ALERT_DEADLINE_WARNING_HOURS` | 24 | Window of alert A7 before a reporting deadline; a positive integer |
+| `APP_VERSION` | unset | The deployed main commit, set by the Dockerfile from `ARG GIT_SHA`; never read from git at run time |
+
+A bad `NIGHTLY_VERIFY_HOUR_UTC` or `ALERT_DEADLINE_WARNING_HOURS` raises when it is read (in the
+worker's nightly or alert step, which logs the error by type name, and in the dashboard); it is
+not checked at start-up.
+
+### 16.6 Where the code lives
+
+| What | Where |
+| --- | --- |
+| Nightly run, head check, projection check | `app/ledger_ops.py` |
+| Dashboard and alerts | `app/ops.py` |
+| Routes | `app/api/ops_routes.py`; `/healthz` in `app/api/health_routes.py` |
+| Worker steps | `run_nightly` and `run_alerts` in `app/worker.py` |
+| Settings | the Phase 5 Part 3 slot in `app/config.py` |
+| Tables | `migrations/versions/0010_ledger_ops.py` (`ledger_verification_run`, `platform_counter`) |
+| Anchor | `tools/verify_ledger.py`, `.github/workflows/chain-head.yml` |
+| Tests | `tests/ledger_ops/` |

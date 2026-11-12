@@ -1,0 +1,196 @@
+# External chain head (Phase 5 spec 6.2, D12; docs/decisions.md 297 to 299, 311, 312).
+#
+# Each run downloads the ledger export and /healthz from the deployed service, checks the export
+# with tools/verify_ledger.py --anchor against the last head in heads.jsonl on the chain-heads
+# branch, and appends one line to heads.jsonl. It fails, and commits nothing, when the export does
+# not verify, the chain is shorter than the last head, or the head's entry is missing or has
+# another hash. A test reset therefore fails the next run; a person restarts the series by hand
+# with new_series: true and a reason (docs/operations.md item 5). A scheduled run never starts a
+# series, so with no head yet it fails (decision 299).
+#
+# The export is written to the runner's temporary directory only. It is never printed, uploaded
+# or committed. Only heads.jsonl is committed.
+
+name: Chain head
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      new_series:
+        description: "Start a new series (only after a test reset; see docs/operations.md item 5)"
+        type: boolean
+        default: false
+      reason:
+        description: "Why the series restarts (required with new_series)"
+        type: string
+        default: ""
+
+concurrency:
+  group: chain-head
+  cancel-in-progress: false
+
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      BASE_URL: ${{ vars.POD_BASE_URL }}
+      VIEWER_KEY: ${{ secrets.POD_VIEWER_KEY }}
+      NEW_SERIES: ${{ github.event_name == 'workflow_dispatch' && inputs.new_series && 'true' || 'false' }}
+      REASON: ${{ inputs.reason }}
+      ACTOR: ${{ github.actor }}
+    steps:
+      - name: Check out main (for tools/verify_ledger.py)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main
+          persist-credentials: false
+
+      - name: Check out chain-heads
+        uses: actions/checkout@v4
+        with:
+          ref: chain-heads
+          path: heads
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the settings and inputs
+        run: |
+          if [ -z "$BASE_URL" ]; then
+            echo "::error::the repository variable POD_BASE_URL is not set"
+            exit 1
+          fi
+          if [ -z "$VIEWER_KEY" ]; then
+            echo "::error::the secret POD_VIEWER_KEY is not set"
+            exit 1
+          fi
+          if [ "$NEW_SERIES" = "true" ] && [ -z "$(printf '%s' "$REASON" | tr -d '[:space:]')" ]; then
+            echo "::error::new_series needs a non-empty reason"
+            exit 1
+          fi
+          echo "mode: $([ "$NEW_SERIES" = "true" ] && echo new_series || echo anchor)"
+
+      - name: Download the export and /healthz
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/taken_at.txt"
+          export_code=$(curl -sS -o "$RUNNER_TEMP/export.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $VIEWER_KEY" "${BASE_URL%/}/v1/ledger/export")
+          echo "GET /v1/ledger/export: HTTP $export_code"
+          if [ "$export_code" != "200" ]; then
+            echo "::error::the export download failed (HTTP $export_code)"
+            exit 1
+          fi
+          healthz_code=$(curl -sS -o "$RUNNER_TEMP/healthz.json" -w '%{http_code}' \
+            "${BASE_URL%/}/healthz")
+          echo "GET /healthz: HTTP $healthz_code"
+
+      - name: Log reset_count and version
+        run: |
+          # Logged, never used to skip the check (spec 6.2): compare reset_count with the last
+          # passing run's log to see whether a test reset explains a failure.
+          python - <<'PY'
+          import json, os
+          try:
+              with open(os.path.join(os.environ["RUNNER_TEMP"], "healthz.json"), encoding="utf-8") as f:
+                  health = json.load(f)
+          except (OSError, ValueError):
+              health = {}
+          print(f"reset_count={health.get('reset_count')} version={health.get('version')}")
+          PY
+
+      - name: Verify the export against the last head
+        run: |
+          # The output holds counts and a seq only, never a hash or payload value.
+          status=0
+          if [ "$NEW_SERIES" = "true" ]; then
+            # A new series has no head to compare with: the export must still verify.
+            python main/tools/verify_ledger.py "$RUNNER_TEMP/export.json" \
+              > "$RUNNER_TEMP/verify.txt" || status=$?
+          else
+            python main/tools/verify_ledger.py "$RUNNER_TEMP/export.json" --anchor heads/heads.jsonl \
+              > "$RUNNER_TEMP/verify.txt" || status=$?
+          fi
+          cat "$RUNNER_TEMP/verify.txt"
+          exit "$status"
+
+      - name: Append the new head
+        run: |
+          python - <<'PY'
+          import json, os
+          temp = os.environ["RUNNER_TEMP"]
+          with open(os.path.join(temp, "export.json"), "rb") as f:
+              entries = json.loads(f.read())
+          if not entries:
+              raise SystemExit("::error::the export has no entries, so there is no head to record")
+          last = max(entries, key=lambda entry: entry["seq"])
+          with open(os.path.join(temp, "verify.txt"), encoding="utf-8") as f:
+              verify = json.loads(f.readline())
+          try:
+              with open(os.path.join(temp, "healthz.json"), encoding="utf-8") as f:
+                  health = json.load(f)
+          except (OSError, ValueError):
+              health = {}
+          with open(os.path.join(temp, "taken_at.txt"), encoding="utf-8") as f:
+              taken_at = f.read().strip()
+          lines = []
+          if os.environ["NEW_SERIES"] == "true":
+              previous = None
+              try:
+                  with open("heads/heads.jsonl", encoding="utf-8") as f:
+                      for line in f:
+                          if line.strip():
+                              item = json.loads(line)
+                              if "seq" in item and "hash" in item and "new_series" not in item:
+                                  previous = item
+              except FileNotFoundError:
+                  pass
+              lines.append({
+                  "new_series": True,
+                  "reason": os.environ["REASON"],
+                  "reset_count": health.get("reset_count"),
+                  "previous_seq": previous["seq"] if previous else None,
+                  "previous_hash": previous["hash"] if previous else None,
+                  "actor": os.environ["ACTOR"],
+              })
+          lines.append({
+              "taken_at": taken_at,
+              "base_url": os.environ["BASE_URL"],
+              "app_version": health.get("version"),
+              "seq": last["seq"],
+              "hash": last["hash"],
+              "recorded_at": last["recorded_at"],
+              "verify": {
+                  "valid": verify["valid"],
+                  "entries_checked": verify["entries_checked"],
+                  "first_mismatch": verify["first_mismatch"],
+              },
+          })
+          with open("heads/heads.jsonl", "a", encoding="utf-8") as f:
+              for item in lines:
+                  f.write(json.dumps(item, separators=(",", ":")) + "\n")
+          print(f"appended {len(lines)} line(s); head seq={last['seq']}")
+          PY
+
+      - name: Commit and push heads.jsonl
+        working-directory: heads
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add heads.jsonl
+          git commit -m "chain head $(date -u +%Y-%m-%d) ($([ "$NEW_SERIES" = "true" ] && echo "new series, " || true)run $GITHUB_RUN_ID)"
+          git push origin HEAD:chain-heads
+
+      - name: Remove the downloaded files
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/export.json" "$RUNNER_TEMP/healthz.json" "$RUNNER_TEMP/verify.txt" \
+            "$RUNNER_TEMP/taken_at.txt"
