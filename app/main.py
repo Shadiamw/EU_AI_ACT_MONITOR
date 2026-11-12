@@ -14,6 +14,7 @@ from app.api import (
     health_routes,
     ingestion_routes,
     ledger_routes,
+    ops_routes,
     test_routes,
     webhook_routes,
 )
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
     app.include_router(disposition_routes.router)
     app.include_router(health_routes.router)
     app.include_router(test_routes.router)
+    app.include_router(ops_routes.router)
     # Staff autograder bases: .../system and .../tester (+ /test/setup|run|report).
     app.include_router(harness_routes.build_router("system"), prefix="/system")
     app.include_router(harness_routes.build_router("tester"), prefix="/tester")
