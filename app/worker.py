@@ -26,8 +26,8 @@ logger = logging.getLogger("worker")
 def run_iteration(engine: Engine, *, sweep: bool) -> None:
     """One pass: the sweeper if it is due, then due reminders, then deliveries (so a new gap's
     notification or a reminder goes out in the same iteration; Phase 4 spec 3.6), then the
-    nightly verification if it is due. An error in the reminder pass is logged by type name and
-    the deliveries still run."""
+    nightly verification if it is due, then the alert step. An error in the reminder pass is
+    logged by type name and the deliveries still run."""
     if sweep:
         gaps.sweep(engine)  # logs its own summary line (spec 3.8)
     try:
@@ -36,6 +36,7 @@ def run_iteration(engine: Engine, *, sweep: bool) -> None:
         logger.error("reminder pass failed: type=%s", type(exc).__name__)
     notifications.deliver_due(engine)
     run_nightly(engine)
+    run_alerts(engine)
 
 
 def run_nightly(engine: Engine) -> None:
@@ -47,6 +48,18 @@ def run_nightly(engine: Engine) -> None:
             ledger_ops.run_verification(engine, ledger_ops.NIGHTLY)
     except Exception as exc:
         logger.error("nightly verification failed: type=%s", type(exc).__name__)
+
+
+def run_alerts(engine: Engine) -> None:
+    """The alert step (Phase 5 spec 7.3), after the nightly step. It reads in its own
+    transaction and logs each raised alert once per code and subject per UTC day; an error is
+    logged by type name only and never reaches the rest of the iteration."""
+    from app import ops  # inside the function: ops imports this module for health_values
+
+    try:
+        ops.raise_alerts(engine)
+    except Exception as exc:
+        logger.error("alert step failed: type=%s", type(exc).__name__)
 
 
 def run_forever(engine: Engine) -> None:

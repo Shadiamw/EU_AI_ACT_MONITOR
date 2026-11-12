@@ -205,6 +205,20 @@ def nightly_verify_hour_utc() -> int:
     return int(raw)
 
 
+def alert_deadline_warning_hours() -> int:
+    """ALERT_DEADLINE_WARNING_HOURS: alert A7's window before a reporting deadline (Phase 5
+    spec 7.3). Default 24; a positive integer, otherwise it raises, as NIGHTLY_VERIFY_HOUR_UTC
+    does."""
+    raw = os.environ.get("ALERT_DEADLINE_WARNING_HOURS")
+    if raw is None or raw == "":
+        return 24
+    if not raw.isascii() or not raw.isdigit() or int(raw) < 1:
+        raise RuntimeError(
+            "environment variable ALERT_DEADLINE_WARNING_HOURS must be a positive integer"
+        )
+    return int(raw)
+
+
 def app_version() -> str | None:
     """APP_VERSION: the deployed main commit, set at image build from the Dockerfile's ARG
     GIT_SHA (Phase 5 spec 6.5, D15; Part 3 decision 295). Unset or empty is None. Never read

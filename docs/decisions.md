@@ -2040,3 +2040,37 @@ Decided 17 and 18 October 2026.
      `run_id`), shown as `{finished_at, valid, head_check}` only, never a hash or mismatch;
      `last_verification_age_seconds` is whole seconds from its `finished_at` to
      `clock.wall_now()`. Ledger integrity never makes `/healthz` 503 (spec 6.5).
+
+307. **Alert A8 reads the last attempt from the ledger.** `notification_delivery` has no
+     last-attempt column, so for a FAILED delivery the last attempt is the `recorded_at` of its
+     `NOTIFICATION_FAILED` entry (matched on the payload's `notification_id` and `webhook_id`),
+     which the worker stamps with `clock.now()`. `failed_deliveries_24h` (dashboard and A8)
+     counts FAILED deliveries whose entry is later than `clock.now()` minus 24 hours, so in the
+     test environment the window follows the simulated clock, like the other delivery times.
+
+308. **Alert A2 is raised when there is no verification run at all.** A platform that has never
+     verified its ledger is in a worse state than one whose last run is old, so A2 (warning)
+     is raised with `detail: {"last_run": null}` and `since: null`. Otherwise A2 holds when the
+     wall-clock time since the latest run's `finished_at` exceeds 26 hours, with
+     `detail: {"last_run": <run_id>}` and `since` 26 hours after that `finished_at`.
+
+309. **Once-a-day alert log lines are remembered in process.** There is no storage for them, so
+     `ops.raise_alerts` keeps a set of (wall-clock UTC date, code, subject) in memory; the
+     subject is the run for A1, the event for A6 and A7, and none for the other codes. Entries
+     of earlier dates are dropped. A restarted worker starts with an empty set, so a line can
+     repeat after a restart; that is accepted. The line is `alert: code=<code>` followed by the
+     detail's ids and counts as `name=value` (for A6, `alert: code=A6 event_id=evt-…`), at
+     ERROR for critical and WARNING otherwise, on the `ops` logger. For A1 the worker logs
+     `alert: code=A1 run_id=…`; the run's single `alert: code=LEDGER_INTEGRITY` line (spec 6.1)
+     is written by `ledger_ops` when the run is recorded and is never repeated by this step.
+     The step runs after the nightly step in each worker iteration, in its own read-only
+     transaction and its own try/except, so deliveries and the nightly run are unaffected.
+
+310. **`test_alert_deadline_passed_without_submission` is integration-marked and red until Part 1
+     merges.** It checks that A6 is raised once a DISPOSITIONED event's deadline has passed
+     without a submitted report and is cleared by a submission through Part 1's report routes.
+     On this branch the report route answers 501, so the test fails with a message naming the
+     missing Part 1 dependency, as the M3 and M4 integration tests do; it is the third
+     expected-red test. Until then, decision 305 applies: with no `report` or
+     `report_submission` table, every DISPOSITIONED event counts as unsubmitted for A6, A7 and
+     the deadlines block, and the reports block is all zero.

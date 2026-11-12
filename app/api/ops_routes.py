@@ -1,9 +1,11 @@
-"""Phase 5 Part 3 HTTP: the ledger-verification endpoints (spec 6.1, 7.4; contract delta 5).
+"""Phase 5 Part 3 HTTP: the ledger-verification endpoints and the health dashboard (spec 6.1,
+7.1, 7.2, 7.4; contract delta 5).
 
 - POST /v1/ledger/verifications (REVIEWER only): runs the verification of spec 6.1 now, as a
   MANUAL run, and returns 201 with the stored run.
 - GET /v1/ledger/verifications?limit=n (REVIEWER or VIEWER): the stored runs, newest first by
   started_at, as a bare JSON array; limit defaults to 10 and is at most 100.
+- GET /v1/ops/dashboard (REVIEWER or VIEWER): ops.dashboard, exactly the spec 7.2 keys.
 
 A run is exactly the twelve columns of ledger_verification_run, with started_at and
 finished_at in the API's time format. Order of checks: 401 and 403 (the `require` dependency),
@@ -18,7 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import db, ledger_ops
+from app import db, ledger_ops, ops
 from app.auth import Principal, require
 from app.db import get_session
 from app.errors import ApiError
@@ -77,5 +79,12 @@ def get_verifications(request: Request, principal: Reader, session: DbSession) -
         {"n": limit},
     )
     body = [_run(dict(row._mapping)) for row in rows]
+    session.commit()
+    return ExactJSONResponse(body)
+
+
+@router.get("/v1/ops/dashboard")
+def get_dashboard(principal: Reader, session: DbSession) -> ExactJSONResponse:
+    body = ops.dashboard(session)
     session.commit()
     return ExactJSONResponse(body)
