@@ -155,6 +155,23 @@ EXPECTED_COLUMNS["escalation"] = {
 EXPECTED_COLUMNS["notification"]["escalation_pct"] = "integer"
 # End of the Phase 4 Part 3 slot.
 
+# Phase 5 Part 3 slot (migration 0010).
+EXPECTED_COLUMNS["ledger_verification_run"] = {
+    "run_id": "text",
+    "trigger": "text",
+    "started_at": TIMESTAMPTZ,
+    "finished_at": TIMESTAMPTZ,
+    "valid": "boolean",
+    "entries_checked": "integer",
+    "first_mismatch": "text",
+    "head_seq": "bigint",
+    "head_hash": "text",
+    "head_check": "text",
+    "projection_mismatches": "jsonb",
+    "report_mismatches": "jsonb",
+}
+# End of the Phase 5 Part 3 slot.
+
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
 # is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
 # migration does not create yet is inert.
@@ -162,6 +179,7 @@ GRANT_EXCEPTIONS: dict[str, list[str]] = {
     "clock_state": ["SELECT"],  # only reset and clock advance write it (decision 133)
     "harm_context": ["SELECT"],  # Phase 4 spec 1.7: changed only by migration or seed
     "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
+    "ledger_verification_run": ["INSERT", "SELECT"],  # Phase 5 spec 6.1: insert-only
 }
 
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)

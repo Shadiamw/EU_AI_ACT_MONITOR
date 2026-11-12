@@ -192,4 +192,17 @@ def escalation_percentages() -> tuple[int, ...]:
 
 # Phase 5 Part 3 slot: ledger operations (Phase 5 spec 6 and 7; Part 3 decision 294).
 
+
+def nightly_verify_hour_utc() -> int:
+    """NIGHTLY_VERIFY_HOUR_UTC: the wall-clock UTC hour from which the nightly ledger
+    verification is due (Phase 5 spec 6.1; Part 3 decision 302). Default 2; an integer from 0
+    to 23, otherwise start-up fails."""
+    raw = os.environ.get("NIGHTLY_VERIFY_HOUR_UTC")
+    if raw is None or raw == "":
+        return 2
+    if not raw.isascii() or not raw.isdigit() or not 0 <= int(raw) <= 23:
+        raise RuntimeError("environment variable NIGHTLY_VERIFY_HOUR_UTC must be an integer 0-23")
+    return int(raw)
+
+
 # End of the Phase 5 Part 3 slot.
