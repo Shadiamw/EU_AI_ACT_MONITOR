@@ -1953,6 +1953,29 @@ Decided 17 and 18 October 2026.
      scheduled run when `heads.jsonl` has no head yet; the first head, like every restart after
      a test reset, is written by a `workflow_dispatch` run with `new_series: true` and a reason.
 
+302. **The nightly run happens once per wall-clock UTC day, from `NIGHTLY_VERIFY_HOUR_UTC`.**
+     `ledger_ops.nightly_due(engine)` is true when the wall-clock hour is at least
+     `NIGHTLY_VERIFY_HOUR_UTC` (default 2, an integer from 0 to 23) and no `NIGHTLY` row of
+     `ledger_verification_run` has a `started_at` on the current wall-clock UTC date. So a worker
+     that was down at 02:00 still runs later the same day, and two passes on one date give one
+     row. Two guards keep it to one row when several workers run at once: `run_verification`
+     takes a transaction advisory lock of its own (key ASCII "LVRN", never the ledger's "LEDG"
+     key) and re-checks the condition under it, and a unique index on
+     `((started_at AT TIME ZONE 'UTC')::date) WHERE trigger = 'NIGHTLY'` rejects a second row
+     even if the lock were bypassed. The checks run in one REPEATABLE READ, READ ONLY
+     transaction (one snapshot, so a write committed between the ledger read and the event read
+     cannot look like a mismatch); the result is then inserted by the transaction that holds the
+     lock. Results go to `ledger_verification_run`, never into the ledger (spec 6.1). The worker
+     step runs after the deliveries, in its own try/except, and logs a failure by type name
+     only, so a failed nightly run never affects the other passes.
+
+303. **`clock.wall_now()` is also used by the nightly step and alerts A2 and A3.** Its docstring
+     in `app/clock.py` still says "Only for the sweeper heartbeat"; `app/clock.py` is not
+     changed (it is Part 4's file). The nightly schedule, the run's `started_at` and
+     `finished_at`, and the A2 and A3 ages (M7) read the wall clock, because the simulated clock
+     jumps and these are operational times (spec 6.1, 7.3). Everything about events, deadlines
+     and reminders still reads `clock.now()`.
+
 304. **How the projection check replays gap events.** `ledger_ops.projection_check` (spec 6.3,
      D13) replays the ledger entries of each event in `seq` order and compares the result with
      the `event`, `disposition` and `harm_field` rows. A monitoring gap has no `EVENT_FLAGGED`
