@@ -12,6 +12,10 @@ from sqlalchemy.pool import NullPool
 from app import clock, config, escalations, gaps, notifications, observability
 from tools.seed_part1 import seed as install_seed
 
+# Session advisory lock key that serialises resets: ASCII "RSET" (Part 3 decision 300),
+# distinct from the ledger's "LEDG" and the verification run's "LVRN".
+RESET_LOCK_KEY = 1381188948
+
 # Truncate order is free under CASCADE. Owner role only.
 RESET_TABLES = (
     "notification_delivery",
@@ -79,20 +83,31 @@ def reset() -> None:
     require_test_environment()
     engine = _admin_engine()
     try:
-        with engine.begin() as conn:
-            # platform_counter is in the truncate list, so reset_count is read first and
-            # written back as count + 1 in the same transaction (Part 3 decision 300).
-            count = conn.execute(text("SELECT reset_count FROM platform_counter")).scalar()
-            conn.execute(text(f"TRUNCATE {', '.join(with_phase4_tables(conn, RESET_TABLES))}"))
-            conn.execute(
-                text("INSERT INTO platform_counter (reset_count) VALUES (:count)"),
-                {"count": (count or 0) + 1},
-            )
-        with Session(engine) as session:
-            install_seed(session)
-            session.commit()
-        set_offset_seconds(0)
-        observability.reset_counters()
+        with engine.connect() as lock:
+            # Resets run one after another (Part 3 decision 300): a session advisory lock on its
+            # own connection is held over the truncate, the seed and the clock step, and released
+            # explicitly, even when the reset raises. No table lock is taken.
+            lock.execute(text("SELECT pg_advisory_lock(:key)"), {"key": RESET_LOCK_KEY})
+            lock.commit()
+            try:
+                with engine.begin() as conn:
+                    # platform_counter is in the truncate list, so reset_count is read first
+                    # and written back as count + 1 in the same transaction (decision 300).
+                    count = conn.execute(text("SELECT reset_count FROM platform_counter")).scalar()
+                    tables = with_phase4_tables(conn, RESET_TABLES)
+                    conn.execute(text(f"TRUNCATE {', '.join(tables)}"))
+                    conn.execute(
+                        text("INSERT INTO platform_counter (reset_count) VALUES (:count)"),
+                        {"count": (count or 0) + 1},
+                    )
+                with Session(engine) as session:
+                    install_seed(session)
+                    session.commit()
+                set_offset_seconds(0)
+                observability.reset_counters()
+            finally:
+                lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": RESET_LOCK_KEY})
+                lock.commit()
     finally:
         engine.dispose()
 

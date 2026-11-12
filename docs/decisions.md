@@ -1971,6 +1971,13 @@ Decided 17 and 18 October 2026.
      `reset()`'s owner transaction, `reset_count` is read before the `TRUNCATE`, the `TRUNCATE`
      runs as before, and a row with the count plus one is inserted after it; a missing row
      counts as 0. One transaction, so a failed reset changes neither the tables nor the count.
+     Resets are serialised by a session-level advisory lock (`pg_advisory_lock`, key ASCII
+     "RSET" = 1381188948, never the ledger's "LEDG" or the verification run's "LVRN"), taken on
+     its own connection and held over the truncate, the seed and the clock step, then released
+     with `pg_advisory_unlock` in a `finally` block, because reading `reset_count` before the
+     `TRUNCATE` and the post-commit seed otherwise deadlock concurrent resets. A reset
+     concurrent with ordinary requests that read the tables it truncates can still fail with
+     500, as before M6; that is outside this change.
      A test fixture that truncates the table sets the count back to 0, which `/healthz` shows
      as `"reset_count": 0`.
 
