@@ -2102,7 +2102,13 @@ Decided 17 and 18 October 2026.
      non-empty `reason`, verifies the export without `--anchor` and appends two lines (the
      `new_series` line, then the head); `actor` is `github.actor`. The workflow does not create
      `chain-heads`: the branch must exist before the first run, which is a deploy-time step with
-     the secret and the variable.
+     the secret and the variable. After the audit (M10, findings S-1, S-2, S-4, S-5), neither
+     checkout persists credentials, the viewer key is in the download step's `env` only and the
+     write token (`github.token`) in the commit-and-push step's `env` only, the job times out
+     after 10 minutes and each `curl` after 60 seconds (10 to connect), and a base URL that does
+     not start with `https://` fails the run unless its host is `localhost` or `127.0.0.1` (runs
+     by hand). Pinning actions by SHA (S-3) and protecting `chain-heads` (S-6) are left to the
+     integrator.
 
 313. **M7 interpretations of spec 7.2 and 7.3.** Where the spec was silent, M7 chose:
      - the dashboard's `ledger.last_verification` is the latest run without `head_hash`, with
@@ -2118,3 +2124,9 @@ Decided 17 and 18 October 2026.
        written once by `ledger_ops` when the run is recorded, and the `alert: code=A1 run_id=…`
        line of the worker's alert step, repeated once per wall-clock UTC day while that run is
        the latest (decision 309).
+
+     M10 pinned the boundaries with a test: exactly at the deadline A7 holds and A6 does not,
+     and a deadline exactly 24 hours away is not counted in `due_within_24h_unsubmitted`
+     (`now <= deadline < now + 24 h`). A1 follows the latest run only, so after a REGRESSED run
+     it clears on the next clean run while the external anchor keeps failing; this is accepted
+     and written into the A1 runbook (operations note item 4; audit F-4).

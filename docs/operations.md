@@ -162,12 +162,29 @@ different things:
    run fails. It repeats once per wall-clock UTC day while that run stays the latest failing run,
    and a new failing run gives a new line. It means "the platform is still in the A1 state".
 
+**The two lines spell values differently** (audit N-1). The LEDGER_INTEGRITY line writes
+`valid=false`; the A1 line writes `valid=False`, and on a run with no hash mismatch it writes
+`first_mismatch=None`. A search of the logs must match both spellings, for example
+`grep -iE 'valid=false'`.
+
 **Tamper response (Model 5 Ex-5).** (a) Stop writes: tell the team, stop ingestion and review
 work, and stop the worker machine if needed. (b) Export the ledger (`GET /v1/ledger/export`) and
 keep the file. (c) Compare it with `chain-heads`: run `python tools/verify_ledger.py export.json
 --anchor heads.jsonl` with `heads.jsonl` from the `chain-heads` branch. (d) Preserve the database:
 take a Fly Postgres backup or snapshot (item 7) before any repair, and do not reset. (e) Inform
 the team with the run id, the seqs and ids from the two lines, and the anchor result.
+
+**A1 after a shorter chain clears on the next clean run** (audit F-4). The head check compares a
+run with the previous run only, and A1 judges only the latest run (spec 6.1, 7.3). So after a
+run that found `head_check=REGRESSED`, the next run compares with that shorter head, finds `OK`,
+and A1 is gone, although the chain is still shorter than before and nothing was repaired. A
+reviewer can cause that next run at once with `POST /v1/ledger/verifications`. The external
+anchor does not forget: every later anchor run keeps failing with `anchor: MISMATCH` until the
+series is restarted by hand (item 5, restart runbook), which must only follow a booked test
+reset. So investigate from the log lines of the REGRESSED run, not from the current dashboard:
+the `LEDGER_INTEGRITY` line (run id, `head_check=REGRESSED`, `head_seq`) and the `alert: code=A1`
+line (run id, `head_check`). Runs are never deleted by the application, so `GET
+/v1/ledger/verifications?limit=n` still lists the REGRESSED run and the previous run's head.
 
 ## 5. Nightly verification and anchoring
 
@@ -189,6 +206,20 @@ seq, hash, recorded_at, verify}` and pushes it without force. It fails, and comm
 the export does not verify, the chain is shorter than the last head, or the head's entry is
 missing or has another hash. A scheduled run with no head yet fails (decision 299). The export is
 never printed, uploaded or committed.
+
+The workflow also fails before any download when `POD_BASE_URL` does not start with `https://`
+(plain `http://` is accepted only for `localhost` or `127.0.0.1`, for runs by hand against a
+local API) and when `POD_VIEWER_KEY` is empty. The viewer key is given to the download step only
+and the write token to the final commit-and-push step only; neither checkout keeps credentials.
+Each download gives up after 60 seconds (10 to connect), and the whole job after 10 minutes
+(decision 312).
+
+**The anchor is only as strong as the `chain-heads` branch** (audit S-6). Anyone who can
+force-push `chain-heads` can rewrite or remove heads, and anyone who can dispatch the workflow
+with `new_series: true` can start a new series after a real truncation. So `chain-heads` must be
+protected against force-push and deletion, so that every `new_series` line stays in its
+history, and only trusted maintainers may run the workflow by hand. UNVERIFIED: the branch
+protection and who can dispatch workflows on this repository were not checked.
 
 The workflow runs only once it is on main, with the repository variable `POD_BASE_URL`, the
 secret `POD_VIEWER_KEY` and the branch `chain-heads` in place; each of these needs the team's
@@ -288,6 +319,14 @@ Phase 5:
 - Entries after the last anchor are not anchored (item 5), and the columns listed there are not
   covered by any check.
 - A legitimate test reset fails the next anchor run until a person restarts the series (item 5).
+- A manual verification that waits longer than `LOCK_TIMEOUT` (5 s on Fly and in compose) for
+  another run's verification lock returns 500 `INTERNAL_ERROR`, not a busy answer (audit F-3).
+  The nightly step fails the same way, is logged by type name only (`nightly verification
+  failed: type=…`; the API logged `type=OperationalError` for the same wait) and is retried on
+  the next worker iteration. A normal run is short:
+  the audit timed 0.09 s for 4,006 entries and saw ten concurrent manual runs all return 201
+  under `LOCK_TIMEOUT=5s`, so a wait that long means another run is stuck.
+- After a REGRESSED run, A1 clears on the next clean run (item 4); the anchor keeps failing.
 
 ## 10. Secrets inventory
 
@@ -299,7 +338,8 @@ Names only, never values.
 | `DATABASE_ADMIN_URL` | Fly secret (set by `deploy-fly.sh`) | Owner role: migrations and reset. |
 | `INGEST_KEY_SYS_42`, `REVIEWER_KEY`, `VIEWER_KEY` | `fly.toml` `[env]` on main | Published test keys (LIM-03), not secrets. |
 | `REVIEWER_2_KEY` | Fly secret, when Part 1 is deployed | Needs the team's approval (spec 11.6). |
-| `POD_VIEWER_KEY` | GitHub Actions secret | Read by `chain-head.yml` only, through `env`. Needs the team's approval; not created. |
+| `POD_VIEWER_KEY` | GitHub Actions secret | Read by `chain-head.yml` only, through the download step's `env`. Needs the team's approval; not created. |
+| `GITHUB_TOKEN` (`github.token`) | Created by GitHub for each run | `chain-head.yml` gives it to the commit-and-push step's `env` only (`contents: write`); the checkouts do not keep it. |
 | `POD_BASE_URL` | GitHub Actions repository variable (not a secret) | The deployed base URL for `chain-head.yml` (decision 311). Not created. |
 
 `scripts/cloud-bootstrap-db.sql` and `deploy-fly.sh` hold the database role passwords used for

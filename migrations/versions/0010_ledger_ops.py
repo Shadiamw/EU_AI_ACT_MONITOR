@@ -41,7 +41,7 @@ COUNTER_TABLE = "platform_counter"
 TRIGGERS = ("NIGHTLY", "MANUAL")
 HEAD_CHECKS = ("OK", "REGRESSED", "FIRST_RUN")
 
-_ROLE_NAME = re.compile(r"[a-z_][a-z0-9_]*")
+_ROLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 def _app_role() -> str:

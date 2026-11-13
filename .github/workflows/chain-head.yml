@@ -10,6 +10,10 @@
 #
 # The export is written to the runner's temporary directory only. It is never printed, uploaded
 # or committed. Only heads.jsonl is committed.
+#
+# Secrets reach only the steps that use them (decision 312): the viewer key is in the download
+# step's env only, and the write token is given to the commit-and-push step only; neither
+# checkout keeps credentials in .git/config.
 
 name: Chain head
 
@@ -34,6 +38,7 @@ concurrency:
 jobs:
   anchor:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     defaults:
@@ -41,7 +46,6 @@ jobs:
         shell: bash
     env:
       BASE_URL: ${{ vars.POD_BASE_URL }}
-      VIEWER_KEY: ${{ secrets.POD_VIEWER_KEY }}
       NEW_SERIES: ${{ github.event_name == 'workflow_dispatch' && inputs.new_series && 'true' || 'false' }}
       REASON: ${{ inputs.reason }}
       ACTOR: ${{ github.actor }}
@@ -58,6 +62,7 @@ jobs:
         with:
           ref: chain-heads
           path: heads
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -69,8 +74,12 @@ jobs:
             echo "::error::the repository variable POD_BASE_URL is not set"
             exit 1
           fi
-          if [ -z "$VIEWER_KEY" ]; then
-            echo "::error::the secret POD_VIEWER_KEY is not set"
+          # The viewer key travels to this URL, so it must be https. Plain http is accepted only
+          # for a loopback host (localhost or 127.0.0.1, optional port), so that the workflow can
+          # be run by hand against a local API; no deployed service is reached that way.
+          if [[ ! "$BASE_URL" =~ ^https:// ]] \
+            && [[ ! "$BASE_URL" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?(/.*)?$ ]]; then
+            echo "::error::POD_BASE_URL must start with https:// (plain http only for localhost or 127.0.0.1)"
             exit 1
           fi
           if [ "$NEW_SERIES" = "true" ] && [ -z "$(printf '%s' "$REASON" | tr -d '[:space:]')" ]; then
@@ -80,16 +89,24 @@ jobs:
           echo "mode: $([ "$NEW_SERIES" = "true" ] && echo new_series || echo anchor)"
 
       - name: Download the export and /healthz
+        env:
+          VIEWER_KEY: ${{ secrets.POD_VIEWER_KEY }}
         run: |
+          if [ -z "$VIEWER_KEY" ]; then
+            echo "::error::the secret POD_VIEWER_KEY is not set"
+            exit 1
+          fi
           date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/taken_at.txt"
-          export_code=$(curl -sS -o "$RUNNER_TEMP/export.json" -w '%{http_code}' \
+          export_code=$(curl -sS --connect-timeout 10 --max-time 60 \
+            -o "$RUNNER_TEMP/export.json" -w '%{http_code}' \
             -H "Authorization: Bearer $VIEWER_KEY" "${BASE_URL%/}/v1/ledger/export")
           echo "GET /v1/ledger/export: HTTP $export_code"
           if [ "$export_code" != "200" ]; then
             echo "::error::the export download failed (HTTP $export_code)"
             exit 1
           fi
-          healthz_code=$(curl -sS -o "$RUNNER_TEMP/healthz.json" -w '%{http_code}' \
+          healthz_code=$(curl -sS --connect-timeout 10 --max-time 60 \
+            -o "$RUNNER_TEMP/healthz.json" -w '%{http_code}' \
             "${BASE_URL%/}/healthz")
           echo "GET /healthz: HTTP $healthz_code"
 
@@ -182,12 +199,17 @@ jobs:
 
       - name: Commit and push heads.jsonl
         working-directory: heads
+        env:
+          PUSH_TOKEN: ${{ github.token }}
         run: |
+          # The token is given to this one git command as an HTTP header; it is never written to
+          # .git/config, so no other step can read it.
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add heads.jsonl
           git commit -m "chain head $(date -u +%Y-%m-%d) ($([ "$NEW_SERIES" = "true" ] && echo "new series, " || true)run $GITHUB_RUN_ID)"
-          git push origin HEAD:chain-heads
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:chain-heads
 
       - name: Remove the downloaded files
         if: always()
