@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import clock, deadlines, ledger, review
+from app import clock, deadlines, ledger, personal_data, review
 from app.auth import Principal
 from app.errors import ApiError, not_found
 from app.events import HARM_FIELDS
@@ -41,6 +41,9 @@ disposition_logger = logging.getLogger("api.disposition")
 
 # Spec 2.3: the longest rationale a request may send, counted in code points before trimming.
 RATIONALE_MAX_LENGTH = 4000
+
+# The field name in the sealing associated data (Phase 5 spec 4.3).
+RATIONALE_FIELD = "disposition.rationale"
 
 RATIONALE_REQUIRED_MESSAGE = "rationale is required when tier is NOT_SERIOUS"
 EXTENSION_MESSAGE = "extending a running deadline requires a rationale"
@@ -157,6 +160,15 @@ def record(
 
     changed = review.apply_harm_fields(session, event_id, principal, decisions, now)
 
+    # Phase 5 spec 4.3: the rationale is personal data. It is sealed once under the event's
+    # record key, and the same sealed string goes into the disposition row and the ledger
+    # payload, so erasure (which destroys the key) makes both unreadable and changes no hash.
+    sealed_rationale = (
+        None
+        if request.rationale is None
+        else personal_data.seal(session, event_id, RATIONALE_FIELD, request.rationale)
+    )
+
     disposition_id = new_id("dsp")
     seq_in_event = 1 if previous is None else previous.seq_in_event + 1
     session.execute(
@@ -171,7 +183,7 @@ def record(
             "event_id": event_id,
             "seq_in_event": seq_in_event,
             "tier": request.tier,
-            "rationale": request.rationale,
+            "rationale": sealed_rationale,
             "reviewer_id": principal.actor_id,
             "now": now,
             "anchor": anchor,
@@ -193,7 +205,7 @@ def record(
     statuses: dict[str, JsonValue] = {key: decisions.fields[key].status for key in HARM_FIELDS}
     harm_fields_changed: list[JsonValue] = list(changed)
     common: Payload = {
-        "rationale": request.rationale,
+        "rationale": sealed_rationale,
         "deadline_utc": _time(deadline_utc),
         "anchor_at": api_time(anchor),
         "calendar": calendar,
@@ -250,7 +262,7 @@ def summary(session: Session, event_id: str) -> dict[str, Any]:
     if rows:
         disposition = {
             "tier": rows[-1].tier,
-            "rationale": rows[-1].rationale,
+            "rationale": personal_data.open(session, event_id, RATIONALE_FIELD, rows[-1].rationale),
             "reviewer_id": rows[0].reviewer_id,
             "assigned_at": api_time(rows[0].assigned_at),
         }

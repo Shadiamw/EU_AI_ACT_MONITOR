@@ -16,7 +16,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from app import escalations, ledger, review
+from app import escalations, ledger, personal_data, review
 from app.ledger import verify_ledger
 from app.main import create_app
 from tests.api.conftest import EVENT_KEYS, FORBIDDEN, MALFORMED, NOT_FOUND, UNAUTHORIZED, ApiClient
@@ -163,6 +163,12 @@ def test_a_reviewers_view_then_a_disposition_moves_under_review_to_dispositioned
     assert ok(dispose(client, event_id, "DEATH"))["state"] == "DISPOSITIONED"
 
 
+def opened(owner_engine: Engine, event_id: str, stored: str | None) -> str | None:
+    """The plain rationale of a stored value (sealed from migration 0009, Phase 5 spec 4.3)."""
+    with Session(owner_engine) as session:
+        return personal_data.open(session, event_id, "disposition.rationale", stored)
+
+
 # AC-09: exactly four options; NOT_SERIOUS needs a rationale (spec 2.3, 2.11).
 
 
@@ -203,11 +209,14 @@ def test_ac09_not_serious_with_a_rationale_closes_with_no_deadline(
         "assigned_at": "2026-09-27T10:12:00Z",
     }
     [row] = disposition_rows(owner_engine, event_id)
-    assert (row["rationale"], row["deadline_utc"]) == ("seasonal shift, no user impact", None)
+    # Phase 5 spec 4.3: stored sealed; open() gives the text back, and the ledger payload holds
+    # the same sealed string.
+    assert row["rationale"].startswith("pd1:") and row["deadline_utc"] is None
+    assert opened(owner_engine, event_id, row["rationale"]) == "seasonal shift, no user impact"
     assert event_row(owner_engine, event_id)["deadline_utc"] is None
     entry = ledger_rows(owner_engine)[-1]
     assert entry["entry_type"] == "DISPOSITION_RECORDED"
-    assert entry["payload"]["rationale"] == "seasonal shift, no user impact"
+    assert entry["payload"]["rationale"] == row["rationale"]
     assert entry["payload"]["deadline_utc"] is None
 
 
@@ -635,8 +644,9 @@ def test_ac11_revisions(
         assert response.json()["revisions"][-1]["new_tier"] == second
         assert response.json()["disposition"]["rationale"] == rationale
         latest = disposition_rows(owner_engine, event_id)[-1]
-        assert latest["rationale"] == rationale
-        assert ledger_rows(owner_engine)[-1]["payload"]["rationale"] == rationale
+        assert opened(owner_engine, event_id, latest["rationale"]) == rationale
+        payload = ledger_rows(owner_engine)[-1]["payload"]["rationale"]
+        assert payload == latest["rationale"]  # the same sealed string
     assert detail(client, event_id)["deadline_utc"] == deadline
     assert event_row(owner_engine, event_id)["deadline_utc"] == at(deadline)
 
@@ -744,9 +754,10 @@ def test_addendum_rule_1(
     assert result["deadline_utc"] == (ANCHOR + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert result["disposition"]["rationale"] == rationale
     latest = disposition_rows(owner_engine, event_id)[-1]
-    assert (latest["rationale"], latest["anchor_at"]) == (rationale, ANCHOR)
+    assert opened(owner_engine, event_id, latest["rationale"]) == rationale
+    assert latest["anchor_at"] == ANCHOR
     entry = ledger_rows(owner_engine)[-1]
-    assert entry["payload"]["rationale"] == rationale
+    assert entry["payload"]["rationale"] == latest["rationale"]
 
 
 # Decision D2: revisions into and out of NOT_SERIOUS (spec 2.6, 2.11; Addendum rule 11).

@@ -183,6 +183,16 @@ EXPECTED_COLUMNS["report_submission"] = {
 }
 # End of the Phase 5 Part 1 slot.
 
+# Phase 5 Part 2 slot (migration 0009).
+EXPECTED_COLUMNS["event"]["erased_at"] = TIMESTAMPTZ
+EXPECTED_COLUMNS["record_key"] = {
+    "subject_id": "text",
+    "data_key": "bytea",
+    "created_at": TIMESTAMPTZ,
+    "destroyed_at": TIMESTAMPTZ,
+}
+# End of the Phase 5 Part 2 slot.
+
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
 # is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
 # migration does not create yet is inert.
@@ -192,6 +202,7 @@ GRANT_EXCEPTIONS: dict[str, list[str]] = {
     "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
     "report": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
     "report_submission": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
+    "record_key": ["INSERT", "SELECT", "UPDATE"],  # Phase 5 spec 4.3: a tombstone, never deleted
 }
 
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)
@@ -232,7 +243,7 @@ def test_migration_head_is_0008(owner_engine: Engine) -> None:
     """Spec 4.4: 0001 Platform, 0002 Ledger, 0003 Detection, 0004 Notifications; Phase 4
     Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations; Phase 5: 0008 Reports."""
     [row] = rows(owner_engine, "SELECT version_num FROM alembic_version")
-    assert row == {"version_num": "0008"}
+    assert row == {"version_num": "0009"}
 
 
 def index_definitions(owner_engine: Engine, table: str) -> dict[str, str]:

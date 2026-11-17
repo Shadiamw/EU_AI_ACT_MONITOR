@@ -94,7 +94,7 @@ def test_register_pings_then_stores_and_appends(
         "subject_id": webhook_id,
         "payload": {
             "webhook_id": webhook_id,
-            "url": receiver.url,
+            "url_sha256": webhooks.url_sha256(receiver.url),  # D16: not the URL itself
             "event_types": ["flag_notification", "reminder"],
         },
     }
@@ -253,7 +253,8 @@ def test_urls_with_query_credentials_or_fragment_are_accepted_as_received(
     stored, entry = registered(owner_engine, webhook_id)
     assert stored["url"] == url  # stored as received
     assert entry["subject_id"] == webhook_id
-    assert entry["payload"]["url"] == url  # the ledger carries it as received
+    assert entry["payload"]["url_sha256"] == webhooks.url_sha256(url)  # D16: hash, not the URL
+    assert "url" not in entry["payload"]
     [ping] = receiver.calls  # the ping reached the receiver at the URL's path and query
     assert ping.path == wire_path
 
@@ -377,7 +378,8 @@ def test_outside_test_a_public_https_url_is_accepted(
     assert response.status_code == 201
     assert production == [url]
     stored, entry = registered(owner_engine, response.json()["webhook_id"])
-    assert stored["url"] == entry["payload"]["url"] == url
+    assert stored["url"] == url
+    assert entry["payload"]["url_sha256"] == webhooks.url_sha256(url)
 
 
 def test_outside_test_an_unresolvable_host_goes_to_the_ping(

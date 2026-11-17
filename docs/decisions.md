@@ -2000,3 +2000,87 @@ Decided 17 and 18 October 2026.
      views, the Model 5 Phase 5 fixture, `tools/demo_phase5.py`, `PHASE5_REQUIRED`, the manual
      checklist M3 and the contract-delta document are Part 4's. Erasure and the sealing itself
      are Part 2's. The nightly job, the anchor and the dashboard are Part 3's.
+
+
+## Part 2 decisions (Phase 5 records: retention, clock bound, sealing, erasure; numbers 274 to 293)
+
+274. **Part 2 is built on Part 1, not on a base commit.** The Phase 5 base commit (spec 11.1,
+     Part 4) has not landed, and erasure needs Part 1's tables and the three ledger types, so
+     `phase5-part2-records` is cut from `phase5-part1-reports`. It adds migration `0009`, moves
+     the head pins to 0009, adds `record_key` to `PHASE5_TABLES` (reset truncates it), and adds
+     the runtime dependency `cryptography`. When the base commit lands, take its version of
+     every shared file and keep the 0009 content and the Part 2 slot of
+     `tests/worker/test_schema.py` (the `event.erased_at` column and `record_key`).
+
+275. **The clock and sample bound is 9999-07-01T00:00:00Z (2a, D10, LIM-12).**
+     `formats.TIME_LIMIT` is the one constant. `platform._check_representable` refuses an
+     advance whose simulated time is at or after it (the 2^63 - 1 offset check stays), and the
+     ingest model refuses a sample timestamp at or after it, both as 400 MALFORMED_BODY. The
+     last accepted instant, 9999-06-30T23:59:59Z, gives `retain_until` 9999-12-30T23:59:59Z.
+     Decision 226's `datetime.max` rule is replaced. The exact boundary is a unit test with the
+     wall clock fixed; the HTTP test uses a one-minute margin because the wall clock moves.
+
+276. **AC-05 is tested in-process with the fake clock (2a).** `tests/records/test_retention.py`
+     checks the event, its evidence bundle (whose hash reproduces) and its five samples at
+     5 months 29 days, and 200-or-404 at 6 months 1 day. The fake clock runs no sweep, so the
+     six-month jump opens no gap events; the HTTP version is Part 4's acceptance file.
+
+277. **Sealing is AES-256-GCM under a per-event key (2b, D7).** `personal_data.seal` returns
+     `pd1:` plus base64url (no padding) of nonce, ciphertext and tag; `seal_bytes` returns the
+     bytes `pd1:` followed by nonce, ciphertext and tag. The nonce is 12 random bytes, so the
+     same text seals differently each time. The associated data is `subject_id|field`, so a
+     value cannot be moved to another event or field (opening it there raises `SealError`, a
+     test). The key is 32 random bytes in `record_key`, created on first use with `INSERT ...
+     ON CONFLICT DO NOTHING`, and stored unwrapped: this is erasure, not confidentiality.
+
+278. **`open` passes unsealed values through, returns None for a destroyed key and raises for a
+     changed one.** A value without the `pd1:` prefix (a row written before 0009) is returned as
+     it is and creates no key. A destroyed key gives None. A sealed value that fails
+     authentication raises `SealError`; the API then answers 500, because a stored value that
+     was altered is a fault, not a client error. Sealing for a destroyed key raises
+     `KeyDestroyedError` (not reachable through the routes: the report and disposition routes
+     check erasure first, and an erased event is past `retain_until`).
+
+279. **The rationale is sealed once and the same string goes in two places.**
+     `dispositions.record` seals the trimmed rationale as field `disposition.rationale`, and
+     that one string is written to the `disposition` row and to the `DISPOSITION_RECORDED` or
+     `_REVISED` payload. `dispositions.summary` opens the latest row. A null rationale is not
+     sealed. The ledger hash covers the sealed string, so erasure changes no hash (INV-11).
+     The export and the audit view therefore show `pd1:...` where they showed the text.
+
+280. **Erasure (2b, D8) is `POST /v1/events/{id}/erasure`, REVIEWER only, in one transaction.**
+     `retention.erase` locks the event row, then checks `now < retain_until` (409
+     RETENTION_NOT_EXPIRED) and `erased_at` (409 ALREADY_ERASED), in that order. Then it
+     destroys the key, nulls `harm_field.evidence` and `prefill_evidence`, sets
+     `event.erased_at` and appends RECORD_ERASED. At exactly `retain_until` erasure is allowed
+     (the check is strictly "before"). The body must be empty or `{}`, else 400 MALFORMED_BODY.
+     It is never automatic. Nothing else is deleted (D9).
+
+281. **`erased_fields` lists only fields that held something.** The names are checked before
+     the change: `disposition.rationale` and `ledger_entry.payload.rationale` when a sealed
+     value is there, `harm_field.evidence` and `harm_field.prefill_evidence` when non-null,
+     `report.json_bytes` and `report.pdf_bytes` when sealed. Field names only, never values
+     (the log line carries the event and the actor only). `key_destroyed` is False for an event
+     that never had a key (no rationale and no report).
+
+282. **`is_erased` is `event.erased_at IS NOT NULL`.** Part 1's routes already check it (410
+     RECORD_ERASED), so Part 2 only had to make it true. `GET /v1/events/{id}` still answers
+     200 after erasure with evidence and rationale null and everything else unchanged;
+     `GET .../reports` still lists the rows and hashes; the audit view shows RECORD_ERASED.
+
+283. **`record_key` keeps a tombstone.** The application role has SELECT, INSERT and UPDATE and
+     no DELETE; the table check `(data_key IS NULL) = (destroyed_at IS NOT NULL)` keeps the two
+     columns consistent, and a second check keeps the key at 32 bytes. Reset empties it with the
+     other tables.
+
+284. **`WEBHOOK_REGISTERED` carries `url_sha256` (D16, LIM-13).** The payload is `{webhook_id,
+     url_sha256, event_types}`, where `url_sha256` is the lowercase hex SHA-256 of the UTF-8 URL.
+     The URL stays in `webhook.url`, which delivery needs and which is not exported. The Phase 3
+     tests that read `url` from the payload read the hash.
+
+285. **Limits, as the spec states them (4.7).** Only rows written from 0009 on are erasable; the
+     deployment resets after migrating. Backups keep a destroyed key until they expire. `actor_id`
+     is a pseudonymous account id and is not erased (D20). The HTTP acceptance test that reads a
+     rationale from a ledger payload (`tests/acceptance/test_ac11_deadlines.py`) and the
+     Phase 4 fixtures that read the webhook `url` belong to Part 4's list (10.2); they need the
+     deployed stack and were not run here.

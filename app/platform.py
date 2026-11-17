@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from app import clock, config, escalations, gaps, notifications, observability
+from app.formats import TIME_LIMIT
 from tools.seed_part1 import seed as install_seed
 
 # Truncate order is free under CASCADE. Owner role only.
@@ -34,7 +35,7 @@ RESET_TABLES = (
 PHASE4_TABLES = ("harm_context", "disposition", "escalation")
 # The Phase 5 tables (Phase 5 spec 11.1 step 2); each part appends the tables its migration
 # creates. They go through the same to_regclass check, for the same reason.
-PHASE5_TABLES = ("report", "report_submission")
+PHASE5_TABLES = ("report", "report_submission", "record_key")
 
 
 def with_phase4_tables(conn: Connection, tables: Sequence[str] = ()) -> tuple[str, ...]:
@@ -96,13 +97,15 @@ MAX_OFFSET_SECONDS = 2**63 - 1
 
 def _check_representable(offset: int) -> None:
     """ValueError, before anything is written, if `offset` overflows the stored BIGINT or puts
-    the simulated time past the year 9999 (datetime.max; decision 226)."""
+    the simulated time at or after 9999-07-01T00:00:00Z (decision 226, bound moved by D10)."""
     if offset > MAX_OFFSET_SECONDS:
         raise ValueError("offset overflows the stored offset")
     try:
-        clock.wall_now() + timedelta(seconds=offset)
+        simulated = clock.wall_now() + timedelta(seconds=offset)
     except OverflowError:
         raise ValueError("simulated time past the year 9999") from None
+    if simulated >= TIME_LIMIT:
+        raise ValueError("simulated time at or after 9999-07-01")
 
 
 def advance_clock(seconds: int) -> dict[str, object]:

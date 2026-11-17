@@ -161,6 +161,7 @@ def test_a_gap_event_has_the_spec_fields_and_four_not_applicable_harm_fields(
         "evidence_bundle": None,
         "evidence_sha256": None,
         "retain_until": datetime(2027, 4, 2, 9, 15, 11, 250000, tzinfo=UTC),
+        "erased_at": None,
     }
     harm = rows(owner_engine, "SELECT * FROM harm_field ORDER BY field_key")
     assert harm == [

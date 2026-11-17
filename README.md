@@ -1018,3 +1018,28 @@ cannot be submitted.
 - Assembly holds the ledger append lock while the PDF is rendered (decision 258).
 - The template is a Commission draft of 26 September 2025; if a final version exists, the mapping
   in `app/report_template.py` is redone.
+
+
+## 15. Phase 5 Part 2: records (retention, clock bound, sealing, erasure)
+
+Personal data can be made permanently unreadable after the retention period without touching
+the hash chain. The code is in `app/personal_data.py` (sealing), `app/retention.py` (erasure),
+`app/api/erasure_routes.py` and migration 0009; the decisions are 274 to 285 in
+`docs/decisions.md`.
+
+How it works, in plain words: each event gets a random key, stored in `record_key`. Personal
+text that goes into a table nobody may edit (the reviewer's rationale, the report) is
+encrypted with that key before it is stored, and the ledger hashes cover the encrypted text.
+Erasing an event deletes its key, so the encrypted text stays but can no longer be read, and
+no hash changes. The key sits in the same database, so this gives erasure, not secrecy.
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| POST /v1/events/{id}/erasure | REVIEWER | Body empty or `{}`. After `retain_until`: destroys the key, nulls the harm-field evidence, sets `erased_at`, appends RECORD_ERASED; 200 `{event_id, erased_at, erased_fields}`. Before `retain_until`: 409 RETENTION_NOT_EXPIRED. Again: 409 ALREADY_ERASED. |
+
+After erasure `GET /v1/events/{id}` has null evidence and rationale, the report routes answer
+410 RECORD_ERASED, and the ledger verifies exactly as before plus one entry. Other changes:
+the test clock and a sample timestamp stop at 9999-07-01 (400 MALFORMED_BODY), and
+`WEBHOOK_REGISTERED` carries `url_sha256` instead of the URL. Known limits: rows written before
+migration 0009 stay plain and cannot be erased; database backups keep a destroyed key until
+they expire; erasure is run by a person, never automatically.
