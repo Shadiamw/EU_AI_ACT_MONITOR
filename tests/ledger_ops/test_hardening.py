@@ -285,10 +285,40 @@ def test_dashboard_shows_counts_only_after_a_failed_run(
     assert "head_hash" not in summary
 
     health = client.get("/healthz")
-    for body in (dashboard.text, health.text):
-        for value in ("0.34", "0.35", '"expected"', '"actual"', "head_hash", "accuracy_drift"):
-            assert value not in body
-        assert re.search(r"[0-9a-f]{64}", body) is None  # no hash of any kind
+    for response in (dashboard, health):
+        # On the parsed JSON, not the raw text: a wall-clock timestamp such as
+        # "...:00.347309Z" contains the characters 0.34 without being the payload value.
+        keys, scalars = json_keys_and_scalars(response.json())
+        assert not {"expected", "actual", "head_hash"} & keys
+        for scalar in scalars:
+            assert scalar not in (0.34, 0.35)  # as JSON numbers
+            if isinstance(scalar, str):
+                # As whole numeric tokens of a string (0.34, "0.34", "x=0.35"), never as part
+                # of a longer number such as the fraction of a second in a timestamp.
+                assert not {"0.34", "0.35"} & set(re.findall(r"[0-9]+(?:\.[0-9]+)?", scalar))
+                assert scalar not in ("expected", "actual")
+                assert "head_hash" not in scalar
+                assert "accuracy_drift" not in scalar
+        assert "accuracy_drift" not in keys
+        assert re.search(r"[0-9a-f]{64}", response.text) is None  # no hash of any kind
+
+
+def json_keys_and_scalars(node: Any) -> tuple[set[str], list[Any]]:
+    """Every object key and every scalar value (string, number, bool, null) in a JSON
+    document, at any depth."""
+    keys: set[str] = set()
+    scalars: list[Any] = []
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            keys.update(item)
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+        else:
+            scalars.append(item)
+    return keys, scalars
 
 
 def test_alert_exact_boundaries(
