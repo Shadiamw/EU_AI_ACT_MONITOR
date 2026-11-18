@@ -1978,6 +1978,22 @@ Decided 17 and 18 October 2026.
      `TRUNCATE` and the post-commit seed otherwise deadlock concurrent resets. A reset
      concurrent with ordinary requests that read the tables it truncates can still fail with
      500, as before M6; that is outside this change.
+     Audit 2 (finding B2) fixed one lock order, advisory locks before tables: `RSET`, then the
+     verification lock `LVRN` (decision 302) as the first statement of the truncate
+     transaction, then the `TRUNCATE`'s table locks. So a reset waits for a verification run in
+     progress, and a run started during a reset waits for the reset's commit before it touches
+     a table; before this, a NIGHTLY run's holder connection (idle in transaction, waiting in
+     Python for its checks connection) and the `TRUNCATE` could wait on each other unseen by
+     PostgreSQL, and the service hung. A reader that locks several tables in one statement
+     (the alert step, a request) can still form a cycle with the `TRUNCATE`, which PostgreSQL
+     detects. A request that holds table locks on one connection while it waits in Python for
+     another (the dashboard reads in its request session, then opens a connection for the
+     worker values) forms a cycle with a queued `TRUNCATE` that PostgreSQL cannot see; so once
+     `LVRN` is held, the truncate transaction sets `lock_timeout` to 2 s for itself only
+     (`SET LOCAL`), and the wait for `LVRN` stays unbounded. When a detected deadlock or that
+     lock timeout aborts the reset, the truncate transaction is retried, three attempts in all
+     with a short pause, and then the error is logged and raised (500). Each attempt rolls back whole, so `reset_count` rises by exactly one. The
+     order is written out at `RESET_LOCK_KEY` in `app/platform.py`.
      A test fixture that truncates the table sets the count back to 0, which `/healthz` shows
      as `"reset_count": 0`.
 
@@ -1997,7 +2013,10 @@ Decided 17 and 18 October 2026.
      takes a transaction advisory lock of its own (key ASCII "LVRN", never the ledger's "LEDG"
      key) and re-checks the condition under it, and a unique index on
      `((started_at AT TIME ZONE 'UTC')::date) WHERE trigger = 'NIGHTLY'` rejects a second row
-     even if the lock were bypassed. The checks run in one REPEATABLE READ, READ ONLY
+     even if the lock were bypassed. `LVRN` is the run's first lock: the holder takes it
+     before it reads or writes `ledger_verification_run`, and `platform.reset()` takes it
+     before its `TRUNCATE` (decision 300, audit 2 B2), so the holder never waits on a lock a
+     `TRUNCATE` holds. The checks run in one REPEATABLE READ, READ ONLY
      transaction (one snapshot, so a write committed between the ledger read and the event read
      cannot look like a mismatch); the result is then inserted by the transaction that holds the
      lock. Results go to `ledger_verification_run`, never into the ledger (spec 6.1). The worker
