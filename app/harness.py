@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 import urllib.error
 import urllib.request
 import uuid
@@ -20,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from app import platform
+from app import clock, platform
 
 _lock = threading.Lock()
 _system_sessions: dict[str, SystemSession] = {}
@@ -63,9 +62,7 @@ def _new_id() -> str:
 
 
 def _public_base() -> str:
-    return (
-        os.environ.get("SUITE_BASE_URL") or "https://eu-ai-act-monitor-api.fly.dev"
-    ).rstrip("/")
+    return (os.environ.get("SUITE_BASE_URL") or "https://eu-ai-act-monitor-api.fly.dev").rstrip("/")
 
 
 def _self_system_url() -> str:
@@ -94,9 +91,7 @@ def _project_base(system_target: str) -> str:
     return base
 
 
-def _coverage_entry(
-    covered: int | None, total: int | None, basis: str
-) -> dict[str, Any]:
+def _coverage_entry(covered: int | None, total: int | None, basis: str) -> dict[str, Any]:
     return {"covered": covered, "total": total, "basis": basis}
 
 
@@ -106,9 +101,7 @@ def _null_code_coverage(reason: str) -> dict[str, Any]:
 
 def _empty_suite_coverage() -> dict[str, Any]:
     return {
-        "code": _null_code_coverage(
-            "Source lines; target instrumentation unavailable"
-        ),
+        "code": _null_code_coverage("Source lines; target instrumentation unavailable"),
         "component": _coverage_entry(
             0, len(_COMPONENTS), "Components listed in the pod specification"
         ),
@@ -122,7 +115,7 @@ def _empty_suite_coverage() -> dict[str, Any]:
 class SystemSession:
     session_id: str
     status: str = "ready"  # preparing | ready
-    created_at: float = field(default_factory=time.time)
+    created_at: float = field(default_factory=lambda: clock.wall_now().timestamp())
     setup: dict[str, Any] = field(default_factory=dict)
     # Request counts since setup (best-effort; no line instrumentation).
     project_requests: int = 0
@@ -132,9 +125,7 @@ class SystemSession:
         return {
             "session_id": self.session_id,
             "coverage": {
-                "code": _null_code_coverage(
-                    "Source lines; target instrumentation unavailable"
-                )
+                "code": _null_code_coverage("Source lines; target instrumentation unavailable")
             },
         }
 
@@ -144,7 +135,7 @@ class TesterSession:
     session_id: str
     target_url: str
     status: str = "ready"  # ready | running | complete | aborted
-    created_at: float = field(default_factory=time.time)
+    created_at: float = field(default_factory=lambda: clock.wall_now().timestamp())
     finished_at: float | None = None
     results: list[dict[str, Any]] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=_empty_suite_coverage)
@@ -335,7 +326,7 @@ def tester_run(session_id: str) -> dict[str, Any]:
     try:
         _execute_tester(session)
         session.status = "complete"
-        session.finished_at = time.time()
+        session.finished_at = clock.wall_now().timestamp()
         return session.report()
     except HarnessError as exc:
         if exc.status == 500 and exc.source == "tester":
@@ -346,9 +337,7 @@ def tester_run(session_id: str) -> dict[str, Any]:
         raise HarnessError(500, exc.message, "tester") from exc
     except Exception as exc:  # noqa: BLE001
         _mark_abort(session, f"{type(exc).__name__}: {exc}")
-        raise HarnessError(
-            500, f"tester aborted: {type(exc).__name__}: {exc}", "tester"
-        ) from exc
+        raise HarnessError(500, f"tester aborted: {type(exc).__name__}: {exc}", "tester") from exc
 
 
 def _mark_abort(session: TesterSession, message: str) -> None:
@@ -376,7 +365,7 @@ def _mark_abort(session: TesterSession, message: str) -> None:
             )
     session.coverage = _coverage_from_results(session.results, session.coverage.get("code"))
     session.status = "aborted"
-    session.finished_at = time.time()
+    session.finished_at = clock.wall_now().timestamp()
 
 
 def tester_report(session_id: str) -> dict[str, Any]:
@@ -729,9 +718,7 @@ def _coverage_from_results(
             "basis": code["basis"],
         }
     else:
-        code_entry = _null_code_coverage(
-            "Source lines; target instrumentation unavailable"
-        )
+        code_entry = _null_code_coverage("Source lines; target instrumentation unavailable")
 
     return {
         "code": code_entry,
