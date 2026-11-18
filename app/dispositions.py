@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import clock, deadlines, ledger, personal_data, review
+from app import clock, deadlines, ledger, personal_data, retention, review
 from app.auth import Principal
 from app.errors import ApiError, not_found
 from app.events import HARM_FIELDS
@@ -127,18 +127,27 @@ def record(
     session: Session, principal: Principal, event_id: str, request: DispositionRequest
 ) -> Recorded:
     """Steps 4 to 15 of spec 2.4, in the caller's transaction: lock the event row, run the
-    remaining checks (404, 409 EVENT_NOT_REVIEWABLE, 409 HARM_FIELDS_UNCONFIRMED, 409
-    DEADLINE_EXTENSION_REQUIRES_RATIONALE), then write the harm fields, the disposition row,
-    the event row and the escalation plan, and append one ledger entry last. Any exception
-    leaves the caller to roll everything back; a check that fails has written nothing."""
+    remaining checks (404, 409 ALREADY_ERASED (decision 287), 409 EVENT_NOT_REVIEWABLE, 409
+    HARM_FIELDS_UNCONFIRMED, 409 DEADLINE_EXTENSION_REQUIRES_RATIONALE), then write the harm
+    fields, the disposition row, the event row and the escalation plan, and append one ledger
+    entry last. Any exception leaves the caller to roll everything back; a check that fails has
+    written nothing."""
     from app import escalations  # inside the function: escalations imports this module
 
     event = session.execute(
-        text("SELECT type, deadline_utc FROM event WHERE event_id = :event_id FOR UPDATE"),
+        text(
+            "SELECT type, deadline_utc, erased_at FROM event WHERE event_id = :event_id FOR UPDATE"
+        ),
         {"event_id": event_id},
     ).one_or_none()
     if event is None:
         raise not_found()
+    # Phase 5 audit M2 (decision 287, SS): after erasure no disposition is recorded, with or
+    # without a rationale. Checked right after the 404 and before every other check (the gap
+    # rule, the harm fields, the deadline-extension rule), so nothing is written, nothing is
+    # appended and no record key is touched. The erasure endpoint's code, ALREADY_ERASED.
+    if event.erased_at is not None:
+        raise ApiError(409, "ALREADY_ERASED", retention.ERASED_EVENT_MESSAGE)
     if event.type == "monitoring_gap":
         raise ApiError(409, "EVENT_NOT_REVIEWABLE", NOT_REVIEWABLE_MESSAGE)
     # Read after the lock: at READ COMMITTED this statement sees every row committed by an

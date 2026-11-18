@@ -11,7 +11,8 @@
   entry; nothing on the event changes (D1).
 - listing, get_by_id: the report rows and the stored bytes of one version.
 - verify_stored(session): Part 3's nightly check. Every non-erased report's opened bytes must
-  match the stored hashes and the REPORT_ASSEMBLED payload (INV-14).
+  match the stored hashes and the REPORT_ASSEMBLED payload (INV-14). A stored value that cannot
+  be opened is a mismatch, never an exception (decision 286).
 
 The report status is derived when it is read and is never stored (spec 3.2), so the report
 tables stay insert-only. Callers own transactions; nothing here commits. Logging never carries
@@ -24,12 +25,14 @@ to the commit (decision 258).
 """
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import clock, deadlines, ledger, personal_data, report_render, report_template
@@ -598,6 +601,32 @@ def listing(session: Session, event_id: str) -> list[dict[str, Any]]:
 
 # The nightly check (spec 6.1, INV-14).
 
+verify_logger = logging.getLogger("reports.verify")
+
+
+def _opened_sha256(session: Session, row: Any, which: str) -> str | None:
+    """The SHA-256 of the opened stored value of `which` (json_bytes or pdf_bytes), or None when
+    it cannot be opened. A sealed value whose prefix, nonce, ciphertext or tag was changed makes
+    open_bytes raise (SealError); that is a mismatch like a wrong hash, never an exception that
+    stops the run (audit B1, decision 286). Only the exception's type name is logged, never the
+    value or the exception text. A database error is not a damaged value and still propagates.
+    A destroyed key gives None from open_bytes; erased events are skipped before this."""
+    try:
+        opened = personal_data.open_bytes(
+            session, row.event_id, f"report.{which}", getattr(row, which)
+        )
+    except SQLAlchemyError:
+        raise
+    except Exception as exc:
+        verify_logger.warning(
+            "stored report could not be opened: report_id=%s which=%s type=%s",
+            row.report_id,
+            which,
+            type(exc).__name__,
+        )
+        return None
+    return None if opened is None else _sha256(bytes(opened))
+
 
 def verify_stored(session: Session) -> list[dict[str, JsonValue]]:
     """Every non-erased report whose stored bytes no longer match: [{report_id, which}], where
@@ -618,15 +647,9 @@ def verify_stored(session: Session) -> list[dict[str, JsonValue]]:
     for row in rows:
         if personal_data.is_erased(session, row.event_id):
             continue
-        json_bytes = personal_data.open_bytes(
-            session, row.event_id, "report.json_bytes", row.json_bytes
-        )
-        pdf_bytes = personal_data.open_bytes(
-            session, row.event_id, "report.pdf_bytes", row.pdf_bytes
-        )
-        if json_bytes is None or _sha256(bytes(json_bytes)) != row.json_sha256:
+        if _opened_sha256(session, row, "json_bytes") != row.json_sha256:
             mismatches.append({"report_id": row.report_id, "which": "json_bytes"})
-        if pdf_bytes is None or _sha256(bytes(pdf_bytes)) != row.pdf_sha256:
+        if _opened_sha256(session, row, "pdf_bytes") != row.pdf_sha256:
             mismatches.append({"report_id": row.report_id, "which": "pdf_bytes"})
         if assembled.get(row.report_id) != (row.json_sha256, row.pdf_sha256):
             mismatches.append({"report_id": row.report_id, "which": "ledger_payload"})

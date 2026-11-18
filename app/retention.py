@@ -30,6 +30,8 @@ retention_logger = logging.getLogger("api.erasure")
 
 NOT_EXPIRED_MESSAGE = "the retention period of this record has not ended"
 ALREADY_ERASED_MESSAGE = "this record has already been erased"
+# A disposition on an erased event (decision 287): the same code, ALREADY_ERASED.
+ERASED_EVENT_MESSAGE = "the personal data of this event has been erased"
 
 
 def _any(session: Session, sql: str, event_id: str) -> bool:

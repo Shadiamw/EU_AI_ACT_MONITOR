@@ -2084,3 +2084,40 @@ Decided 17 and 18 October 2026.
      rationale from a ledger payload (`tests/acceptance/test_ac11_deadlines.py`) and the
      Phase 4 fixtures that read the webhook `url` belong to Part 4's list (10.2); they need the
      deployed stack and were not run here.
+
+286. **A sealed report that cannot be opened is a mismatch, not an exception (audit B1; SS).**
+     `reports.verify_stored` opens each non-erased report's `json_bytes` and `pdf_bytes`. When
+     opening raises (a changed nonce, ciphertext or tag gives `SealError`; any other error from
+     `personal_data.open_bytes` is treated the same), the report is listed as `{report_id,
+     which}` with `which` = `json_bytes` or `pdf_bytes`, exactly like a hash mismatch, and the
+     run goes on, so Part 3's nightly and manual runs record it and raise A1. A changed `pd1:`
+     prefix was already a hash mismatch (the value no longer looks sealed). One WARNING line on
+     `reports.verify` names the report, the column and the exception type only, never the
+     value or the exception text. A database error is not a damaged value and still propagates
+     (the run's transaction is unusable after it). Erased reports stay skipped (a destroyed key
+     is not a fault). `GET /v1/events/{id}/report` on a damaged stored report is unchanged
+     (500, decision 278). Test: `test_verify_stored_reports_a_damaged_sealed_report`.
+
+287. **No disposition is recorded on an erased event (audit M2; SS).** Any disposition request
+     on an erased event, with or without a rationale, is refused with 409 `ALREADY_ERASED`
+     (the erasure endpoint's existing code; no new code) and the message "the personal data of
+     this event has been erased". Order: authentication, role and the body checks (400) as
+     before, then inside the transaction 404, then this check (`event.erased_at`, read with the
+     event lock), then `EVENT_NOT_REVIEWABLE`, the harm-field check, the deadline-extension
+     rule and everything else. Nothing is written, nothing is appended and no record-key
+     operation happens. A non-erased event is unchanged, including its 409
+     `DEADLINE_EXTENSION_REQUIRES_RATIONALE`. Before this, a revision with a rationale was a
+     500 (`KeyDestroyedError` from `seal`), and one without a rationale that did not extend the
+     deadline was accepted after erasure (200, a DISPOSITION_REVISED after RECORD_ERASED, and
+     the request's evidence written back to `harm_field` in plain text); decision 278's note
+     that the disposition route checks erasure first was not true until now. This is a new use
+     of `ALREADY_ERASED` on `POST /v1/events/{event_id}/disposition`, an addition for the
+     contract delta document (spec 9.2), which the Part 4 owner and SS carry to the other team.
+     Test: `test_revision_of_an_erased_event_is_refused_with_and_without_a_rationale`.
+
+288. **Part 2 is accepted as one commit, merged last, and cut by reverting its merge (audit M1;
+     SS).** The spec's two branches (2a and 2b from the base commit, merge order 2a, 1, 3, 4,
+     2b; spec 1.4, 11.4) are not made. `phase5-part2-records` stays stacked on Part 1, holds
+     2a and 2b together, and is merged after the other parts with a merge commit. If erasure
+     has to be cut (spec 1.4), the cut is a revert of that merge commit, which also takes out
+     2a (the 9999-07-01 bound and the AC-05 tests); nothing earlier is rewritten.
