@@ -13,6 +13,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from app import personal_data
+from app.formats import api_time
 from tests.api.conftest import ApiClient
 from tests.db_helpers import bearer
 from tests.records.conftest import (
@@ -21,6 +22,8 @@ from tests.records.conftest import (
     fetch,
     flag,
     ledger_rows,
+    months_and_days,
+    post,
     rows,
     submit,
 )
@@ -283,17 +286,26 @@ def test_erasure_before_retain_until_is_409_and_changes_nothing(
 
 
 def test_nothing_is_erased_before_retain_until(
-    client: ApiClient, fake_clock: FakeClock, journey: Journey
+    client: ApiClient, fake_clock: FakeClock, owner_engine: Engine, journey: Journey
 ) -> None:
-    """INV-10, 5.3 step 4: at 5 months 29 days and one second before retain_until it is 409;
-    at retain_until itself it is allowed."""
+    """INV-10, 5.3 step 4: at exactly 5 months 29 days after T0 (the breach sample's timestamp,
+    the event's detected_at), one day and one second before retain_until it is 409
+    RETENTION_NOT_EXPIRED; at retain_until itself it is allowed."""
+    [event] = rows(
+        owner_engine, "SELECT detected_at FROM event WHERE event_id = :e", e=journey.event_id
+    )
     for moment in (
         fake_clock.now(),  # shortly after the breach
+        months_and_days(event["detected_at"], 5, 29),  # 5mo29d, spec 5.3 step 4
         journey.retain_until - timedelta(days=1),
         journey.retain_until - timedelta(seconds=1),
     ):
         fake_clock.set(moment)
-        assert erase(client, journey.event_id).status_code == 409
+        response = erase(client, journey.event_id)
+        assert (response.status_code, response.json()["error_code"]) == (
+            409,
+            "RETENTION_NOT_EXPIRED",
+        )
     fake_clock.set(journey.retain_until)
     assert erase(client, journey.event_id).status_code == 200
 
@@ -332,3 +344,91 @@ def test_erasure_roles_body_and_unknown_event(
     # An empty body is accepted like {}.
     empty = client.request("POST", path, headers=bearer("rev-1"))
     assert empty.status_code == 200
+
+
+# Audit M2 (decision 287; SS): any disposition on an erased event, with or without a rationale,
+# is 409 ALREADY_ERASED, checked right after the 404 and before the deadline-extension rule.
+# Nothing is written, nothing is appended and no key operation happens. A non-erased event keeps
+# its behaviour, including the extension rule's 409.
+ERASED_DISPOSITION = {
+    "error_code": "ALREADY_ERASED",
+    "message": "the personal data of this event has been erased",
+}
+EXTENSION_REFUSED = {
+    "error_code": "DEADLINE_EXTENSION_REQUIRES_RATIONALE",
+    "message": "extending a running deadline requires a rationale",
+}
+TABLES = (
+    "ledger_entry",
+    "event",
+    "harm_field",
+    "disposition",
+    "escalation",
+    "record_key",
+    "report",
+    "report_submission",
+)
+
+
+def _dispose(
+    client: ApiClient, event_id: str, tier: str, rationale: str | None, evidence: str | None
+) -> Any:
+    harm = decided()
+    if evidence is not None:
+        harm["fundamental_rights_infringement"] = {"status": "CONFIRMED", "evidence": evidence}
+    return client.request(
+        "POST",
+        f"/v1/events/{event_id}/disposition",
+        headers=bearer("rev-1"),
+        json={"tier": tier, "rationale": rationale, "harm_fields": harm},
+    )
+
+
+@pytest.mark.parametrize(
+    ("tier", "rationale"),
+    [
+        ("DEATH", "Reassessed again after erasure"),  # with a rationale
+        ("DEATH", None),  # without one, not extending the deadline
+        ("OTHER_SERIOUS", None),  # without one, where the extension rule would apply
+    ],
+    ids=["with-rationale", "without-rationale", "without-rationale-extending"],
+)
+def test_revision_of_an_erased_event_is_refused_with_and_without_a_rationale(
+    client: ApiClient,
+    fake_clock: FakeClock,
+    owner_engine: Engine,
+    journey: Journey,
+    tier: str,
+    rationale: str | None,
+) -> None:
+    fake_clock.set(journey.retain_until)
+    assert erase(client, journey.event_id).status_code == 200
+
+    def snapshot() -> dict[str, Any]:
+        return {table: rows(owner_engine, f"SELECT * FROM {table} ORDER BY 1") for table in TABLES}
+
+    before = snapshot()
+    response = _dispose(client, journey.event_id, tier, rationale, EVIDENCE)
+    assert (response.status_code, response.json()) == (409, ERASED_DISPOSITION)
+    assert response.json()["error_code"] != EXTENSION_REFUSED["error_code"]
+    assert snapshot() == before  # nothing written or appended, no key made or touched
+    assert not [t for t in _stored_text(owner_engine, journey.event_id) if "Jane" in t]
+
+    # A non-erased event is unchanged: a new breach (a healthy sample ends the old series),
+    # DEATH, then a looser revision is 409 by the extension rule without a rationale and
+    # 200 with one.
+    healthy = post(client, value=0.1, timestamp=api_time(fake_clock.now()))
+    assert healthy.status_code == 201, healthy.text
+    fake_clock.advance(60)
+    flagged = post(client, value=0.34, timestamp=api_time(fake_clock.now()))
+    assert flagged.status_code == 201, flagged.text
+    other = flagged.json()["flagged_event_id"]
+    assert other != journey.event_id
+    assert _dispose(client, other, "DEATH", None, None).status_code == 200
+    count = len(ledger_rows(owner_engine))
+    refused = _dispose(client, other, "OTHER_SERIOUS", None, None)
+    assert (refused.status_code, refused.json()) == (409, EXTENSION_REFUSED)
+    assert len(ledger_rows(owner_engine)) == count
+    revised = _dispose(client, other, "OTHER_SERIOUS", "Reassessed", None)
+    assert revised.status_code == 200, revised.text
+    assert revised.json()["disposition"]["rationale"] == "Reassessed"

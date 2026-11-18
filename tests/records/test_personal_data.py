@@ -1,6 +1,7 @@
 """Sealing (Phase 5 spec 4.2 Design B, 4.3): AES-256-GCM under a per-event key, destroyed by
 erasure. Real database, real record_key rows."""
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,10 +10,12 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from app import personal_data
+from app import personal_data, reports
+from app.formats import api_time
 from app.personal_data import KeyDestroyedError, SealError
 from tests.api.conftest import ApiClient
-from tests.records.conftest import disposed_event, fetch, rows
+from tests.records.conftest import disposed_event, erase, fetch, post, retain_until, rows
+from tests.reports.conftest import dispose
 from tests.worker.conftest import FakeClock
 
 WHEN = datetime(2027, 1, 1, tzinfo=UTC)
@@ -142,3 +145,84 @@ def test_report_bytes_are_sealed_at_rest(
             == served_pdf
         )
     assert b"Jane Example" in served_json
+
+
+# Audit B1 (decision 286): a damaged sealed report is a mismatch, never an exception. The stored
+# form is b"pd1:" + nonce (12 bytes) + ciphertext + tag (16 bytes); each case flips one bit of
+# one byte, as the owner with report's own trigger disabled.
+DAMAGE_OFFSETS = {
+    "prefix": 0,
+    "nonce": len(personal_data.PREFIX_BYTES),
+    "ciphertext": len(personal_data.PREFIX_BYTES) + personal_data.NONCE_LENGTH + 5,
+    "tag": -1,
+}
+
+
+def _flip_byte(owner_engine: Engine, report_id: str, column: str, offset: int) -> None:
+    with owner_engine.begin() as conn:
+        stored = bytearray(
+            conn.execute(
+                text(f"SELECT {column} FROM report WHERE report_id = :r"), {"r": report_id}
+            ).scalar_one()
+        )
+        stored[offset] ^= 1
+        conn.execute(text("ALTER TABLE report DISABLE TRIGGER USER"))
+        conn.execute(
+            text(f"UPDATE report SET {column} = :b WHERE report_id = :r"),
+            {"b": bytes(stored), "r": report_id},
+        )
+        conn.execute(text("ALTER TABLE report ENABLE TRIGGER USER"))
+
+
+@pytest.mark.parametrize("part", list(DAMAGE_OFFSETS))
+@pytest.mark.parametrize("column", ["json_bytes", "pdf_bytes"])
+def test_verify_stored_reports_a_damaged_sealed_report(
+    client: ApiClient,
+    fake_clock: FakeClock,
+    owner_engine: Engine,
+    caplog: pytest.LogCaptureFixture,
+    column: str,
+    part: str,
+) -> None:
+    report_ids = {}
+    for _ in range(3):  # three events, each with its own sealed report
+        fake_clock.advance(600)
+        flagged = post(client, value=0.34, timestamp=api_time(fake_clock.now()))
+        assert flagged.status_code == 201, flagged.text
+        event_id = flagged.json()["flagged_event_id"]
+        fake_clock.advance(3600)
+        disposed = dispose(client, event_id, "DEATH", "Raised by Jane Example")
+        assert disposed.status_code == 200, disposed.text
+        fake_clock.advance(3600)
+        served = fetch(client, event_id)
+        assert served.status_code == 200, served.text
+        report_ids[event_id] = served.headers["x-report-id"]
+        # A healthy sample ends the breach series, so the next breach is a new event.
+        healthy_sample = post(client, value=0.1, timestamp=api_time(fake_clock.now()))
+        assert healthy_sample.status_code == 201, healthy_sample.text
+    damaged, healthy, erased = report_ids
+    assert len({damaged, healthy, erased}) == 3
+    with Session(owner_engine) as session:
+        assert reports.verify_stored(session) == []  # all healthy
+
+    # The erased report is skipped: its key is destroyed and its bytes are damaged too.
+    fake_clock.set(retain_until(owner_engine, erased))
+    assert erase(client, erased).status_code == 200
+    _flip_byte(owner_engine, report_ids[erased], column, DAMAGE_OFFSETS[part])
+    _flip_byte(owner_engine, report_ids[damaged], column, DAMAGE_OFFSETS[part])
+    stored = bytes(
+        rows(
+            owner_engine,
+            f"SELECT {column} FROM report WHERE report_id = :r",
+            r=report_ids[damaged],
+        )[0][column]
+    )
+
+    with caplog.at_level(logging.DEBUG), Session(owner_engine) as session:
+        found = reports.verify_stored(session)  # no exception escapes
+    assert found == [{"report_id": report_ids[damaged], "which": column}]
+    # Nothing about the damaged value is logged: no bytes of it, no exception message.
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert stored.hex()[:24] not in logged
+    assert "cannot open" not in logged
+    assert "Jane" not in logged

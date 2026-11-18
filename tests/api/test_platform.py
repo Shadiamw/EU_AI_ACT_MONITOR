@@ -1,6 +1,7 @@
 """Part 4: POST /v1/test/reset, POST /v1/test/clock/advance and /v1/test/suite (Phase 4 spec
 4.5)."""
 
+import math
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from sqlalchemy import Engine, text
 
 from app import clock, config, escalations, gaps, notifications, platform, runtime, suite_runner
 from app.auth import key_digest
+from app.formats import TIME_LIMIT
 from app.main import create_app
 from tests.api.conftest import FORBIDDEN, MALFORMED, NOT_FOUND, UNAUTHORIZED, ApiClient
 from tests.db_helpers import bearer
@@ -512,8 +514,10 @@ def test_reset_empties_escalation_while_reminders_are_due(owner_engine: Engine) 
     assert (escalations, reminders) == (0, 0)
 
 
-# Decision 226: an advance that would take the simulated time past the year 9999, or the
-# stored offset past a signed 64-bit integer, is 400 MALFORMED_BODY and writes nothing.
+# Decision 226: an advance that would take the simulated time out of range, or the stored
+# offset past a signed 64-bit integer, is 400 MALFORMED_BODY and writes nothing. Phase 5 D10
+# (spec 5.4, 10.2; decision 275) moved the time bound from datetime.max to 9999-07-01T00:00:00Z
+# (formats.TIME_LIMIT): an advance whose simulated time is at or after it is refused.
 
 
 def _ingest_now(client: ApiClient) -> int:
@@ -552,18 +556,26 @@ def test_an_advance_past_the_representable_time_is_400_and_writes_nothing(second
 
 
 def test_an_advance_just_past_the_year_9999_is_400() -> None:
+    """Just past the bound, which is now 9999-07-01 (D10): one minute after it (the wall clock
+    only moves on, so the simulated time can only be later), and an advance to exactly the
+    bound, are both 400 and write nothing."""
     with ApiClient(create_app()) as client:
         assert client.request("POST", RESET, headers=bearer("rev-1")).status_code == 204
-        to_the_limit = datetime.max.replace(tzinfo=clock.wall_now().tzinfo) - clock.wall_now()
-        seconds = int(to_the_limit.total_seconds()) + 3600
-        response = client.request(
-            "POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": seconds}
-        )
-    assert (response.status_code, response.json()) == (400, MALFORMED)
+        to_the_limit = TIME_LIMIT - clock.wall_now()
+        exactly = math.ceil(to_the_limit.total_seconds())
+        for seconds in (exactly + 60, exactly):
+            response = client.request(
+                "POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": seconds}
+            )
+            assert (response.status_code, response.json()) == (400, MALFORMED)
+            assert clock.offset_seconds() == 0
+        assert _ingest_now(client) == 201
     assert clock.offset_seconds() == 0
 
 
 def test_a_large_advance_that_stays_before_the_year_9999_still_works() -> None:
+    """Before the 9999-07-01 bound (D10) an advance works and ingest works there: 2 * 10**11
+    seconds (year 8364), then on to one hour before the bound."""
     seconds = 2 * 10**11
     with ApiClient(create_app()) as client:
         assert client.request("POST", RESET, headers=bearer("rev-1")).status_code == 204
@@ -572,4 +584,11 @@ def test_a_large_advance_that_stays_before_the_year_9999_still_works() -> None:
         )
         assert response.status_code == 200, response.text
         assert clock.offset_seconds() == seconds
+        assert _ingest_now(client) == 201
+        near = TIME_LIMIT - timedelta(hours=1) - clock.now()
+        more = int(near.total_seconds())
+        response = client.request("POST", ADVANCE, headers=bearer("rev-1"), json={"seconds": more})
+        assert response.status_code == 200, response.text
+        assert clock.offset_seconds() == seconds + more
+        assert clock.now() < TIME_LIMIT
         assert _ingest_now(client) == 201

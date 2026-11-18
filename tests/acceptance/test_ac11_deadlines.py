@@ -96,7 +96,12 @@ def test_a_looser_revision_with_a_rationale_extends_it_and_logs_the_rationale(
         ("DEATH", "OTHER_SERIOUS")
     ]
 
+    # Phase 5 D7 (spec 4.2, 4.3, 10.2; decision 279): the exported payload holds the sealed
+    # rationale, never the plain text; the API still returns the plain text in the Event.
     [entry] = [e for e in api.export() if e["entry_type"] == "DISPOSITION_REVISED"]
-    assert entry["payload"]["rationale"] == reason
+    sealed = entry["payload"]["rationale"]
+    assert isinstance(sealed, str) and sealed.startswith("pd1:")
+    assert reason not in sealed
+    assert api.event(event_id)["disposition"]["rationale"] == reason
     assert entry["payload"]["prior_deadline_utc"] == first["deadline_utc"]
     assert entry["payload"]["deadline_utc"] == revised["deadline_utc"]
