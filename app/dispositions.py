@@ -8,7 +8,6 @@ spec 2.4 to 2.10; Addendum rule 1).
 - summary(session, event_id): {disposition, revisions, deadline_utc} in the contract's Event
   form (spec 2.7), which events.detail places in the Event object. Part 3 reads it when it
   fires a reminder (Addendum rule 3).
-- report_guard(session, event_id): the report's 404 and 409 NO_DISPOSITION (spec 2.8).
 
 The rows are the history and are never edited (INV-4): a revision appends a row whose
 supersedes_id is the previous row. event.state and event.deadline_utc hold the current values.
@@ -265,19 +264,3 @@ def summary(session: Session, event_id: str) -> dict[str, Any]:
         for previous, row in zip(rows, rows[1:], strict=False)
     ]
     return {"disposition": disposition, "revisions": revisions, "deadline_utc": _time(deadline)}
-
-
-def report_guard(session: Session, event_id: str) -> None:
-    """Steps 2 and 3 of spec 2.8: 404 for an unknown event, then 409 NO_DISPOSITION when no
-    disposition row exists (REQ-08a; gap events always land here). Reads only."""
-    found = session.execute(
-        text(
-            "SELECT EXISTS (SELECT 1 FROM disposition WHERE disposition.event_id = event.event_id)"
-            " AS disposed FROM event WHERE event_id = :event_id"
-        ),
-        {"event_id": event_id},
-    ).one_or_none()
-    if found is None:
-        raise not_found()
-    if not found.disposed:
-        raise ApiError(409, "NO_DISPOSITION", NO_DISPOSITION_MESSAGE)

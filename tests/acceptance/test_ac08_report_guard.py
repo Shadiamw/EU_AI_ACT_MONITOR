@@ -3,14 +3,15 @@ status; the attempt is rejected and the event stays in its prior status.
 
 Spec Part 2 2.8 and D1: GET /v1/events/{id}/report is REVIEWER only; 404 for an unknown event;
 409 NO_DISPOSITION with no disposition (gap events always), state unchanged and nothing
-written; 501 NOT_IMPLEMENTED once a disposition exists (the report itself is Phase 5).
+written; 200 with the report once a disposition exists (Phase 5 spec 3.6 replaced the Phase 4
+501 guard).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tests.acceptance.api import NO_DISPOSITION, NOT_FOUND, NOT_IMPLEMENTED, Api
+from tests.acceptance.api import NO_DISPOSITION, NOT_FOUND, Api
 
 pytestmark = pytest.mark.integration
 
@@ -53,11 +54,17 @@ def test_an_unknown_event_is_404(api: Api) -> None:
 
 @pytest.mark.parametrize("tier", ["OTHER_SERIOUS", "NOT_SERIOUS"])
 def test_after_a_disposition_the_guard_passes_to_the_phase_5_report(api: Api, tier: str) -> None:
+    """Phase 5 spec 3.6: the first report request assembles the report (200) and appends one
+    REPORT_ASSEMBLED entry."""
     event_id, _ = api.flag()
     rationale = "no person was affected" if tier == "NOT_SERIOUS" else None
     api.disposed(event_id, tier, rationale=rationale)
     before = api.entries()
     response = api.report(event_id)
-    assert response.status_code == 501, response.text
-    assert response.json() == NOT_IMPLEMENTED
-    assert api.entries() == before
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["event"]["event_id"] == event_id
+    assert report["report_kind"] == (
+        "NOT_SERIOUS_CLOSURE" if tier == "NOT_SERIOUS" else "SERIOUS_INCIDENT"
+    )
+    assert api.entries() == before + 1

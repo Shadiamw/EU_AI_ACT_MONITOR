@@ -60,6 +60,9 @@ ENTRY_TYPES = frozenset(
         "DISPOSITION_RECORDED",
         "DISPOSITION_REVISED",
         "REMINDER_TRIGGERED",
+        "REPORT_ASSEMBLED",
+        "REPORT_SUBMITTED",
+        "RECORD_ERASED",
     }
 )
 

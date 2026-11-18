@@ -26,7 +26,6 @@ from tests.part2.conftest import (
     ANCHOR,
     EXTENSION,
     NO_DISPOSITION,
-    NOT_IMPLEMENTED,
     NOT_REVIEWABLE,
     RATIONALE_REQUIRED,
     SERIOUS,
@@ -373,18 +372,6 @@ def test_ac08_a_report_without_a_disposition_is_409_and_changes_nothing(
     assert before["event"]["state"] == "UNDER_REVIEW"
 
 
-@pytest.mark.parametrize("tier", TIERS)
-def test_a_report_after_any_disposition_is_501_until_phase_5(
-    client: ApiClient, owner_engine: Engine, fake_clock: FakeClock, tier: str
-) -> None:
-    event_id = flag(client)
-    ok(dispose(client, event_id, tier, "reason"))
-    before = snapshot(owner_engine, event_id)
-    response = report(client, event_id)
-    assert (response.status_code, response.json()) == (501, NOT_IMPLEMENTED)
-    assert snapshot(owner_engine, event_id) == before
-
-
 def test_a_report_on_an_unknown_event_is_404(client: ApiClient, owner_engine: Engine) -> None:
     before = ledger_rows(owner_engine)
     response = report(client, "evt-nope")
@@ -441,14 +428,15 @@ def test_ac14_non_reviewers_are_denied_on_both_actions(
 def test_ac14_the_reviewer_succeeds_on_both_actions(
     client: ApiClient, owner_engine: Engine, fake_clock: FakeClock
 ) -> None:
-    """Disposition 200; report 409 before a disposition and 501 after one: the reviewer passes
-    the role check (D1)."""
+    """Disposition 200; report 409 before a disposition and 200 after one (Phase 5 spec 3.6;
+    the Phase 4 501 guard is gone): the reviewer succeeds on both actions."""
     event_id = flag(client)
     response = report(client, event_id)
     assert (response.status_code, response.json()) == (409, NO_DISPOSITION)
     ok(dispose(client, event_id, "DEATH"))
     response = report(client, event_id)
-    assert (response.status_code, response.json()) == (501, NOT_IMPLEMENTED)
+    assert response.status_code == 200, response.text
+    assert response.json()["event"]["event_id"] == event_id
 
 
 # AC-15 edit step: a view by one user and an edit by another, each logged with identity and time.

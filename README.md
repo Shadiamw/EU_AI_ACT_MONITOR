@@ -618,7 +618,7 @@ record the choices the specification left open.
 | Deadline | `deadline_utc = compute(anchor, tier, calendar)`, where the anchor and calendar are the first row's. NOT_SERIOUS has none and closes the event. | 2.5, 6 |
 | No silent extension | A serious tier whose window is longer than the most recent serious tier's needs a non-blank rationale, including on a reopen from NOT_SERIOUS (409 without one). | Addendum rule 1 |
 | Event fields | `disposition`: tier and rationale from the latest row, reviewer_id and assigned_at from the first. `revisions`: one entry per later row, oldest first. `deadline_utc`: the event row's. | 2.7 |
-| GET /v1/events/{id}/report | REVIEWER only. 404 unknown event; 409 NO_DISPOSITION without a disposition row (gap events always); otherwise 501 until Phase 5 (D1). Reads only. | 2.8, Addendum rule 6 |
+| GET /v1/events/{id}/report | REVIEWER only. 404 unknown event; 409 NO_DISPOSITION without a disposition row (gap events always); otherwise the report (200), see section 14. | Phase 5 spec 3.6 |
 | Ledger | DISPOSITION_RECORDED (first) and DISPOSITION_REVISED (later), actor the reviewer, subject the event id, with the payloads of spec 2.10. | 2.10 |
 | Logging | One INFO line per recorded disposition on `api.disposition`, after the commit; never the rationale or evidence. | decision 187 |
 
@@ -633,7 +633,6 @@ record the choices the specification left open.
 | 409 | HARM_FIELDS_UNCONFIRMED | `all four harm fields must be CONFIRMED or NOT_APPLICABLE` |
 | 409 | DEADLINE_EXTENSION_REQUIRES_RATIONALE | `extending a running deadline requires a rationale` |
 | 409 | NO_DISPOSITION (report) | `no disposition has been recorded for this event` |
-| 501 | NOT_IMPLEMENTED (report) | `not implemented in this phase` |
 
 ### 11.3 Configuration
 
@@ -974,3 +973,48 @@ through `GET /v1/events?type=monitoring_gap`.
 `tests/acceptance`, the Model 5 runner, `tools/demo_phase4.py` and the console panel. They need
 Parts 1–3.
 
+## 14. Phase 5 Part 1: reports and submission
+
+A reviewer asks for a report, the system assembles it once per disposition, stores the bytes
+exactly as produced, and a reviewer can then record that it was submitted. Nothing is sent to an
+authority. The code is in `app/reports.py` (assembly, storage, submission, listing),
+`app/report_render.py` (JSON and PDF), `app/report_template.py` (the Article 73 field mapping)
+and `app/api/report_routes.py`; the tables come from migration 0008. The decisions are
+254 to 266 in `docs/decisions.md`. The Phase 5 specification is the source for everything here.
+
+### 14.1 Endpoints
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| GET /v1/events/{id}/report[?format=json\|pdf] | REVIEWER | The first request after a disposition assembles the report in one transaction (render JSON and PDF once, store both, append REPORT_ASSEMBLED). Every later request returns the stored bytes and writes nothing. Headers: `ETag`, `X-Report-Id`, `X-Report-Version`, `X-Report-Sha256`. |
+| POST /v1/events/{id}/report/submission | REVIEWER | Body `{report_id, json_sha256, report_type, expected_next_report_date?, authority_reference?}`. 201, one REPORT_SUBMITTED entry. The event stays DISPOSITIONED. |
+| GET /v1/events/{id}/reports | REVIEWER, VIEWER | The report rows, oldest first, without content: `status` is ASSEMBLED, SUBMITTED, SUPERSEDED or SUBMITTED_SUPERSEDED, derived when read. |
+| GET /v1/reports/{report_id}[?format=pdf] | REVIEWER | The stored bytes of that exact version. Never assembles. |
+
+Order of checks on the report: 401, 403, 400 MALFORMED_QUERY (`format` must be json or pdf), 404,
+410 RECORD_ERASED, 409 NO_DISPOSITION, then 200. Submission: 401, 403, 400 MALFORMED_BODY, 404,
+410, 409 NOT_SUBMITTABLE (a not-serious closure report), 409 REPORT_NOT_CURRENT, 409
+REPORT_HASH_MISMATCH, 409 REPORT_ALREADY_SUBMITTED, 201. A revision adds a disposition row, so the
+next report request assembles version 2; version 1 stays stored and can be submitted only while it
+is current.
+
+### 14.2 What a report contains
+
+The JSON has the shape of `docs/contract/phase5/report.schema.json`: the event data and evidence
+bundle, the four Article 3(49) harm fields, the reviewer's determination (tier, label, rationale,
+deadline, revisions), the detection, determination and assembly timestamps (microsecond
+resolution, so they are distinct), the ledger head at assembly, and `article73_template`, one
+entry for every field of the Commission template v1.0.0 (SB-10407). A field the system holds is
+`mapped` or `derivable` and has a value; every other field is listed by number and name as
+`requires_reviewer_input` or `not_available` with a null value, never guessed. A NOT_SERIOUS
+disposition gives a closure report marked `NOT FOR SUBMISSION` (JSON and every PDF page) that
+cannot be submitted.
+
+### 14.3 Known limits
+
+- The report contains the rationale and the evidence text, which are personal data. Until Part 2's
+  sealing lands, the stored bytes are plain; the code already calls `personal_data.seal_bytes` and
+  `open_bytes`, so sealing needs no change here.
+- Assembly holds the ledger append lock while the PDF is rendered (decision 258).
+- The template is a Commission draft of 26 September 2025; if a final version exists, the mapping
+  in `app/report_template.py` is redone.

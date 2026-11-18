@@ -155,6 +155,34 @@ EXPECTED_COLUMNS["escalation"] = {
 EXPECTED_COLUMNS["notification"]["escalation_pct"] = "integer"
 # End of the Phase 4 Part 3 slot.
 
+# Phase 5 Part 1 slot (migration 0008).
+EXPECTED_COLUMNS["report"] = {
+    "report_id": "text",
+    "event_id": "text",
+    "report_version": "integer",
+    "disposition_id": "text",
+    "report_kind": "text",
+    "schema_version": "text",
+    "json_bytes": "bytea",
+    "pdf_bytes": "bytea",
+    "json_sha256": "text",
+    "pdf_sha256": "text",
+    "assembled_at": TIMESTAMPTZ,
+    "assembled_by": "text",
+}
+EXPECTED_COLUMNS["report_submission"] = {
+    "submission_id": "text",
+    "report_id": "text",
+    "event_id": "text",
+    "submitted_by": "text",
+    "submitted_at": TIMESTAMPTZ,
+    "submission_kind": "text",
+    "report_type": "text",
+    "expected_next_report_date": "date",
+    "authority_reference": "text",
+}
+# End of the Phase 5 Part 1 slot.
+
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
 # is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
 # migration does not create yet is inert.
@@ -162,6 +190,8 @@ GRANT_EXCEPTIONS: dict[str, list[str]] = {
     "clock_state": ["SELECT"],  # only reset and clock advance write it (decision 133)
     "harm_context": ["SELECT"],  # Phase 4 spec 1.7: changed only by migration or seed
     "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
+    "report": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
+    "report_submission": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
 }
 
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)
@@ -198,11 +228,11 @@ def test_the_schema_has_exactly_the_ledger_stub_and_part3_tables(owner_engine: E
     assert tables == sorted([*NON_LEDGER_TABLES, "ledger_entry", "alembic_version"])
 
 
-def test_migration_head_is_0007(owner_engine: Engine) -> None:
+def test_migration_head_is_0008(owner_engine: Engine) -> None:
     """Spec 4.4: 0001 Platform, 0002 Ledger, 0003 Detection, 0004 Notifications; Phase 4
-    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations."""
+    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations; Phase 5: 0008 Reports."""
     [row] = rows(owner_engine, "SELECT version_num FROM alembic_version")
-    assert row == {"version_num": "0007"}
+    assert row == {"version_num": "0008"}
 
 
 def index_definitions(owner_engine: Engine, table: str) -> dict[str, str]:
