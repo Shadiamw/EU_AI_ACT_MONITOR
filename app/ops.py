@@ -19,11 +19,15 @@ Part 1's report tables, report counts are 0 and every DISPOSITIONED event is uns
 without Part 2's event.erased_at, retention.erased is 0 and every event past retain_until counts.
 
 Reads only, in the caller's session (dashboard, current_alerts) or a session of its own
-(raise_alerts).
+(raise_alerts). The values that need a connection of their own (worker.health_values, the app
+clock, the clock offset) are read first, by readings(), before that session reads any table:
+the session never holds a table lock while it waits in Python for another connection, which
+with a reset's queued TRUNCATE would be a cycle PostgreSQL cannot see (audit 3, R1).
 """
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -42,6 +46,29 @@ DUE_SOON = timedelta(hours=24)  # deadlines.due_within_24h_unsubmitted
 
 # Codes logged today: (wall-clock UTC date, code, subject). Lost on restart (decision 309).
 _logged: set[tuple[date, str, str | None]] = set()
+
+
+@dataclass(frozen=True)
+class Readings:
+    """What the dashboard and the alerts read on connections other than the caller's session:
+    the worker values (worker.health_values, a session of its own), the wall clock, the app
+    clock (clock.now(), which reads the offset on its own connection in a test environment)
+    and, in a test environment, the clock offset itself (clock.offset_seconds())."""
+
+    values: worker.HealthValues
+    wall: datetime
+    now: datetime
+    offset_seconds: int | None  # None outside a test environment
+
+
+def readings(engine: Engine) -> Readings:
+    """Take the Readings, in the order the dashboard always used: worker values, wall clock,
+    app clock, then the offset. Call it before the caller's session reads any table (R1)."""
+    values = worker.health_values(engine)
+    wall = clock.wall_now()
+    now = clock.now()
+    offset = clock.offset_seconds() if config.is_test_environment() else None
+    return Readings(values=values, wall=wall, now=now, offset_seconds=offset)
 
 
 def _exists(session: Session, table: str, column: str | None = None) -> bool:
@@ -154,16 +181,19 @@ def _alert(
     }
 
 
-def current_alerts(session: Session) -> list[dict[str, Any]]:
+def current_alerts(session: Session, taken: Readings | None = None) -> list[dict[str, Any]]:
     """The alerts that hold now, in code order (spec 7.3). `since` is when the condition
     became true: the run's finished_at for A1, 26 hours after it for A2, the moment the
     threshold was crossed for A3, A4 and A5, the deadline for A6, the deadline less the warning
-    window for A7, and the earliest failure or retain_until counted for A8 and A9."""
-    engine = session.get_bind()
-    assert isinstance(engine, Engine)
-    values = worker.health_values(engine)
-    wall = clock.wall_now()
-    now = clock.now()
+    window for A7, and the earliest failure or retain_until counted for A8 and A9.
+
+    `taken` is the caller's Readings. Without it they are read here, which is only safe while
+    `session` has not read any table yet (R1); a caller whose session has, passes its own."""
+    if taken is None:
+        engine = session.get_bind()
+        assert isinstance(engine, Engine)
+        taken = readings(engine)
+    values, wall, now = taken.values, taken.wall, taken.now
     alerts: list[dict[str, Any]] = []
 
     # A1 (critical): the latest run is invalid, REGRESSED or has a mismatch (spec 6.1).
@@ -274,12 +304,13 @@ def current_alerts(session: Session) -> list[dict[str, Any]]:
 
 
 def dashboard(session: Session) -> dict[str, Any]:
-    """GET /v1/ops/dashboard: exactly the spec 7.2 keys, in order."""
+    """GET /v1/ops/dashboard: exactly the spec 7.2 keys, in order. Every value that needs
+    another connection is read first (readings), then only `session` is used, so it never
+    holds a table lock while it waits for another connection (R1)."""
     engine = session.get_bind()
     assert isinstance(engine, Engine)
-    values = worker.health_values(engine)
-    wall = clock.wall_now()
-    now = clock.now()
+    taken = readings(engine)
+    values, wall, now = taken.values, taken.wall, taken.now
     run = _latest_run(session)
     entries, head_seq = session.execute(text("SELECT count(*), max(seq) FROM ledger_entry")).one()
     by_state = dict.fromkeys(STATES, 0)
@@ -357,8 +388,8 @@ def dashboard(session: Session) -> dict[str, Any]:
         },
     }
     if config.is_test_environment():
-        body["clock"] = {"simulated_time": api_time(now), "offset_seconds": clock.offset_seconds()}
-    body["alerts"] = current_alerts(session)
+        body["clock"] = {"simulated_time": api_time(now), "offset_seconds": taken.offset_seconds}
+    body["alerts"] = current_alerts(session, taken)
     return body
 
 
@@ -379,8 +410,9 @@ def raise_alerts(engine: Engine) -> list[dict[str, Any]]:
 
     A1 is logged as "alert: code=A1 run_id=..."; the run's own "alert: code=LEDGER_INTEGRITY"
     line (spec 6.1) is written once by ledger_ops when the run is recorded, never here."""
+    taken = readings(engine)  # before the session reads anything (R1)
     with Session(engine) as session:
-        alerts = current_alerts(session)
+        alerts = current_alerts(session, taken)
         session.rollback()
     today = clock.wall_now().date()
     for key in [key for key in _logged if key[0] != today]:

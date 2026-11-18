@@ -143,7 +143,7 @@ except where the wall clock is named.
 | A3 | critical | `sweeper_last_ran_seconds_ago > 3 × SWEEP_INTERVAL_SECONDS` (wall clock) | When the bound was crossed | The worker is down or stuck: check `fly status` and the worker log, restart the worker machine. `/healthz` is 503 meanwhile. |
 | A4 | warning | `oldest_pending_delivery_seconds > NOTIFY_MAX_DELAY_SECONDS` (900) | When the bound was crossed | Receiver unreachable or worker behind: check the webhook receiver and the delivery log lines. |
 | A5 | warning | `overdue_escalations > 0` | When the first one became overdue | Usually machines were stopped (LIM-08); reminders fire late on wake. Check the worker is running. |
-| A6 | critical | A DISPOSITIONED event whose deadline has passed has no submitted report bound to its latest disposition | The deadline | The reporting deadline is missed: assemble and submit the report now, and tell the team. |
+| A6 | critical | A DISPOSITIONED event whose deadline has passed has no submitted report bound to its latest disposition | The deadline | The reporting deadline is missed: assemble and submit the report now, and tell the team. For an erased event it cannot clear (item 6). |
 | A7 | warning | A DISPOSITIONED event due within `ALERT_DEADLINE_WARNING_HOURS` (default 24), not yet passed, with no submitted current report | The deadline less the window | Assemble and submit the report before the deadline. After the deadline only A6 holds (decision 313). |
 | A8 | warning | `failed_deliveries_24h > 0` | The earliest failure counted | Check the receiver URL and its availability; the failed notification is in the ledger as `NOTIFICATION_FAILED`. |
 | A9 | info (logged at WARNING) | `past_retain_until_not_erased > 0` | The earliest `retain_until` counted | Operator task: decide on erasure (item 6). |
@@ -267,6 +267,22 @@ with the reviewer key (Part 2's route, spec 4.4; not on the Part 3 branch). 409
 Check first that no open investigation still needs the record (no legal hold exists in the
 system).
 
+**An erased event stays where erasure found it** (re-audit N2 and N3; Part 2's routes, so as
+observed by the re-audit on the merged tree, not on the Part 3 branch):
+
+- An event that was never disposed stays FLAGGED, or UNDER_REVIEW once a reviewer has opened it,
+  for good: every disposition on an erased event is refused with 409 `ALREADY_ERASED` (Part 2
+  decision 287), and nothing else moves a breach event out of those states. The spec does not
+  say what should happen; the dashboard's `events.by_state` keeps counting it there.
+- A DISPOSITIONED serious event that is erased before its report was submitted keeps alert A7
+  and then A6 (and `deadlines.passed_unsubmitted` on the dashboard) for good: the report and its
+  submission answer 410 `RECORD_ERASED`, so no submission can clear them. The A6 row of spec 7.3
+  does not exclude erased events, and the alert is not changed. Before erasing such an event,
+  submit its report or record why it is not submitted; after erasure, treat that A6 as known.
+
+Neither has a code change. Whether any other path (for example a later revision or a gap
+closure) can still move such an event is UNVERIFIED beyond the re-audit's probe.
+
 **Limits (spec 4.7).** Only rows written from migration 0009 on can be erased. Backups and volume
 snapshots keep destroyed keys until they expire (item 7). `actor_id` is not erased. Erasure gives
 erasure, not confidentiality (D7).
@@ -327,6 +343,8 @@ Phase 5:
   the audit timed 0.09 s for 4,006 entries and saw ten concurrent manual runs all return 201
   under `LOCK_TIMEOUT=5s`, so a wait that long means another run is stuck.
 - After a REGRESSED run, A1 clears on the next clean run (item 4); the anchor keeps failing.
+- An erased event that was never disposed stays FLAGGED or UNDER_REVIEW, and A6 stays raised
+  for an erased, unsubmitted serious event (item 6; re-audit N2, N3).
 
 ## 10. Secrets inventory
 

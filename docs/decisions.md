@@ -1987,13 +1987,14 @@ Decided 17 and 18 October 2026.
      PostgreSQL, and the service hung. A reader that locks several tables in one statement
      (the alert step, a request) can still form a cycle with the `TRUNCATE`, which PostgreSQL
      detects. A request that holds table locks on one connection while it waits in Python for
-     another (the dashboard reads in its request session, then opens a connection for the
-     worker values) forms a cycle with a queued `TRUNCATE` that PostgreSQL cannot see; so once
-     `LVRN` is held, the truncate transaction sets `lock_timeout` to 2 s for itself only
+     another (as the dashboard did until audit 3, R1, which now has it read the worker values
+     and clocks first) forms a cycle with a queued `TRUNCATE` that PostgreSQL cannot see; so
+     once `LVRN` is held, the truncate transaction sets `lock_timeout` to 2 s for itself only
      (`SET LOCAL`), and the wait for `LVRN` stays unbounded. When a detected deadlock or that
      lock timeout aborts the reset, the truncate transaction is retried, three attempts in all
-     with a short pause, and then the error is logged and raised (500). Each attempt rolls back whole, so `reset_count` rises by exactly one. The
-     order is written out at `RESET_LOCK_KEY` in `app/platform.py`.
+     with a short pause, and then the error is logged and raised (500). Each attempt rolls back
+     whole, so `reset_count` rises by exactly one. The order is written out at
+     `RESET_LOCK_KEY` in `app/platform.py`.
      A test fixture that truncates the table sets the count back to 0, which `/healthz` shows
      as `"reset_count": 0`.
 
@@ -2148,4 +2149,8 @@ Decided 17 and 18 October 2026.
      and a deadline exactly 24 hours away is not counted in `due_within_24h_unsubmitted`
      (`now <= deadline < now + 24 h`). A1 follows the latest run only, so after a REGRESSED run
      it clears on the next clean run while the external anchor keeps failing; this is accepted
-     and written into the A1 runbook (operations note item 4; audit F-4).
+     and written into the A1 runbook (operations note item 4; audit F-4). Audit 3 (N2, N3):
+     an erased event that was never disposed stays FLAGGED or UNDER_REVIEW, because every
+     disposition on it is 409 `ALREADY_ERASED`, and A6 stays raised for an erased, unsubmitted
+     serious event, because its submission is 410; neither is changed, and both are written into
+     the operations note (item 6).

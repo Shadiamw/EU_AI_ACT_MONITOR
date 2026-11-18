@@ -35,8 +35,9 @@ RESET_LOCK_KEY = 1381188948
 # alert step, a request) can still form a cycle with the TRUNCATE; PostgreSQL detects it and
 # aborts one side, and when that side is the reset, the truncate transaction is retried.
 # A request can also hold table locks on one connection while it waits in Python for another
-# (GET /v1/ops/dashboard reads in its request session, then calls worker.health_values on a
-# new connection); with the TRUNCATE queued between the two, that cycle is invisible too. So
+# (GET /v1/ops/dashboard did until audit 3, R1: it read in its request session, then called
+# worker.health_values on a new connection; app/ops.py now reads those values first); with
+# the TRUNCATE queued between the two, that cycle is invisible too. So
 # once LVRN is held, the truncate transaction waits at most RESET_LOCK_TIMEOUT for a table
 # lock (SET LOCAL, this transaction only); a lock timeout gives the waiting request its locks
 # back and the transaction is retried. The wait for LVRN itself is not bounded: a run in
