@@ -2094,8 +2094,13 @@ Decided 17 and 18 October 2026.
      `reports.verify` names the report, the column and the exception type only, never the
      value or the exception text. A database error is not a damaged value and still propagates
      (the run's transaction is unusable after it). Erased reports stay skipped (a destroyed key
-     is not a fault). `GET /v1/events/{id}/report` on a damaged stored report is unchanged
-     (500, decision 278). Test: `test_verify_stored_reports_a_damaged_sealed_report`.
+     is not a fault). `GET /v1/events/{id}/report` on a damaged stored report is unchanged: a
+     changed nonce, ciphertext or tag gives 500 (`SealError`, decision 278). A changed `pd1:`
+     prefix makes the value look unsealed, so `open_bytes` passes it through (spec 4.3) and the
+     GET returns 200 with the stored sealed bytes as the body, under an `X-Report-Sha256` that
+     does not match them. The nightly and manual verification runs list both cases as
+     `{report_id, which}`. (Integration correction, re-audit R3; decision 336.) Test:
+     `test_verify_stored_reports_a_damaged_sealed_report`.
 
 287. **No disposition is recorded on an erased event (audit M2; SS).** Any disposition request
      on an erased event, with or without a rationale, is refused with 409 `ALREADY_ERASED`
@@ -2383,3 +2388,54 @@ Decided 17 and 18 October 2026.
      disposition on it is 409 `ALREADY_ERASED`, and A6 stays raised for an erased, unsubmitted
      serious event, because its submission is 410; neither is changed, and both are written into
      the operations note (item 6).
+
+## Integration decisions (Phase 5 integration; numbers 334 to 353)
+
+334. **The integration starts from a harness base, not from PR #7 (integration plan, section 2;
+     SS).** On main `d9205f2`, CI stopped at Static checks (`ruff format` on `app/harness.py`
+     and `app/api/harness_routes.py`) and `tests/worker/test_clock_rule.py` failed on
+     `app/harness.py`. Commit `a908afa` (tree `09c68d1`), on `d9205f2`, replaces the four
+     direct system-time reads in `app/harness.py` (two `default_factory=time.time`, two
+     `finished_at = time.time()`) with `clock.wall_now().timestamp()`, the same value, and runs
+     `ruff format` on both files; nothing else changes. It is pushed as `phase5-harness-base`.
+     PR #7 (`aa89f5e`, `fix/harness-ci`) fixed `a9bf283`'s harness and does not apply to
+     `d9205f2`'s; it is left as it is (it is in Part 3's history, decision 296), and the
+     `app/harness.py` conflict at the Part 3 merge resolves to the harness base.
+
+335. **Merge order, resolutions and cut rule (integration plan, sections 3 to 5; decision 288;
+     SS).** `phase5-integration` is main `d9205f2`, then the harness base `a908afa`, then Part 1
+     `059dd1c` (merge `e0e9a70`, no conflict), then Part 3 `943bb99` (merge `359ae7f`, 11
+     conflicted files), then Part 2 `bcc88b4` (merge `4e6e0d0`, 8 conflicted files), each with
+     `git merge --no-ff`. Part 3 is merged once, at `943bb99` (its audit 3 round), not at
+     `9d16cac` and again later. Resolutions, as planned: `app/harness.py` the harness base;
+     `app/reports.py` and `0008_reports.py` Part 1's real files, `0009_personal_data.py` Part
+     2's, over Part 3's placeholders; `app/main.py` both routers, sorted; `PHASE5_TABLES` the
+     five tables of spec 11.1 in its order; the `app/platform.py` imports both (`app.formats`,
+     then `app.ledger_ops`); the head pins 0010; `tests/worker/test_schema.py` the union of the
+     column slots and grant exceptions; README sections 14, 15, 16 and the decision blocks in
+     number order. After the merges, Part 2's and Part 3's own files are byte-identical to
+     their heads. A part is cut by `git revert -m 1` of its merge commit, as a new commit:
+     Part 2 alone at any time; Part 3 and Part 1 only after the parts merged after them, in
+     reverse order. A reverted merge comes back by reverting the revert. Migration ids 0008 and
+     0009 are shared by Part 3's placeholders and the real migrations, so a database migrated
+     at one checkpoint is not reused at another without a downgrade first.
+
+336. **Decision 286 is corrected in place (re-audit R3; SS).** Its sentence on
+     `GET /v1/events/{id}/report` for a damaged stored report said the route is 500. That holds
+     for a changed nonce, ciphertext or tag; a changed `pd1:` prefix gives 200 with the stored
+     bytes under a non-matching `X-Report-Sha256`. Docs only, no code change.
+
+337. **The integration branch runs the Phase 5 checks in CI (SS, Q1).** `.github/workflows/ci.yml`
+     adds `github.ref_name == 'phase5-integration'` to the five conditions of Phase 4 Addendum
+     9.5: the flagged suite and the acceptance gate in job `test`, and the HTTP acceptance
+     runner, the Model 5 examples and the Phase 4 demo in job `image`. Spec 10.4 and 11.1 give
+     this edit to Part 4's base commit, which does not exist; the integrator made it in a
+     separate commit after the last merge. The same commit updates the Phase 4 test that pins
+     these conditions: `CONDITION_95` in `tests/test_stack_config.py` gains the same clause, so
+     that `test_the_95_conditions_are_unchanged` checks the new condition; its assertions and
+     counts (3 guarded, 2 unguarded) are unchanged. Without it that test fails on the
+     integration branch. The integration plan missed this test, and the final run found it
+     (SS's choice). The comment above the flagged step names `phase5-integration` too. Part 4
+     builds on the updated constant. Until Part 4 lands its Phase 5 Model 5 fixture, the
+     runner and the Model 5 step are expected to fail on Model 5 Ex-2 (step 8 expects 501 and
+     gets 200).
