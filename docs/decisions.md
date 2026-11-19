@@ -2416,9 +2416,13 @@ Decided 17 and 18 October 2026.
      number order. After the merges, Part 2's and Part 3's own files are byte-identical to
      their heads. A part is cut by `git revert -m 1` of its merge commit, as a new commit:
      Part 2 alone at any time; Part 3 and Part 1 only after the parts merged after them, in
-     reverse order. A reverted merge comes back by reverting the revert. Migration ids 0008 and
-     0009 are shared by Part 3's placeholders and the real migrations, so a database migrated
-     at one checkpoint is not reused at another without a downgrade first.
+     reverse order. A reverted merge comes back by reverting the revert. Cutting Part 2
+     (`git revert -m 1 4e6e0d0`) conflicts in `docs/decisions.md` in one region, Part 2's whole
+     decision block (274 to 288, including the in-place R3 note in 286): resolve that region to
+     the revert side (drop the block), and say in the cut commit's message that decision 336
+     then refers to a removed decision. Migration ids 0008 and 0009 are shared by Part 3's
+     placeholders and the real migrations, so a database migrated at one checkpoint is not
+     reused at another without a downgrade first.
 
 336. **Decision 286 is corrected in place (re-audit R3; SS).** Its sentence on
      `GET /v1/events/{id}/report` for a damaged stored report said the route is 500. That holds
