@@ -24,6 +24,28 @@ new route answers 401 without a key (not 404 or 405).
 | Δ10 | Additive (internal) | `GET /v1/ops/dashboard` | Reviewer or viewer; the operations dashboard (spec 7.2). Proposed **not** to enter the shared contract | `app/ops.py` |
 | Δ11 | Additive | `tools/verify_ledger.py --anchor` | Compares the export with a stored chain head; output unchanged without the option | `test_verifier_output_without_anchor_is_unchanged` |
 
+## As-built additions (not in spec 9.2), proposed
+
+**Status: proposed, not agreed, like every row above.** These are behaviours the built service
+shows to a client that spec 9.2 does not list (audit F-03, section 8; added in the Part 4 audit
+fix round). Each needs the same agreement as a 9.2 row before it enters the shared contract.
+
+| # | Kind | Item | Proposed text | As built |
+| --- | --- | --- | --- | --- |
+| A1 | Additive | `GET /healthz` fields | The body adds `version` (`APP_VERSION`, null when unset), `last_verification` (`{finished_at, valid, head_check}` of the latest verification run of any trigger, or null), `last_verification_age_seconds` (whole wall-clock seconds, or null) and `reset_count` (0 before the first reset). The 503 body for an unreachable database carries the same keys: `version` from the environment and the other three null (decision 306). Ledger integrity never makes `/healthz` 503 (spec 6.5) | `app/api/health_routes.py`; `test_healthz_reports_the_app_version`, `test_healthz_is_503_with_the_body_when_the_database_fails` |
+| A2 | Change | `POST /v1/metrics` errors | 400 `MALFORMED_BODY` for a sample whose `timestamp` is at or after `9999-07-01T00:00:00Z` (spec 5.4, D10; Δ9 covers only the clock advance) | `app/ingestion.py`; `test_a_sample_dated_after_9999_07_01_is_400` |
+| A3 | Change | `DISPOSITION_RECORDED` and `DISPOSITION_REVISED` payloads | `rationale` is the sealed string (`pd1:` followed by the sealed value), not the text, in `GET /v1/ledger/export` and the audit view; a null rationale stays null (decision 279) | `app/dispositions.py`; `tests/records/test_personal_data.py` |
+| A4 | Additive | Ledger entry types | `REPORT_ASSEMBLED`, `REPORT_SUBMITTED` and `RECORD_ERASED` are new `entry_type` values in `GET /v1/ledger/export` and `GET /v1/events/{event_id}/audit` (only `RECORD_ERASED` the error code is in Δ7) | `app/ledger/canonical.py`; `test_all_seventeen_entry_types_are_accepted` |
+| A5 | Change | `GET /v1/events/{event_id}` after erasure | Still 200; every `harm_fields.*.evidence` and `disposition.rationale` is null; every other field is unchanged (spec 4.4) | `test_ac18_personal_data_is_unreadable_after_erasure` |
+| A6 | Change | `POST /v1/test/reset` | Also empties the Phase 5 tables (`report`, `report_submission`, `record_key`, `ledger_verification_run`, `platform_counter`, keeping `reset_count` + 1). Can return 500 when a detected deadlock or its 2 s lock timeout aborts the truncate three times in a row; each attempt rolls back whole (decision 300). The contract lists only 204 | `app/platform.py`; `test_reset_retries_after_a_detected_deadlock` |
+| A7 | Additive | `POST /v1/events/{event_id}/disposition` errors | 409 `ALREADY_ERASED` ("the personal data of this event has been erased") for any disposition on an erased event, after the 400 and 404 checks and before `EVENT_NOT_REVIEWABLE` (decision 287, which assigns it to this document) | `app/dispositions.py`; `test_revision_of_an_erased_event_is_refused_with_and_without_a_rationale` |
+
+Operational note, proposed to stay internal: `GET /v1/ops/dashboard` and `GET /healthz` can
+return 500 or 503 while a reset runs concurrently (decision 300's residual). The only claim made
+is that no invisible lock cycle is left (`test_reset_lock_timeout_breaks_an_invisible_cycle`,
+`test_dashboard_does_not_hold_locks_while_it_waits_for_another_connection`), not a measured
+failure rate.
+
 ## Open inputs (spec 9.3; flagged, not decided here)
 
 - **Opaque versus UUID ids:** the contract shows `event_id — string (uuid)`, but its own

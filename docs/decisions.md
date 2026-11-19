@@ -1892,6 +1892,128 @@ Decided 17 and 18 October 2026.
      GET /livez is 404. Whoever deploys must bring /livez in from `development-deploy`, or point
      the Fly health check at /healthz.
 
+## Phase 5 specification decisions (numbers 234 to 253)
+
+Spec section 12 (decision records D1 to D20), copied verbatim from
+`docs/phase5_implementation_spec.md` on `origin/phase5-spec` (834555f) in the Part 4 audit fix
+round. Dk is decision 233 + k; only the number moved from "Dk (n)." to the list number. As the
+spec says: "Decided" means SS chose the option in the project thread on 2 November 2026.
+**Every other record (D3 to D10, D13 to D16, D19, D20) was approved as proposed by SS on 2
+November 2026**, D7 and D15 with the conditions written in them.
+
+234. **D1. Report and submission status live on the report record; Event.state keeps four values.**
+     *Options:* A, statuses on the report (derived); B, add REPORT_READY and SUBMITTED to Event.state.
+     *Choice:* **A (decided).** *Reason:* the contract fixes the state enum and wins over Model 1;
+     an additive listing is easier to agree than an enum change the other team already tests.
+     *Consequence:* after a submission, `event.state` stays **DISPOSITIONED**. "Submitted" is
+     exposed by `GET /v1/events/{event_id}/reports` (`status = "SUBMITTED"` and the `submission`
+     object) and by the `REPORT_SUBMITTED` audit entry. The Event object does not change. Model 1
+     draws the two statuses in a report region (8.2).
+
+235. **D2. A NOT_SERIOUS disposition in force gets a closure report that cannot be submitted.**
+     *Options:* A, closure report; B, 409 NOT_REPORTABLE. *Check required by SS:* AC-16, REQ-12 and the
+     contract's report endpoint were re-read (0.2, 0.3). None of them limits reports to serious tiers:
+     REQ-12 says "when severity is confirmed"; AC-16 requires only that the not-serious path
+     "terminate without a deadline"; the contract's only report error besides 404 is "409 if no
+     disposition recorded yet". *Choice:* **A (decided).** *Reason:* the Phase 5 text says the
+     other team will "trace the not-serious path and download the report". *Consequence:* the
+     closure report carries `report_kind = "NOT_SERIOUS_CLOSURE"`, the JSON field `"submission_marking":
+     "NOT FOR SUBMISSION"`, and a visible "NOT FOR SUBMISSION" banner at the top of every PDF page
+     (3.3.5); a submission is 409 NOT_SUBMITTABLE. Model 5 Ex-2 and Model 1 differ (Conflict C2).
+
+236. **D3. Report generation is the reviewer's GET; assembly is lazy, once per disposition row.**
+     *Options:* A, assemble on the first GET after a disposition or revision; B, assemble inside the
+     disposition transaction; C, a new POST to generate. *Choice:* A. *Reason:* the contract has only
+     the GET; B makes `assembled_at` equal the determination time (AC-13 "distinct") and couples to
+     Phase 4 code; C is a contract change with no gain. *Consequence:* the first GET writes; later GETs
+     read only.
+
+237. **D4. Report bytes are stored in PostgreSQL, sealed, with plaintext hashes on the row and in the ledger.**
+     *Options:* A, database bytea; B, object storage (Model 2's `pdf_ref`). *Choice:* A. *Reason:* no
+     object store in the Fly deployment, and one backup, reset and erasure path. *Consequence:*
+     Model 2 changes (8.3); database size grows by a few kB per report.
+
+238. **D5. PDF library: reportlab, in invariant mode (Open; recommendation).**
+     *Options:* reportlab (BSD), fpdf2 (LGPL-3.0), WeasyPrint (needs system libraries). *Choice:*
+     reportlab. *Reason:* pure Python wheels, a permissive licence, and a documented invariant
+     mode for reproducible output. *Consequence:* one runtime dependency; the stored bytes remain the
+     record regardless (3.4).
+
+239. **D6. Submission: REVIEWER only, hash-checked, once per report, follow-ups allowed after a revision.**
+     *Choice:* 3.7. *Reason:* "mark a report as submitted" (6.3); Art. 73(5) initial and complete
+     reports (summary, UNVERIFIED); the contract allows revisions at any time. *Consequence:* new
+     endpoint (Δ3) and four 409 codes.
+
+240. **D7. Erasure by per-record keys (crypto-shredding) for append-only stores; null for mutable columns.**
+     *Options:* A, commitments plus an erasable store; B, per-record keys; C, payload digests
+     (rejected). *Choice:* **B (approved by SS)**, with two statements SS required: **the keys are
+     unwrapped and stored in the same database, so the design provides erasure, not
+     confidentiality**; and **only rows written from migration 0009 on are erasable**. *Reason:*
+     section 4.2 table: no updates to append-only tables, ledger hashes unchanged (INV-11 as
+     written), one erasure point covers the report bytes, and the verifier is unchanged. Keys are
+     not wrapped, so no secret is needed. *Consequence:* `cryptography` dependency; readers of
+     rationale change; pre-0009 rows are not erasable (4.7); merged last and first to drop (1.4).
+
+241. **D8. Erasure is reviewer-triggered after `retain_until`, never automatic.**
+     *Choice:* 4.4. *Reason:* REQ-16 says "support"; no legal-hold rule exists. *Consequence:* alert
+     A9 lists due records; an operator acts.
+
+242. **D9. No purge in Phase 5.** *Reason:* AC-05 accepts presence at 6mo1d; a purge needs
+     referential rules that no artifact gives. *Consequence:* storage grows; the operations note says
+     so.
+
+243. **D10. The clock and sample-time bound is 9999-07-01T00:00:00Z.** *Reason:* the last
+     instant whose `retain_until` is representable (5.4); closes LIM-12. *Consequence:* changes
+     decision 226's bound and its tests.
+
+244. **D11. The nightly verification runs in the worker; the dashboard is an API endpoint and a console view.**
+     *Choice:* **A (decided).** *Consequence:* no new process; results go to `ledger_verification_run`,
+     not the ledger (6.1).
+
+245. **D12. External chain head: a scheduled GitHub Actions workflow commits each head to the `chain-heads` branch.**
+     *Choice:* **A (decided)**, with SS's condition: **each run compares the new head with the
+     previous committed head and fails if the chain is shorter or the old head is missing** (6.2).
+     *Consequence:* GitHub secret `POD_VIEWER_KEY` (approval needed); a legitimate test reset also
+     fails the run, and a person restarts the series by hand (6.2).
+
+246. **D13. Event-table edits are detected by a nightly projection check against the ledger.**
+     *Options:* A, projection check; B, add more fields to ledger payloads; C, document only.
+     *Choice:* A, plus a documented list of uncovered columns. *Reason:* no change to pinned
+     payloads. *Consequence:* `detected_at`, `retain_until`, the evidence bundle and harm evidence
+     text stay uncovered (Q-7: SS decided not to add them).
+
+247. **D14. Alerts are delivered through the dashboard and logs, not a new webhook type.** *Reason:*
+     the contract fixes `event_types`. *Consequence:* no alert webhook (Q-8: SS decided no).
+
+248. **D15. `/healthz` reports `version` from a build-time `APP_VERSION`; deployment config stays on `development-deploy`.**
+     *Choice:* approved, with OD-1 decided by SS: `fly.toml` and `/livez` stay on
+     `development-deploy` and are not added to main or the base commit. The Dockerfile `ARG GIT_SHA`
+     and the `/healthz` `version` field stay on main (Part 3). *Consequence:* the deployer merges main
+     into `development-deploy`, deploys from there and passes `--build-arg GIT_SHA=<the main commit
+     being deployed>` explicitly; 11.6 step 5 checks `version` equals that commit (6.5, 7.5, 11.6).
+
+249. **D16. `WEBHOOK_REGISTERED` carries `url_sha256` instead of `url` (LIM-13).**
+     *Consequence:* changes a Phase 3 payload and its tests; the export no longer shows URLs.
+
+250. **D17. A second reviewer `rev-2` is seeded from `REVIEWER_2_KEY` when set.** *Choice:*
+     **A (decided).** *Consequence:* **setting `REVIEWER_2_KEY` as a Fly secret is a deployer step that
+     needs the team's approval** (11.6 step 4).
+
+251. **D18. The Article 73 field mapping comes from the Commission's reporting template, newest version.**
+     *Choice:* **C (decided):** SS uploaded the template and the draft guidance on 2 November 2026.
+     The newest version found is "Reporting Template Version: 1.0.0" (SB-10407), a draft of
+     26 September 2025; a later final version is open question Q-13. *Consequence:* section 3.3.4
+     maps every template field with a status, the report carries the mapping in
+     `article73_template`, submission records the template's 1.2 e type, and manual check M3 uses
+     the guidance-based checks U1 to U8. Template-versus-requirements conflicts are C17 to C21.
+
+252. **D19. Reading a stored report appends nothing; assembly, submission and erasure append.**
+     *Reason:* Part 2 addendum rule 9 (only detail and audit reads are logged) is not changed by this
+     phase. *Consequence:* Conflict C4 with REQ-14's "views", for the pod to confirm.
+
+253. **D20. Actor ids are pseudonymous and are not erased.** *Reason:* `actor_id` is a canonical
+     hash field, and no mapping to a person is stored. *Consequence:* assumption A-3.
+
 ## Part 1 decisions (Phase 5 reports and submission; numbers 254 to 273)
 
 254. **Part 1 is built on main plus the part of the base commit it needs.** The Phase 5 base
@@ -2426,6 +2548,13 @@ Decided 17 and 18 October 2026.
      the Phase 4 demo, so `test_the_95_conditions_are_unchanged` now counts 4 guarded steps
      and names "Phase 5 demo (AC-16 trace)"; the 2 unguarded steps are unchanged.
 
+     Audit fix round. The LIM-03 advisory slot is not built. Spec 1.2 says the AC-16 trace
+     "refuses to start while another trace holds the advisory slot (Part 4, 10.3)", but the
+     Phase 5 spec defines no mechanism for the slot: section 10.3 does not describe one. A real
+     mechanism would need a new test endpoint, which is a contract change. The control is the
+     booking rule in `docs/operations.md` (section 8, "Book a window"). This is a recorded
+     deviation from spec 1.2 and 10.3 (SS, decision in the Part 4 fix round).
+
 320. **The HTTP acceptance tests account for logged reads.** A reviewer's event read appends
      `EVENT_VIEWED`, so the AC-18 test takes its "before" export after its own reads and its
      "after" export straight after the erasure, then compares positions and hashes between
@@ -2460,12 +2589,27 @@ Decided 17 and 18 October 2026.
      belong to the same team, and for it to be omitted from cross-team reports. Same team is
      the self target, or a URL in `SAME_TEAM_SYSTEM_URLS`. Cross-team reports are unchanged.
 
+     Audit fix round: the self target is `SUITE_BASE_URL` + `/system`, or the bare
+     `SUITE_BASE_URL`, and `SUITE_BASE_URL` defaults to the Fly URL
+     (`https://eu-ai-act-monitor-api.fly.dev`). That default is older than Part 4 (main
+     a9bf283); Part 4 only reuses it. For the self target, system setup runs in process and the
+     probes call the project API over loopback (`127.0.0.1:$PORT`), so a tester given the Fly
+     URL tests the deployment it runs in, not another machine. Any other URL, an empty one, or
+     one that only starts with the Fly URL, is cross-team: the model is omitted when in doubt.
+
 326. **Model coverage counts design requirements, not tests.** `total` is the 26 rows of the
      spec's scope table (section 1.1). `covered` is the number of those rows with at least one
      probe (`M-01` to `M-12`) that ran and passed; an error or a skip covers nothing. A probe
      may cover more than one row, and a row covered by two probes counts once. The mapping
      table is `docs/models/phase5_design_requirements.md`, linked from `basis`, and a test
      keeps it equal to `MODEL_TESTS` in `app/harness_model.py`.
+
+     Audit fix round: "ran and passed" above is wrong. The Testing Interface sets `covered` to
+     the requirements the suite *evaluated*, and a `fail` is an evaluated response ("the
+     response can be evaluated and differs from expectations"). The code
+     (`harness_model.model_coverage`) has always counted `pass` and `fail`; `error` and `skip`
+     evaluate nothing and cover nothing. `covered` never exceeds `total`, and both are counts,
+     never null, because the measure is always available for a same-team run.
 
 327. **Thirteen of the 26 rows are probed.** The other rows (the PDF's usability, the anchor
      workflow, the deployment and its secrets, the manual checks, documents) cannot be observed
@@ -2476,6 +2620,15 @@ Decided 17 and 18 October 2026.
      interface allows (reset, clock advance) and the three test keys. The retention probe
      advances the clock past 186 days; it runs after the base tests so their timing is not
      affected, and the suite's last test (`T-08`) still runs after the probes.
+
+     Audit fix round: the title is inaccurate. The probes use only the test endpoints and keys
+     above, but they write more than the base tests do. A same-team run, after the system
+     setup's reset and T-07's reset, ingests two breaches (M-02, M-07), advances the clock 5
+     hours (M-03), records two dispositions and assembles two reports (M-03, M-07), records a
+     submission (M-06), advances the clock 186 days and erases a record (M-09), and appends a
+     manual verification run (M-10). Nothing is cleaned up afterwards: the next system setup's reset
+     is the cleanup. Run it only in a booked window (`docs/operations.md` section 8; README
+     17.2).
 
 329. **A probe that cannot reach the target is an error, not a failure.** Communication errors
      become `error` with source `communication`; a fault in the probe code becomes `error` with

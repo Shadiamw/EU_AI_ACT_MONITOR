@@ -1173,8 +1173,10 @@ the Fly URL); a self run calls the API over loopback, so on a local stack set
 `SUITE_BASE_URL`, or target the Fly URL, to get a same-team run.
 
 - `total` is 26: the rows of the Phase 5 spec's scope table (section 1.1), DR-01 to DR-26.
-- `covered` is the number of those requirements with at least one probe that ran and passed.
-  Errors, skips and failures do not count. With every probe passing, `covered` is 13: the
+- `covered` is the number of those requirements that at least one probe evaluated, that is,
+  ended `pass` or `fail` (audit fix round: this line said "ran and passed"; the Testing
+  Interface counts what the suite evaluated, and the code always counted `fail` too). `error`
+  and `skip` evaluate nothing and do not count. With every probe run, `covered` is 13: the
   other 13 requirements (the PDF review, the anchor workflow, the deployment, and so on) are
   checked in-process or manually and cannot be probed through the API.
 - `basis` names the design version and links to the mapping,
@@ -1185,6 +1187,32 @@ the Fly URL); a self run calls the API over loopback, so on a local stack set
 # A same-team run against another of our deployments
 SAME_TEAM_SYSTEM_URLS=https://staging.example/system uvicorn app.main:app
 ```
+
+**Sessions, state and cleanup (audit fix round).** The tester and system endpoints exist only
+with `ENVIRONMENT=test`. What a run does to the target, and what it does not protect against:
+
+- **Preparation.** `POST /system/test/setup` resets the whole target database
+  (`platform.reset()`: tables emptied, seed reinstalled, clock offset 0, `reset_count` + 1),
+  and `T-07` resets it again over `POST /v1/test/reset`, in every run, cross-team too.
+- **What a same-team run writes.** After those resets the probes ingest two breaches (`M-02`,
+  `M-07`), advance the clock 5 hours (`M-03`), record two dispositions and assemble two reports
+  (`M-03`, `M-07`), record a submission (`M-06`), advance the clock 186 days and erase a
+  record (`M-09`), and append a manual verification run (`M-10`) (decision 328).
+- **The default target is the deployment itself.** `SUITE_BASE_URL` defaults to the Fly URL,
+  so a tester running on Fly and given that URL tests its own deployment, over loopback,
+  and resets and changes the shared data there. On the deployed service a reset also breaks
+  the anchor series (`docs/operations.md` sections 5 and 8).
+- **Sessions share one database.** Every session on a deployment uses the same data. A second
+  system setup with a new `session_id` resets the data under a session that is still running;
+  only a repeated `session_id` gets 409. The interface leaves concurrency to the pod, so run one
+  session at a time per deployment, in a booked window (`docs/operations.md` section 8, LIM-03).
+- **One run per tester session.** A second `POST /tester/test/run` of a session gets 409,
+  whether it is concurrent with the first, later, or after an abort. An aborted run keeps the
+  results it has; the test the abort prevented is `error` (source `tester`) and the rest are
+  `skip`.
+- **Memory only.** Tester and system sessions live in the API process; a restart loses them,
+  and `GET /test/report` then answers 404.
+- **Cleanup.** There is no cleanup step: the next setup's reset is the cleanup.
 
 ### 17.3 Running
 
@@ -1206,3 +1234,7 @@ BASE_URL=http://127.0.0.1:8000 REVIEWER_2_KEY=test-reviewer-key-rev-2-3e8b1f6a9c
   teams agree the delta, which is still proposed.
 - Deploying to Fly (`APP_VERSION`, the `REVIEWER_2_KEY` secret) is a team step (OD-1, spec 11.6).
 - The manual checks M1 to M7 are for people to perform; their result fields are empty.
+- The LIM-03 advisory slot (spec 1.2 and 10.3: the AC-16 trace refusing to start while another
+  trace holds the slot) is not built: the spec defines no mechanism, and a real one would need
+  a new test endpoint, a contract change. The control is the booking rule in
+  `docs/operations.md` section 8. Recorded deviation, decision 319 (audit fix round).

@@ -57,6 +57,11 @@ stateDiagram-v2
         ASSEMBLED --> SUPERSEDED: revision (DISPOSITION_REVISED)
         SUBMITTED --> SUBMITTED_SUPERSEDED: revision
     }
+    note right of Report
+        ERASED marker, not a state (spec 8.2): POST erasure after retain_until
+        marks the event and its reports in any state (RECORD_ERASED).
+        States are unchanged; report routes 410; evidence and rationale null.
+    end note
 ```
 
 | From | Trigger and guard | To | Ledger | Test |
