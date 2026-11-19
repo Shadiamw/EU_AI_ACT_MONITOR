@@ -182,6 +182,24 @@ EXPECTED_COLUMNS["report_submission"] = {
     "authority_reference": "text",
 }
 # End of the Phase 5 Part 1 slot.
+# Phase 5 Part 3 slot (migration 0010).
+EXPECTED_COLUMNS["ledger_verification_run"] = {
+    "run_id": "text",
+    "trigger": "text",
+    "started_at": TIMESTAMPTZ,
+    "finished_at": TIMESTAMPTZ,
+    "valid": "boolean",
+    "entries_checked": "integer",
+    "first_mismatch": "text",
+    "head_seq": "bigint",
+    "head_hash": "text",
+    "head_check": "text",
+    "projection_mismatches": "jsonb",
+    "report_mismatches": "jsonb",
+}
+# Phase 5 spec 6.5: reset_count; `singleton` keeps it to one row (Part 3 decision 301)
+EXPECTED_COLUMNS["platform_counter"] = {"singleton": "boolean", "reset_count": "bigint"}
+# End of the Phase 5 Part 3 slot.
 
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
 # is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
@@ -192,6 +210,8 @@ GRANT_EXCEPTIONS: dict[str, list[str]] = {
     "disposition": ["INSERT", "SELECT"],  # Phase 4 spec 4.4: migration 0006 grants only these
     "report": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
     "report_submission": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
+    "ledger_verification_run": ["INSERT", "SELECT"],  # Phase 5 spec 6.1: insert-only
+    "platform_counter": ["SELECT"],  # Phase 5 spec 6.5: only reset writes it (decision 300)
 }
 
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)
@@ -228,11 +248,12 @@ def test_the_schema_has_exactly_the_ledger_stub_and_part3_tables(owner_engine: E
     assert tables == sorted([*NON_LEDGER_TABLES, "ledger_entry", "alembic_version"])
 
 
-def test_migration_head_is_0008(owner_engine: Engine) -> None:
+def test_migration_head_is_0010(owner_engine: Engine) -> None:
     """Spec 4.4: 0001 Platform, 0002 Ledger, 0003 Detection, 0004 Notifications; Phase 4
-    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations; Phase 5: 0008 Reports."""
+    Addendum 9.1: 0005 Review, 0006 Dispositions, 0007 Escalations; Phase 5 spec 11.1: 0008
+    Reports, 0009 Personal data, 0010 Ledger operations."""
     [row] = rows(owner_engine, "SELECT version_num FROM alembic_version")
-    assert row == {"version_num": "0008"}
+    assert row == {"version_num": "0010"}
 
 
 def index_definitions(owner_engine: Engine, table: str) -> dict[str, str]:

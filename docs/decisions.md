@@ -2000,3 +2000,266 @@ Decided 17 and 18 October 2026.
      views, the Model 5 Phase 5 fixture, `tools/demo_phase5.py`, `PHASE5_REQUIRED`, the manual
      checklist M3 and the contract-delta document are Part 4's. Erasure and the sealing itself
      are Part 2's. The nightly job, the anchor and the dashboard are Part 3's.
+
+## Part 3 decisions (Phase 5 ledger operations; numbers 294 to 313)
+
+294. **Part 3 carries the part of the Phase 5 base commit it needs.** The base commit (spec
+     11.1, Part 4) has not landed, so one prerequisites commit on this branch adds only what
+     Part 3 cannot work without: the placeholder migrations `0008_reports.py` (revises 0007)
+     and `0009_personal_data.py` (revises 0008) and Part 3's own `0010_ledger_ops.py` (revises
+     0009), all with empty upgrade and downgrade; the head pins of spec 10.2 moved from 0007 to
+     0010 (`test_migration_head_is_0007` renamed `test_migration_head_is_0010`,
+     `test_alembic_chain_is_0001_to_0007_with_one_head` renamed
+     `test_alembic_chain_is_0001_to_0010_with_one_head`, `test_database_is_at_head_0007`
+     renamed `test_database_is_at_head_0010`); `PHASE5_TABLES = ("ledger_verification_run",
+     "platform_counter")` in `app/platform.py` (Part 4's file, approved minimal edit), with the
+     comment and the `with_phase4_tables` loop copied byte for byte from Part 1's hunk so that
+     only the tuple line differs; `app/reports.py` as the spec 11.3 stub (`verify_stored`
+     returns []); the "Phase 5 Part 3" slot markers in `app/config.py`; the README section 16
+     heading; and this decision block. Not carried, because Part 3 does not need them: the
+     three new ledger entry types, `app/personal_data.py`, the other parts' tables and slots,
+     `PHASE5_REQUIRED`, the `phase5-integration` CI conditions and the new dependencies.
+     At integration with Part 1 the integrator keeps Part 1's `0008_reports.py` and
+     `app/reports.py`, sets the head pins to "0010", takes the union of the two `PHASE5_TABLES`
+     tuples, and keeps both blocks in `docs/decisions.md` and both sections in README.md. If
+     the base commit lands first, its version of every shared file wins and this branch keeps
+     only its own 0010 content and slots.
+
+295. **OD-1 was overtaken by main `a9bf283`; the Dockerfile gains only the build version.**
+     Spec 6.5 (OD-1) kept `fly.toml` and `GET /livez` on `development-deploy`, but main
+     `a9bf283` already has both, with `scripts/deploy-fly.sh`, `fly-wake.sh`, `fly-sleep.sh` and
+     `cloud-bootstrap-db.sql`. Part 3 builds on main as it is and leaves deployment config
+     untouched: `fly.toml`, `/livez`, the harness and the Dockerfile `HEALTHCHECK` are not
+     changed. The Dockerfile gains only `ARG GIT_SHA` and `ENV APP_VERSION=$GIT_SHA`, and
+     `config.app_version()` reads `APP_VERSION` (unset or empty is None; never read from git at
+     run time), which `/healthz` reports as `version`. The deployer passes
+     `--build-arg GIT_SHA=<the main commit being deployed>` explicitly.
+     `scripts/deploy-fly.sh` passes no build argument, so a deploy made with it shows
+     `"version": null`; Part 3 does not edit deployment scripts, and the operations note (M8)
+     gives the exact command.
+
+296. **The harness format and clock-rule fix is carried by branching from `fix/harness-ci`.**
+     Main `a9bf283` fails CI at `ruff format --check` (`app/harness.py:91` and `:117`) and, once
+     past that step, at `tests/worker/test_clock_rule.py` (`app/harness.py:167` called
+     `time.time()`). The fix is commit `aa89f5e` on `fix/harness-ci` (PR #7, not yet merged into
+     main), and `phase5-part3-ledger-ops` is cut from it, so no Part 3 commit touches
+     `app/harness.py`. If PR #7 is merged with a merge commit, `aa89f5e` is shared history. If
+     PR #7 is changed or squash-merged, this branch must be re-checked against main.
+
+297. **The Phase 4 Addendum 9.9 ledger gate is widened for `--anchor`.** The gate
+     (`git diff --stat 2cea34f..HEAD -- app/ledger app/audit.py tools/verify_ledger.py
+     migrations/versions/0002_ledger.py`) allowed only the entry-type lines. Spec 11.4 gives
+     Part 3 an edit to `tools/verify_ledger.py` for `--anchor` (spec 6.2, Delta 11), so the gate
+     now also allows one purely additive block in that file: new lines only, zero deletions, no
+     existing line changed, `USAGE` unchanged. Without `--anchor` the script's stdout, stderr
+     and exit codes stay byte-identical, which `test_verifier_output_without_anchor_is_unchanged`
+     and `tests/test_verify_script.py` check. `app/ledger/*`, `app/audit.py` and migration 0002
+     are untouched. The part report gives the exact gate output.
+
+298. **What `--anchor` compares and prints.** Form: `verify_ledger.py EXPORT_FILE --anchor
+     HEADS_FILE`. The heads file is JSON lines; blank lines are ignored. The head is the last
+     line that has `seq` (an integer of at least 1) and `hash` (64 lowercase hex) and no
+     `new_series` key. The export is verified exactly as without the option and the same lines
+     are printed; then one line follows on stdout: `anchor: OK seq=<s>` when entry `s` is inside
+     the verified part of the export (all of it when valid, the entries before
+     `first_mismatch` when not) and its stored hash equals the head's hash, otherwise
+     `anchor: MISMATCH seq=<s>`. A shorter chain has no entry `s` and is a mismatch (spec 6.2
+     case 2); a rewritten entry at or below `s` changes entry `s`'s hash even when the later
+     hashes are recomputed (case 3). The exit code is 0 only when the export is valid and the
+     anchor is OK, otherwise 1. Only the seq is printed, never a hash or payload value.
+
+299. **The first head comes only from a manual new-series run.** A heads file that cannot be
+     read, has a line that is not a JSON object, has a head line with a malformed `seq` or
+     `hash`, or has no head line at all, gives exit 2 with a reason on stderr (`anchor: ...`)
+     and nothing on stdout, so it can never pass as OK. The workflow (M8) therefore fails a
+     scheduled run when `heads.jsonl` has no head yet; the first head, like every restart after
+     a test reset, is written by a `workflow_dispatch` run with `new_series: true` and a reason.
+
+300. **`platform.reset()` keeps `reset_count` across the truncate.** `platform_counter` is in
+     `PHASE5_TABLES`, so every truncate list (reset's and the test fixtures') empties it. In
+     `reset()`'s owner transaction, `reset_count` is read before the `TRUNCATE`, the `TRUNCATE`
+     runs as before, and a row with the count plus one is inserted after it; a missing row
+     counts as 0. One transaction, so a failed reset changes neither the tables nor the count.
+     Resets are serialised by a session-level advisory lock (`pg_advisory_lock`, key ASCII
+     "RSET" = 1381188948, never the ledger's "LEDG" or the verification run's "LVRN"), taken on
+     its own connection and held over the truncate, the seed and the clock step, then released
+     with `pg_advisory_unlock` in a `finally` block, because reading `reset_count` before the
+     `TRUNCATE` and the post-commit seed otherwise deadlock concurrent resets. A reset
+     concurrent with ordinary requests that read the tables it truncates can still fail with
+     500, as before M6; that is outside this change.
+     Audit 2 (finding B2) fixed one lock order, advisory locks before tables: `RSET`, then the
+     verification lock `LVRN` (decision 302) as the first statement of the truncate
+     transaction, then the `TRUNCATE`'s table locks. So a reset waits for a verification run in
+     progress, and a run started during a reset waits for the reset's commit before it touches
+     a table; before this, a NIGHTLY run's holder connection (idle in transaction, waiting in
+     Python for its checks connection) and the `TRUNCATE` could wait on each other unseen by
+     PostgreSQL, and the service hung. A reader that locks several tables in one statement
+     (the alert step, a request) can still form a cycle with the `TRUNCATE`, which PostgreSQL
+     detects. A request that holds table locks on one connection while it waits in Python for
+     another (as the dashboard did until audit 3, R1, which now has it read the worker values
+     and clocks first) forms a cycle with a queued `TRUNCATE` that PostgreSQL cannot see; so
+     once `LVRN` is held, the truncate transaction sets `lock_timeout` to 2 s for itself only
+     (`SET LOCAL`), and the wait for `LVRN` stays unbounded. When a detected deadlock or that
+     lock timeout aborts the reset, the truncate transaction is retried, three attempts in all
+     with a short pause, and then the error is logged and raised (500). Each attempt rolls back
+     whole, so `reset_count` rises by exactly one. The order is written out at
+     `RESET_LOCK_KEY` in `app/platform.py`.
+     A test fixture that truncates the table sets the count back to 0, which `/healthz` shows
+     as `"reset_count": 0`.
+
+301. **Migration 0010 creates `platform_counter`.** No migration owned the table that spec 6.5
+     names, so Part 3's own `0010_ledger_ops.py` creates it: `singleton boolean` primary key,
+     default true, with the check `ck_platform_counter_single_row` (`singleton` must be true),
+     which keeps it to one row as `clock_state` does in migration 0001, and `reset_count bigint`
+     not null, default 0. The application role gets SELECT only; only `reset()` writes it, as
+     the owner. The migration inserts no row.
+
+302. **The nightly run happens once per wall-clock UTC day, from `NIGHTLY_VERIFY_HOUR_UTC`.**
+     `ledger_ops.nightly_due(engine)` is true when the wall-clock hour is at least
+     `NIGHTLY_VERIFY_HOUR_UTC` (default 2, an integer from 0 to 23) and no `NIGHTLY` row of
+     `ledger_verification_run` has a `started_at` on the current wall-clock UTC date. So a worker
+     that was down at 02:00 still runs later the same day, and two passes on one date give one
+     row. Two guards keep it to one row when several workers run at once: `run_verification`
+     takes a transaction advisory lock of its own (key ASCII "LVRN", never the ledger's "LEDG"
+     key) and re-checks the condition under it, and a unique index on
+     `((started_at AT TIME ZONE 'UTC')::date) WHERE trigger = 'NIGHTLY'` rejects a second row
+     even if the lock were bypassed. `LVRN` is the run's first lock: the holder takes it
+     before it reads or writes `ledger_verification_run`, and `platform.reset()` takes it
+     before its `TRUNCATE` (decision 300, audit 2 B2), so the holder never waits on a lock a
+     `TRUNCATE` holds. The checks run in one REPEATABLE READ, READ ONLY
+     transaction (one snapshot, so a write committed between the ledger read and the event read
+     cannot look like a mismatch); the result is then inserted by the transaction that holds the
+     lock. Results go to `ledger_verification_run`, never into the ledger (spec 6.1). The worker
+     step runs after the deliveries, in its own try/except, and logs a failure by type name
+     only, so a failed nightly run never affects the other passes. `NIGHTLY_VERIFY_HOUR_UTC` and
+     `ALERT_DEADLINE_WARNING_HOURS` are checked at start-up by `config.check_ledger_ops_settings()`,
+     called by `app.main.create_app` and `app.worker.main` next to `escalation_percentages()`, so
+     a bad value (anything but an integer 0 to 23, or a positive integer; the empty string
+     included) stops both processes, and an unset one takes the default 2 or 24.
+
+303. **`clock.wall_now()` is also used by the nightly step and alerts A2 and A3.** Its docstring
+     in `app/clock.py` still says "Only for the sweeper heartbeat"; `app/clock.py` is not
+     changed (it is Part 4's file). The nightly schedule, the run's `started_at` and
+     `finished_at`, and the A2 and A3 ages (M7) read the wall clock, because the simulated clock
+     jumps and these are operational times (spec 6.1, 7.3). Everything about events, deadlines
+     and reminders still reads `clock.now()`.
+
+304. **How the projection check replays gap events.** `ledger_ops.projection_check` (spec 6.3,
+     D13) replays the ledger entries of each event in `seq` order and compares the result with
+     the `event`, `disposition` and `harm_field` rows. A monitoring gap has no `EVENT_FLAGGED`
+     entry, so its `event.system_id` is expected from the `GAP_OPENED` payload and its
+     `metric_name`, `observed_value` and `threshold_value` are expected null. Harm fields are
+     compared only for an event with at least one `DISPOSITION_*` entry, because before that no
+     payload carries them (a breach's are pre-filled, a gap's are four NOT_APPLICABLE, and
+     neither is in the ledger). Timestamps are compared as instants and reported in the API
+     form; decimals are compared as exact strings (`format(value, "f")` against the payload).
+     A mismatch is `{event_id, column, expected, actual}` and nothing else (spec 6.1).
+
+305. **Tables of other parts that are absent are skipped, with zero counts.** Part 3's branch
+     runs without Part 1's `report` and `report_submission` tables and without Part 2b's
+     `event.erased_at`. Each is looked up first (`to_regclass` for a table, the catalog for a
+     column); when it is absent, the comparison or count that needs it is skipped and counts
+     as zero, never as an error. In M3 this covers the `report` rows of the projection check
+     (count and hashes against `REPORT_ASSEMBLED`); M4 and M7 use the same rule for their
+     counts. After the integration merge every lookup finds its table and nothing is skipped.
+
+306. **The `/healthz` 503 body for an unreachable database.** The old four fields keep their
+     503 values (decision 111, LIM-09). Of the four new ones, `version` comes from the
+     environment, because it needs no database, and `last_verification`,
+     `last_verification_age_seconds` and `reset_count` are null, because they could not be
+     read. When the database is reachable, all four come from the database and environment as
+     in spec 6.5, also on the stale-sweeper 503. `last_verification` is the latest
+     `ledger_verification_run` of any trigger (by `started_at`, then `finished_at`, then
+     `run_id`), shown as `{finished_at, valid, head_check}` only, never a hash or mismatch;
+     `last_verification_age_seconds` is whole seconds from its `finished_at` to
+     `clock.wall_now()`. Ledger integrity never makes `/healthz` 503 (spec 6.5).
+
+307. **Alert A8 reads the last attempt from the ledger.** `notification_delivery` has no
+     last-attempt column, so for a FAILED delivery the last attempt is the `recorded_at` of its
+     `NOTIFICATION_FAILED` entry (matched on the payload's `notification_id` and `webhook_id`),
+     which the worker stamps with `clock.now()`. `failed_deliveries_24h` (dashboard and A8)
+     counts FAILED deliveries whose entry is later than `clock.now()` minus 24 hours, so in the
+     test environment the window follows the simulated clock, like the other delivery times.
+
+308. **Alert A2 is raised when there is no verification run at all.** A platform that has never
+     verified its ledger is in a worse state than one whose last run is old, so A2 (warning)
+     is raised with `detail: {"last_run": null}` and `since: null`. Otherwise A2 holds when the
+     wall-clock time since the latest run's `finished_at` exceeds 26 hours, with
+     `detail: {"last_run": <run_id>}` and `since` 26 hours after that `finished_at`.
+
+309. **Once-a-day alert log lines are remembered in process.** There is no storage for them, so
+     `ops.raise_alerts` keeps a set of (wall-clock UTC date, code, subject) in memory; the
+     subject is the run for A1, the event for A6 and A7, and none for the other codes. Entries
+     of earlier dates are dropped. A restarted worker starts with an empty set, so a line can
+     repeat after a restart; that is accepted. The line is `alert: code=<code>` followed by the
+     detail's ids and counts as `name=value` (for A6, `alert: code=A6 event_id=evt-…`), at
+     ERROR for critical and WARNING otherwise, on the `ops` logger. For A1 the worker logs
+     `alert: code=A1 run_id=…`; the run's single `alert: code=LEDGER_INTEGRITY` line (spec 6.1)
+     is written by `ledger_ops` when the run is recorded and is never repeated by this step.
+     The step runs after the nightly step in each worker iteration, in its own read-only
+     transaction and its own try/except, so deliveries and the nightly run are unaffected.
+
+310. **`test_alert_deadline_passed_without_submission` is integration-marked and red until Part 1
+     merges.** It checks that A6 is raised once a DISPOSITIONED event's deadline has passed
+     without a submitted report and is cleared by a submission through Part 1's report routes.
+     On this branch the report route answers 501, so the test fails with a message naming the
+     missing Part 1 dependency, as the M3 and M4 integration tests do; it is the third
+     expected-red test. Until then, decision 305 applies: with no `report` or
+     `report_submission` table, every DISPOSITIONED event counts as unsubmitted for A6, A7 and
+     the deadlines block, and the reports block is all zero.
+
+311. **The anchor workflow's base URL is a repository variable, never a dispatch input.**
+     `chain-head.yml` reads the service URL from `vars.POD_BASE_URL` and the viewer key from
+     `secrets.POD_VIEWER_KEY`, both through the job's `env`, so neither is written into a shell
+     script, and `reason` reaches the script through `env` as well. A dispatch input for the URL
+     would let a manual run anchor another service's export into the same series. The variable
+     and the secret are deploy-time steps that need the team's approval (hard rule 3); neither is
+     created by this branch.
+
+312. **The anchor workflow is checked by hand; its first live run is deploy-time.** GitHub runs
+     scheduled and `workflow_dispatch` workflows only from the default branch, so
+     `chain-head.yml` cannot run before it reaches main. Its comparison logic is
+     `tools/verify_ledger.py --anchor`, tested in M1; at M8 the YAML was parsed and its shell
+     steps were run by hand against a local API with a scratch heads file. Choices made in the
+     YAML: job-level `permissions: contents: write` only; one `concurrency` group without
+     cancelling; the same action versions as `ci.yml` (`actions/checkout@v4`,
+     `actions/setup-python@v5`); main is checked out without persisted credentials and
+     `chain-heads` in a second directory; the export and `/healthz` go to the runner's temporary
+     directory and are deleted at the end, so they are never printed, uploaded or committed;
+     `/healthz` is logged (`reset_count`, `version`) but its status never fails the run; the head
+     line is the export's highest-seq entry; an empty export fails; a `new_series` run needs a
+     non-empty `reason`, verifies the export without `--anchor` and appends two lines (the
+     `new_series` line, then the head); `actor` is `github.actor`. The workflow does not create
+     `chain-heads`: the branch must exist before the first run, which is a deploy-time step with
+     the secret and the variable. After the audit (M10, findings S-1, S-2, S-4, S-5), neither
+     checkout persists credentials, the viewer key is in the download step's `env` only and the
+     write token (`github.token`) in the commit-and-push step's `env` only, the job times out
+     after 10 minutes and each `curl` after 60 seconds (10 to connect), and a base URL that does
+     not start with `https://` fails the run unless its host is `localhost` or `127.0.0.1` (runs
+     by hand). Pinning actions by SHA (S-3) and protecting `chain-heads` (S-6) are left to the
+     integrator.
+
+313. **M7 interpretations of spec 7.2 and 7.3.** Where the spec was silent, M7 chose:
+     - the dashboard's `ledger.last_verification` is the latest run without `head_hash`, with
+       the projection and report mismatch lists shown as counts;
+     - `since` for A2 to A9 is the moment the threshold was crossed (A2 with no run at all:
+       null), and for A1 the failing run's `finished_at`;
+     - A7 is not raised once the deadline has passed; then only A6 holds;
+     - A9 (info) is logged at WARNING, the level for every severity other than critical;
+     - the three `reports` counts are independent totals: all report rows, rows with a
+       submission, and rows not bound to their event's latest disposition;
+     - `generated_at` is wall-clock time;
+     - a failing run gives two ERROR lines: the `alert: code=LEDGER_INTEGRITY` run line,
+       written once by `ledger_ops` when the run is recorded, and the `alert: code=A1 run_id=…`
+       line of the worker's alert step, repeated once per wall-clock UTC day while that run is
+       the latest (decision 309).
+
+     M10 pinned the boundaries with a test: exactly at the deadline A7 holds and A6 does not,
+     and a deadline exactly 24 hours away is not counted in `due_within_24h_unsubmitted`
+     (`now <= deadline < now + 24 h`). A1 follows the latest run only, so after a REGRESSED run
+     it clears on the next clean run while the external anchor keeps failing; this is accepted
+     and written into the A1 runbook (operations note item 4; audit F-4). Audit 3 (N2, N3):
+     an erased event that was never disposed stays FLAGGED or UNDER_REVIEW, because every
+     disposition on it is 409 `ALREADY_ERASED`, and A6 stays raised for an erased, unsubmitted
+     serious event, because its submission is 410; neither is changed, and both are written into
+     the operations note (item 6).

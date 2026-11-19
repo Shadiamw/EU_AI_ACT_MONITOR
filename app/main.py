@@ -14,6 +14,7 @@ from app.api import (
     health_routes,
     ingestion_routes,
     ledger_routes,
+    ops_routes,
     report_routes,
     test_routes,
     webhook_routes,
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     # DEADLINE_CALENDAR and DEADLINE_HOLIDAYS: a bad value stops start-up (Phase 4 spec 8).
     deadlines.current_calendar()
     config.escalation_percentages()  # the same for a bad ESCALATION_PERCENTAGES (Part 3)
+    config.check_ledger_ops_settings()  # and the Phase 5 Part 3 settings (decision 302)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(ingestion_routes.router)
     app.include_router(ledger_routes.router)
@@ -36,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(report_routes.router)
     app.include_router(health_routes.router)
     app.include_router(test_routes.router)
+    app.include_router(ops_routes.router)
     # Staff autograder bases: .../system and .../tester (+ /test/setup|run|report).
     app.include_router(harness_routes.build_router("system"), prefix="/system")
     app.include_router(harness_routes.build_router("tester"), prefix="/tester")
