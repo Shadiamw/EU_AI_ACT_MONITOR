@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Engine
+from sqlalchemy.orm import Session
 
 from tests.api.conftest import FORBIDDEN, MALFORMED, NOT_FOUND, UNAUTHORIZED, ApiClient
 from tests.db_helpers import bearer
@@ -19,6 +20,9 @@ from tests.reports.conftest import (
     table_rows,
 )
 from tests.worker.conftest import FakeClock
+from tools.seed_part1 import seed
+
+REVIEWER_2_KEY = "test-reviewer-key-rev-2-3e8b1f6a9c2d4705"  # the published test key (D17, LIM-03)
 
 
 def error(response: Any, status: int, code: str) -> None:
@@ -257,7 +261,10 @@ def test_the_expected_next_report_date_is_stored_for_a_follow_up(
 
 
 def test_submission_roles(
-    client: ApiClient, owner_engine: Engine, ready: tuple[str, str, str]
+    client: ApiClient,
+    owner_engine: Engine,
+    ready: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     event_id, report_id, sha = ready
     before = ledger_rows(owner_engine)
@@ -275,6 +282,25 @@ def test_submission_roles(
     )
     assert response.status_code == 403
     assert ledger_rows(owner_engine) == before
+
+    # Spec 10.1 and D17 (audit F-05): with rev-2 seeded, rev-2 may submit a report that rev-1
+    # assembled (the `ready` fixture's GET was rev-1's).
+    monkeypatch.setenv("REVIEWER_2_KEY", REVIEWER_2_KEY)
+    with Session(owner_engine) as session:
+        seed(session)
+        session.commit()
+    [assembled] = [e for e in ledger_rows(owner_engine) if e["entry_type"] == "REPORT_ASSEMBLED"]
+    assert assembled["actor_id"] == "rev-1"
+    response = client.request(
+        "POST",
+        f"/v1/events/{event_id}/report/submission",
+        headers={"Authorization": f"Bearer {REVIEWER_2_KEY}"},
+        json={"report_id": report_id, "json_sha256": sha, "report_type": "Initial"},
+    )
+    assert response.status_code == 201, response.text
+    assert (response.json()["submitted_by"], response.json()["report_id"]) == ("rev-2", report_id)
+    [submitted] = [e for e in ledger_rows(owner_engine) if e["entry_type"] == "REPORT_SUBMITTED"]
+    assert submitted["actor_id"] == "rev-2"
 
 
 def test_unknown_event_or_a_report_of_another_event_is_404(
