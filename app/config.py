@@ -235,3 +235,15 @@ def app_version() -> str | None:
 
 
 # End of the Phase 5 Part 3 slot.
+
+
+# Phase 5 Part 4 slot: the second reviewer (Phase 5 spec 11.5, D17).
+
+
+def reviewer_2_key() -> str | None:
+    """REVIEWER_2_KEY (optional): the seeded REVIEWER key for rev-2. Unset or empty means no
+    rev-2 row, so the Phase 3 three-key fixtures stay exactly as they were."""
+    return os.environ.get("REVIEWER_2_KEY") or None
+
+
+# End of the Phase 5 Part 4 slot.

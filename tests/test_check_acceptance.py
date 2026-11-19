@@ -60,6 +60,7 @@ def _required_passing() -> list[tuple[str, str, str]]:
 @pytest.fixture
 def phase4_ac15(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gate, "PHASE4_REQUIRED", {"AC-15": (PHASE4_AC15,)})
+    monkeypatch.setattr(gate, "PHASE5_REQUIRED", {})
 
 
 @pytest.mark.usefixtures("phase4_ac15")
@@ -110,6 +111,30 @@ def test_the_merged_mapping_keeps_order_and_drops_duplicates(
     assert merged["AC-07"] == ("tests.part1.test_x::test_y",)
     assert "AC-08" not in merged
     assert merged["AC-02"] == gate.REQUIRED["AC-02"]
+
+
+def test_phase5_required_is_merged() -> None:
+    """Phase 5 spec 10.4: required_criteria() includes every PHASE5_REQUIRED id, after the
+    Phase 3 and 4 ids of the same criterion, and the eight Phase 5 criteria are filled."""
+    merged = gate.required_criteria()
+    assert set(gate.PHASE5_REQUIRED) == {
+        "AC-01",
+        "AC-03",
+        "AC-05",
+        "AC-06",
+        "AC-13",
+        "AC-14",
+        "AC-16",
+        "AC-18",
+    }
+    for criterion, names in gate.PHASE5_REQUIRED.items():
+        assert names, criterion
+        earlier = (*gate.REQUIRED.get(criterion, ()), *gate.PHASE4_REQUIRED.get(criterion, ()))
+        assert merged[criterion][: len(earlier)] == tuple(dict.fromkeys(earlier)), criterion
+        assert set(names) <= set(merged[criterion]), criterion
+    assert merged["AC-16"] == (
+        "tests.platform5.test_ac16_in_process::test_ac16_in_process_trace_both_paths",
+    )
 
 
 def test_a_skipped_required_test_counts_as_missing(

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from app import clock, platform
+from app import clock, harness_model, platform
 
 _lock = threading.Lock()
 _system_sessions: dict[str, SystemSession] = {}
@@ -76,6 +76,16 @@ def _is_self_system(target_url: str) -> bool:
     return target in candidates or target == _public_base()
 
 
+def _is_same_team(target_url: str) -> bool:
+    """Our own system: the self target, or a system URL listed in SAME_TEAM_SYSTEM_URLS
+    (comma-separated, for our other deployments). Only these reports carry coverage.model."""
+    if _is_self_system(target_url):
+        return True
+    listed = os.environ.get("SAME_TEAM_SYSTEM_URLS", "")
+    target = target_url.rstrip("/")
+    return any(target == url.strip().rstrip("/") for url in listed.split(",") if url.strip())
+
+
 def _project_base(system_target: str) -> str:
     """Project API lives on the host root; system harness is under /system.
 
@@ -100,15 +110,7 @@ def _null_code_coverage(reason: str) -> dict[str, Any]:
 
 
 def _empty_suite_coverage() -> dict[str, Any]:
-    return {
-        "code": _null_code_coverage("Source lines; target instrumentation unavailable"),
-        "component": _coverage_entry(
-            0, len(_COMPONENTS), "Components listed in the pod specification"
-        ),
-        "system": _coverage_entry(
-            0, len(_CRITERIA), "Acceptance criteria listed in the pod specification"
-        ),
-    }
+    return _coverage_from_results([], None)
 
 
 @dataclass
@@ -140,6 +142,10 @@ class TesterSession:
     results: list[dict[str, Any]] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=_empty_suite_coverage)
     access: dict[str, str] = field(default_factory=dict)
+    same_team: bool = False
+
+    def __post_init__(self) -> None:
+        self.coverage = _coverage_from_results([], None, self.same_team)
 
     def report(self) -> dict[str, Any]:
         return {
@@ -304,6 +310,7 @@ def tester_setup(body: dict[str, Any] | None) -> dict[str, Any]:
         session_id=session_id,
         target_url=target,
         access=_access_from_body(body),
+        same_team=_is_same_team(target),
     )
     with _lock:
         _tester_sessions[session_id] = session
@@ -341,7 +348,7 @@ def tester_run(session_id: str) -> dict[str, Any]:
 
 
 def _mark_abort(session: TesterSession, message: str) -> None:
-    planned = [t["test_id"] for t in _planned_tests()]
+    planned = [t["test_id"] for t in _planned_tests(session.same_team)]
     seen = {r["test_id"] for r in session.results if "test_id" in r}
     # First unexecuted planned test records the abort; the rest are skip.
     remaining = [tid for tid in planned if tid not in seen]
@@ -363,7 +370,9 @@ def _mark_abort(session: TesterSession, message: str) -> None:
                     "message": "Test was not executed because the tester aborted.",
                 }
             )
-    session.coverage = _coverage_from_results(session.results, session.coverage.get("code"))
+    session.coverage = _coverage_from_results(
+        session.results, session.coverage.get("code"), session.same_team
+    )
     session.status = "aborted"
     session.finished_at = clock.wall_now().timestamp()
 
@@ -383,8 +392,20 @@ def tester_report(session_id: str) -> dict[str, Any]:
 # --- Suite execution --------------------------------------------------------
 
 
-def _planned_tests() -> list[dict[str, Any]]:
-    """Canonical ordered plan. Every test_id appears exactly once in a finished report."""
+def _planned_tests(same_team: bool = False) -> list[dict[str, Any]]:
+    """Canonical ordered plan. Every test_id appears exactly once in a finished report. A
+    same-team session adds the model probes M-01..M-12 before the coverage pull (T-08)."""
+    base = _base_tests()
+    if not same_team:
+        return base
+    model = [
+        {"test_id": test_id, "criterion": None, "components": ()}
+        for test_id, _ in harness_model.MODEL_TESTS
+    ]
+    return [*base[:-1], *model, base[-1]]
+
+
+def _base_tests() -> list[dict[str, Any]]:
     return [
         {"test_id": "T-01", "criterion": "AC-health", "components": ("health",)},
         {"test_id": "T-02", "criterion": "AC-auth-required", "components": ("auth", "ledger")},
@@ -447,12 +468,21 @@ def _execute_tester(session: TesterSession) -> None:
     # T-07 test reset
     results.append(_probe_reset(project, access.get("reviewer_key", "")))
 
+    # M-01..M-12: Phase 5 design requirements, own system only (coverage.model)
+    if session.same_team:
+        keys = {
+            "ingest": access.get("ingest_key", ""),
+            "reviewer": access.get("reviewer_key", ""),
+            "viewer": access.get("viewer_key", ""),
+        }
+        results.extend(harness_model.run_probes(project, keys))
+
     # T-08 pull system code coverage into suite report
     code_cov, cov_result = _pull_system_code_coverage(session)
     results.append(cov_result)
 
     session.results = results
-    session.coverage = _coverage_from_results(results, code_cov)
+    session.coverage = _coverage_from_results(results, code_cov, session.same_team)
 
 
 def _probe_health(project: str) -> dict[str, Any]:
@@ -697,8 +727,9 @@ def _pull_system_code_coverage(
 def _coverage_from_results(
     results: list[dict[str, Any]],
     code: dict[str, Any] | None,
+    same_team: bool = False,
 ) -> dict[str, Any]:
-    plan = {t["test_id"]: t for t in _planned_tests()}
+    plan = {t["test_id"]: t for t in _base_tests()}
     covered_components: set[str] = set()
     covered_criteria: set[str] = set()
     for row in results:
@@ -720,7 +751,7 @@ def _coverage_from_results(
     else:
         code_entry = _null_code_coverage("Source lines; target instrumentation unavailable")
 
-    return {
+    coverage = {
         "code": code_entry,
         "component": _coverage_entry(
             len(covered_components),
@@ -733,6 +764,9 @@ def _coverage_from_results(
             "Acceptance criteria listed in the pod specification",
         ),
     }
+    if same_team:
+        coverage["model"] = harness_model.model_coverage(results)
+    return coverage
 
 
 def _http(

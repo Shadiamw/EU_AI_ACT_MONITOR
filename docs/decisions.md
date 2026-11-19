@@ -2389,6 +2389,116 @@ Decided 17 and 18 October 2026.
      serious event, because its submission is 410; neither is changed, and both are written into
      the operations note (item 6).
 
+## Part 4 decisions (Phase 5 platform; numbers 314 to 333)
+
+314. **Part 4 is built on `phase5-integration`, not as a base commit.** Spec 11.1 makes Part 4's
+     base commit the first Phase 5 commit, but Parts 1 to 3 each carried the parts of it they
+     needed (decisions 254, 274, 294) and the integration branch merged them (decision 335).
+     The branch `phase5-part4-platform` is cut from `phase5-integration`, so the tables, the
+     migration head 0010, the ledger types and the CI conditions (decision 337) are already
+     there. Part 4 adds only the pieces spec 11.4 gives it that no part made.
+
+315. **The second reviewer is optional configuration.** `REVIEWER_2_KEY` seeds `rev-2` (role
+     REVIEWER) when it is set, and the seed removes the row when it is unset, so a deployment
+     without the key has exactly the Phase 4 keys. Compose and the CI runner step set it;
+     `tools/demo_phase5.py` uses it for step S6 (a second reviewer revises the tier to DEATH)
+     and falls back to `rev-1` when it is absent.
+
+316. **The Model 5 fixture moves to `tests/fixtures/phase5/` (spec 8.6).** The Phase 4 file is
+     left unchanged (spec 10.2). Ex-1 gains the report and submission steps at d3 + 1 h; Ex-2's
+     report step is 200 `NOT_SERIOUS_CLOSURE` instead of 501, and its submission is 409
+     `NOT_SUBMITTABLE`. This ends the known red Model 5 step that decision 337 recorded.
+
+317. **The runner saves values from response headers.** `save` accepts `@header:<Name>`, so
+     Ex-1 can submit with the `X-Report-Sha256` the report response carried. A missing header
+     is a mismatch, not a crash.
+
+318. **Ex-5 is in-process only.** Editing a ledger payload needs database access that the
+     HTTP runner does not have. The fixture names the in-process test
+     (`test_model5_ex5_nightly_verify_finds_a_payload_edit`) and the runner prints that it
+     skips it, so the example is listed rather than silently missing.
+
+319. **AC-16 has one implementation used three ways.** `tools/demo_phase5.py` holds the trace
+     for path S (breach to submission) and path N (not serious, no deadline). The CI step runs
+     it over HTTP; `tests/acceptance/test_ac16_trace.py` runs it through the HTTP runner; and
+     `tests/platform5/test_ac16_in_process.py` runs it in-process through the app client,
+     which is the AC-16 entry in `PHASE5_REQUIRED`. The CI step uses the same condition as
+     the Phase 4 demo, so `test_the_95_conditions_are_unchanged` now counts 4 guarded steps
+     and names "Phase 5 demo (AC-16 trace)"; the 2 unguarded steps are unchanged.
+
+320. **The HTTP acceptance tests account for logged reads.** A reviewer's event read appends
+     `EVENT_VIEWED`, so the AC-18 test takes its "before" export after its own reads and its
+     "after" export straight after the erasure, then compares positions and hashes between
+     those two only. It registers its webhook at the runner's sink, because registration
+     needs a 2xx ping.
+
+321. **`PHASE5_REQUIRED` names in-process tests only.** The gate reads the flagged in-process
+     results, so its entries are the Part 1 to 3 tests for AC-01, 03, 05, 06, 13, 14 and 18
+     plus the in-process AC-16 trace. `required_criteria()` merges the Phase 4 and Phase 5
+     tables; a criterion in both needs every listed test.
+
+322. **The role matrix covers the Δ routes.** `test_ac14_role_matrix.py` adds the seven new
+     routes with the expected status per role. Routes that need an existing object use an
+     unknown id for the reviewer (404) where creating one would change the shared stack.
+
+323. **The console gets two panels and no new page.** "Report and submission" reuses the event
+     id of the review panel: it loads the JSON report (reviewer key), downloads the PDF as a
+     blob with the reviewer key, lists versions (viewer key) and records a submission with the
+     loaded report's `X-Report-Sha256`. The submit button is disabled for a report with
+     `submission_marking` set, and the marking is shown as a banner. "Ledger operations and
+     health" shows the dashboard summary, the verification history and a manual run. The
+     health chip adds the deployed version and the last verification result.
+
+324. **CORS exposes the report headers.** A browser hides response headers from another origin
+     unless the server lists them, so a console served from another origin could not read
+     `X-Report-Sha256` and could not submit. `app/main.py` adds `expose_headers` for `ETag`,
+     `X-Report-Id`, `X-Report-Version` and `X-Report-Sha256`. The same-origin console at `/ui/`
+     is not affected.
+
+325. **The tester reports `coverage.model` for same-team runs only.** The updated Cross-team
+     Testing Interface (Phase 5 and 6) asks for `coverage.model` when the tester and the target
+     belong to the same team, and for it to be omitted from cross-team reports. Same team is
+     the self target, or a URL in `SAME_TEAM_SYSTEM_URLS`. Cross-team reports are unchanged.
+
+326. **Model coverage counts design requirements, not tests.** `total` is the 26 rows of the
+     spec's scope table (section 1.1). `covered` is the number of those rows with at least one
+     probe (`M-01` to `M-12`) that ran and passed; an error or a skip covers nothing. A probe
+     may cover more than one row, and a row covered by two probes counts once. The mapping
+     table is `docs/models/phase5_design_requirements.md`, linked from `basis`, and a test
+     keeps it equal to `MODEL_TESTS` in `app/harness_model.py`.
+
+327. **Thirteen of the 26 rows are probed.** The other rows (the PDF's usability, the anchor
+     workflow, the deployment and its secrets, the manual checks, documents) cannot be observed
+     through the API without changing the target's data beyond the test clock. They are tested
+     in-process or manually, and the mapping lists those tests, but they are not counted.
+
+328. **The probes write only what the suite already writes.** They use the test endpoints the
+     interface allows (reset, clock advance) and the three test keys. The retention probe
+     advances the clock past 186 days; it runs after the base tests so their timing is not
+     affected, and the suite's last test (`T-08`) still runs after the probes.
+
+329. **A probe that cannot reach the target is an error, not a failure.** Communication errors
+     become `error` with source `communication`; a fault in the probe code becomes `error` with
+     source `tester`. Only an observed wrong answer is `fail`.
+
+330. **`pod_contract_phase5.md` is not written yet.** Spec 9.4 exports the whole agreed contract
+     only when the delta is agreed. `docs/contract/phase5/delta.md` lists Δ1 to Δ11 as
+     proposed, with the as-built behaviour and the open inputs of spec 9.3; agreeing them is a
+     team step.
+
+331. **The Phase 5 models are drawn from the merged code.** `docs/models/phase5_models.md` adds
+     the context, Model 1 and Model 2 diagrams (Mermaid, rendered by GitHub), the Model 4
+     table and the Model 5 changes. Every test it cites exists on the branch; no PNG or SVG
+     export is added.
+
+332. **The manual checks are a form, not results.** `docs/manual_checks_phase5.md` lists M1 to
+     M7 with what passes and an empty result column. No result is filled in by the
+     implementation.
+
+333. **Deployment stays a team step (OD-1, spec 11.6).** Part 4 changes no Fly configuration.
+     Deploying needs `REVIEWER_2_KEY` as a Fly secret and `APP_VERSION` set; until then
+     the deployed service has the Phase 4 keys and `version` null.
+
 ## Integration decisions (Phase 5 integration; numbers 334 to 353)
 
 334. **The integration starts from a harness base, not from PR #7 (integration plan, section 2;

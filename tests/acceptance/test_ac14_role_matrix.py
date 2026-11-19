@@ -92,6 +92,29 @@ ROUTES = [
     Route("POST /v1/test/reset", _post("/v1/test/reset", None), {"viewer": 204, "reviewer": 204}),
     Route("GET /v1/test/suite", _get("/v1/test/suite"), {"reviewer": 200}),
     Route("POST /v1/test/suite", _post("/v1/test/suite", {"scope": "full"}), {"reviewer": 400}),
+    # Phase 5 contract delta (spec 9.2; Part 4 adds them here, spec 10.2). Every write is
+    # REVIEWER-only (9.3). The event has no disposition and no report, so the reviewer's
+    # submission names an unknown report (404) and the erasure is before retain_until (409).
+    Route(
+        "POST /v1/events/{id}/report/submission",
+        _post(
+            "/v1/events/{event_id}/report/submission",
+            {"report_id": "rpt-unknown", "json_sha256": "0" * 64, "report_type": "Initial"},
+        ),
+        {"reviewer": 404},
+    ),
+    Route("GET /v1/events/{id}/reports", _get("/v1/events/{event_id}/reports"), READERS),
+    Route("GET /v1/reports/{id}", _get("/v1/reports/rpt-unknown"), {"reviewer": 404}),
+    Route("GET /v1/ledger/verifications", _get("/v1/ledger/verifications"), READERS),
+    Route(
+        "POST /v1/ledger/verifications", _post("/v1/ledger/verifications", None), {"reviewer": 201}
+    ),
+    Route(
+        "POST /v1/events/{id}/erasure",
+        _post("/v1/events/{event_id}/erasure", None),
+        {"reviewer": 409},
+    ),
+    Route("GET /v1/ops/dashboard", _get("/v1/ops/dashboard"), READERS),
 ]
 CASES = [
     pytest.param(route, role, id=f"{route.name} as {role}") for route in ROUTES for role in ROLES

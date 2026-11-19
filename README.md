@@ -1138,3 +1138,71 @@ stops the API and the worker at start-up with an error naming the setting, as a 
 | Tables | `migrations/versions/0010_ledger_ops.py` (`ledger_verification_run`, `platform_counter`) |
 | Anchor | `tools/verify_ledger.py`, `.github/workflows/chain-head.yml` |
 | Tests | `tests/ledger_ops/` |
+
+## 17. Phase 5 Part 4: platform
+
+Part 4 owns the Phase 5 platform pieces (spec 11.4): the console views, the Model 5 Phase 5
+fixture and runner, `tools/demo_phase5.py`, the HTTP acceptance tests, `PHASE5_REQUIRED` in
+the gate, the second reviewer key, the models, the contract delta and the manual checklist.
+It is built on `phase5-integration`, which already merged Parts 1 to 3 (decision 314).
+
+### 17.1 What this part adds
+
+| What | Where |
+| --- | --- |
+| Report and submission panel; ledger operations and health panel; version and ledger state in the health chip | `app/static/` (`/ui/`) |
+| Report headers readable by a console on another origin (CORS `expose_headers`) | `app/main.py` |
+| Second reviewer `rev-2`, seeded when `REVIEWER_2_KEY` is set | `app/config.py`, `tools/seed_part1.py`, `docker-compose.yml` |
+| Model 5 Phase 5 fixture (Ex-1 report and submission, Ex-2 closure report, Ex-5 in-process) | `tests/fixtures/phase5/`, `tools/run_model5.py` |
+| AC-16 end-to-end trace, paths S (breach to submission) and N (not serious) | `tools/demo_phase5.py`; CI step "Phase 5 demo (AC-16 trace)" |
+| HTTP acceptance tests for AC-05, AC-13, AC-16, AC-18, the Δ routes and the role matrix | `tests/acceptance/` |
+| Phase 5 gate entries | `PHASE5_REQUIRED` in `tools/check_acceptance.py` |
+| Schema, reset and seed tests; the in-process AC-16 trace | `tests/platform5/` |
+| Tester `coverage.model` (below) | `app/harness_model.py`, `app/harness.py` |
+| Models, contract delta (proposed), manual checks | `docs/models/phase5_models.md`, `docs/contract/phase5/delta.md`, `docs/manual_checks_phase5.md` |
+
+### 17.2 Tester model coverage (`coverage.model`)
+
+From Phase 5, the tester's suite report includes `coverage.model` when the tester and the
+target system belong to the same team, and omits it from cross-team reports (Cross-team
+Testing Interface, coverage). Same team means the target is this deployment (the self
+target) or a system URL listed in `SAME_TEAM_SYSTEM_URLS` (comma-separated, for our other
+deployments). For those runs the suite adds twelve design-requirement probes, `M-01` to
+`M-12`, between `T-07` and `T-08`. The self target is `SUITE_BASE_URL` + `/system` (default
+the Fly URL); a self run calls the API over loopback, so on a local stack set
+`SUITE_BASE_URL`, or target the Fly URL, to get a same-team run.
+
+- `total` is 26: the rows of the Phase 5 spec's scope table (section 1.1), DR-01 to DR-26.
+- `covered` is the number of those requirements with at least one probe that ran and passed.
+  Errors, skips and failures do not count. With every probe passing, `covered` is 13: the
+  other 13 requirements (the PDF review, the anchor workflow, the deployment, and so on) are
+  checked in-process or manually and cannot be probed through the API.
+- `basis` names the design version and links to the mapping,
+  [`docs/models/phase5_design_requirements.md`](docs/models/phase5_design_requirements.md).
+  A test checks that the table there matches the code.
+
+```bash
+# A same-team run against another of our deployments
+SAME_TEAM_SYSTEM_URLS=https://staging.example/system uvicorn app.main:app
+```
+
+### 17.3 Running
+
+```bash
+# in-process (Postgres on 5433, database monitor_unit)
+pytest tests/platform5 tests/test_run_model5.py tests/test_check_acceptance.py
+# over HTTP, against the compose stack
+docker compose up -d --build
+BASE_URL=http://127.0.0.1:8000 WEBHOOK_SINK_URL=http://sink:8765/hook/m5 \
+  WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/m5 python tools/run_model5.py
+BASE_URL=http://127.0.0.1:8000 REVIEWER_2_KEY=test-reviewer-key-rev-2-3e8b1f6a9c2d4705 \
+  WEBHOOK_SINK_URL=http://sink:8765/hook/ac16 WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/ac16 \
+  python tools/demo_phase5.py
+```
+
+### 17.4 Not done here
+
+- `docs/contract/pod_contract_phase5.md` is not written: spec 9.4 exports it only after both
+  teams agree the delta, which is still proposed.
+- Deploying to Fly (`APP_VERSION`, the `REVIEWER_2_KEY` secret) is a team step (OD-1, spec 11.6).
+- The manual checks M1 to M7 are for people to perform; their result fields are empty.

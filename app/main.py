@@ -68,6 +68,8 @@ def create_app() -> FastAPI:
             allow_origins=origins,
             allow_methods=["*"],
             allow_headers=["*"],
+            # The console's submission view reads the report hash from another origin.
+            expose_headers=["ETag", "X-Report-Id", "X-Report-Version", "X-Report-Sha256"],
         )
     observability.configure_logging(config.log_level())
     return app
