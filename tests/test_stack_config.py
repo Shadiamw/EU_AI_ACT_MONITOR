@@ -22,7 +22,7 @@ COMPOSE = ROOT / "docker-compose.yml"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 CONDITION_95 = (
     "github.ref_name == 'main' || github.ref_name == 'phase4-integration' "
-    "|| github.base_ref == 'main'"
+    "|| github.ref_name == 'phase5-integration' || github.base_ref == 'main'"
 )
 
 

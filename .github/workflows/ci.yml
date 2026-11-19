@@ -42,14 +42,14 @@ jobs:
       - name: Tests
         run: pytest --ignore=tests/acceptance --junitxml=test-results.xml
       # Phase 4 Addendum 9.5: the integration-marked tests, the acceptance gate and the image
-      # job's acceptance runner, Model 5 runner and demo run only on main, on phase4-integration
-      # and on pull requests into main. The gate reads the flagged run's own JUnit file, because
-      # it counts a skipped test as not passed.
+      # job's acceptance runner, Model 5 runner and demo run only on main, on phase4-integration,
+      # on phase5-integration (Phase 5 spec 10.4) and on pull requests into main. The gate reads
+      # the flagged run's own JUnit file, because it counts a skipped test as not passed.
       - name: Tests, including integration
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main'
         run: pytest --run-integration --ignore=tests/acceptance --junitxml=test-results-integration.xml
       - name: Every acceptance criterion passed
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main'
         run: python tools/check_acceptance.py test-results-integration.xml
 
   image:
@@ -71,7 +71,7 @@ jobs:
       # the 9.5 condition lets the runner, Model 5 and the demo each report on their own, so a
       # failure in one (Part 3 absent) does not skip the others.
       - name: HTTP acceptance runner
-        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/ci
@@ -96,14 +96,14 @@ jobs:
           PY
           exit $status
       - name: Model 5 examples
-        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/model5
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/model5
         run: python tools/run_model5.py
       - name: Phase 4 demo
-        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/demo
