@@ -201,6 +201,16 @@ EXPECTED_COLUMNS["ledger_verification_run"] = {
 EXPECTED_COLUMNS["platform_counter"] = {"singleton": "boolean", "reset_count": "bigint"}
 # End of the Phase 5 Part 3 slot.
 
+# Phase 5 Part 2 slot (migration 0009).
+EXPECTED_COLUMNS["event"]["erased_at"] = TIMESTAMPTZ
+EXPECTED_COLUMNS["record_key"] = {
+    "subject_id": "text",
+    "data_key": "bytea",
+    "created_at": TIMESTAMPTZ,
+    "destroyed_at": TIMESTAMPTZ,
+}
+# End of the Phase 5 Part 2 slot.
+
 # The application role's privileges where they are not normal read and write (spec 4.4). A table
 # is checked only once it is in EXPECTED_COLUMNS, so an entry for a table that a placeholder
 # migration does not create yet is inert.
@@ -212,6 +222,7 @@ GRANT_EXCEPTIONS: dict[str, list[str]] = {
     "report_submission": ["INSERT", "SELECT"],  # Phase 5 spec 3.5: insert-only
     "ledger_verification_run": ["INSERT", "SELECT"],  # Phase 5 spec 6.1: insert-only
     "platform_counter": ["SELECT"],  # Phase 5 spec 6.5: only reset writes it (decision 300)
+    "record_key": ["INSERT", "SELECT", "UPDATE"],  # Phase 5 spec 4.3: a tombstone, never deleted
 }
 
 NON_LEDGER_TABLES = sorted(EXPECTED_COLUMNS)

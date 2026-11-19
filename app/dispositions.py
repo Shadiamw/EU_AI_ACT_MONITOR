@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import clock, deadlines, ledger, review
+from app import clock, deadlines, ledger, personal_data, retention, review
 from app.auth import Principal
 from app.errors import ApiError, not_found
 from app.events import HARM_FIELDS
@@ -41,6 +41,9 @@ disposition_logger = logging.getLogger("api.disposition")
 
 # Spec 2.3: the longest rationale a request may send, counted in code points before trimming.
 RATIONALE_MAX_LENGTH = 4000
+
+# The field name in the sealing associated data (Phase 5 spec 4.3).
+RATIONALE_FIELD = "disposition.rationale"
 
 RATIONALE_REQUIRED_MESSAGE = "rationale is required when tier is NOT_SERIOUS"
 EXTENSION_MESSAGE = "extending a running deadline requires a rationale"
@@ -124,18 +127,27 @@ def record(
     session: Session, principal: Principal, event_id: str, request: DispositionRequest
 ) -> Recorded:
     """Steps 4 to 15 of spec 2.4, in the caller's transaction: lock the event row, run the
-    remaining checks (404, 409 EVENT_NOT_REVIEWABLE, 409 HARM_FIELDS_UNCONFIRMED, 409
-    DEADLINE_EXTENSION_REQUIRES_RATIONALE), then write the harm fields, the disposition row,
-    the event row and the escalation plan, and append one ledger entry last. Any exception
-    leaves the caller to roll everything back; a check that fails has written nothing."""
+    remaining checks (404, 409 ALREADY_ERASED (decision 287), 409 EVENT_NOT_REVIEWABLE, 409
+    HARM_FIELDS_UNCONFIRMED, 409 DEADLINE_EXTENSION_REQUIRES_RATIONALE), then write the harm
+    fields, the disposition row, the event row and the escalation plan, and append one ledger
+    entry last. Any exception leaves the caller to roll everything back; a check that fails has
+    written nothing."""
     from app import escalations  # inside the function: escalations imports this module
 
     event = session.execute(
-        text("SELECT type, deadline_utc FROM event WHERE event_id = :event_id FOR UPDATE"),
+        text(
+            "SELECT type, deadline_utc, erased_at FROM event WHERE event_id = :event_id FOR UPDATE"
+        ),
         {"event_id": event_id},
     ).one_or_none()
     if event is None:
         raise not_found()
+    # Phase 5 audit M2 (decision 287, SS): after erasure no disposition is recorded, with or
+    # without a rationale. Checked right after the 404 and before every other check (the gap
+    # rule, the harm fields, the deadline-extension rule), so nothing is written, nothing is
+    # appended and no record key is touched. The erasure endpoint's code, ALREADY_ERASED.
+    if event.erased_at is not None:
+        raise ApiError(409, "ALREADY_ERASED", retention.ERASED_EVENT_MESSAGE)
     if event.type == "monitoring_gap":
         raise ApiError(409, "EVENT_NOT_REVIEWABLE", NOT_REVIEWABLE_MESSAGE)
     # Read after the lock: at READ COMMITTED this statement sees every row committed by an
@@ -157,6 +169,15 @@ def record(
 
     changed = review.apply_harm_fields(session, event_id, principal, decisions, now)
 
+    # Phase 5 spec 4.3: the rationale is personal data. It is sealed once under the event's
+    # record key, and the same sealed string goes into the disposition row and the ledger
+    # payload, so erasure (which destroys the key) makes both unreadable and changes no hash.
+    sealed_rationale = (
+        None
+        if request.rationale is None
+        else personal_data.seal(session, event_id, RATIONALE_FIELD, request.rationale)
+    )
+
     disposition_id = new_id("dsp")
     seq_in_event = 1 if previous is None else previous.seq_in_event + 1
     session.execute(
@@ -171,7 +192,7 @@ def record(
             "event_id": event_id,
             "seq_in_event": seq_in_event,
             "tier": request.tier,
-            "rationale": request.rationale,
+            "rationale": sealed_rationale,
             "reviewer_id": principal.actor_id,
             "now": now,
             "anchor": anchor,
@@ -193,7 +214,7 @@ def record(
     statuses: dict[str, JsonValue] = {key: decisions.fields[key].status for key in HARM_FIELDS}
     harm_fields_changed: list[JsonValue] = list(changed)
     common: Payload = {
-        "rationale": request.rationale,
+        "rationale": sealed_rationale,
         "deadline_utc": _time(deadline_utc),
         "anchor_at": api_time(anchor),
         "calendar": calendar,
@@ -250,7 +271,7 @@ def summary(session: Session, event_id: str) -> dict[str, Any]:
     if rows:
         disposition = {
             "tier": rows[-1].tier,
-            "rationale": rows[-1].rationale,
+            "rationale": personal_data.open(session, event_id, RATIONALE_FIELD, rows[-1].rationale),
             "reviewer_id": rows[0].reviewer_id,
             "assigned_at": api_time(rows[0].assigned_at),
         }

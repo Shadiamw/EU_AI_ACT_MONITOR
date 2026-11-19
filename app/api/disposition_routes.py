@@ -4,10 +4,11 @@ app/api/report_routes.py in Phase 5 (spec 3.6), which replaced the Phase 4 guard
 
 Order of checks on the disposition (spec 7, Pinned): 401 and 403 (the `require` dependency),
 400 MALFORMED_BODY and 400 RATIONALE_REQUIRED (the body, read only after authentication), then
-inside the transaction 404, 409 EVENT_NOT_REVIEWABLE, 409 HARM_FIELDS_UNCONFIRMED and 409
-DEADLINE_EXTENSION_REQUIRES_RATIONALE. The first failing check decides the response, and
-nothing is written or appended before it. A success commits once and returns the full Event;
-the response is not a view and appends no EVENT_VIEWED.
+inside the transaction 404, 409 ALREADY_ERASED (an erased event, Phase 5 decision 287), 409
+EVENT_NOT_REVIEWABLE, 409 HARM_FIELDS_UNCONFIRMED and 409 DEADLINE_EXTENSION_REQUIRES_RATIONALE.
+The first failing check decides the response, and nothing is written or appended before it.
+A success commits once and returns the full Event; the response is not a view and appends no
+EVENT_VIEWED.
 """
 
 import json
