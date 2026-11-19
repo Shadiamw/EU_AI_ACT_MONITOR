@@ -620,14 +620,75 @@
     ].join("\n");
   }
 
-  document.getElementById("ops-dashboard").addEventListener("click", async () => {
+  // The Health view polls the dashboard every 30 s while the panel is on screen and the tab is
+  // visible (spec 7.1; audit fix round). It stops when the panel or the tab is hidden or a call
+  // fails, never runs two calls at once, and has its own timer, separate from the suite poll.
+  const HEALTH_POLL_MS = 30000;
+  const opsHealthPanel = document.querySelector("section.panel.ops-health");
+  let healthTimer = null;
+  let healthInFlight = false;
+  let healthOnScreen = false;
+
+  async function loadDashboard() {
     const result = await api("/v1/ops/dashboard", { auth: "viewer" });
     if (!result.ok) {
       opsSummary.textContent = describeError(result);
-      return;
+      return false;
     }
     opsSummary.textContent = summarizeDashboard(result.data);
     opsHealthOut.textContent = pretty(result.data);
+    return true;
+  }
+
+  function stopHealthPoll() {
+    if (healthTimer) {
+      clearInterval(healthTimer);
+      healthTimer = null;
+    }
+  }
+
+  async function pollDashboard() {
+    if (healthInFlight) return;
+    healthInFlight = true;
+    try {
+      const ok = await loadDashboard();
+      if (!ok) stopHealthPoll();
+    } catch {
+      opsSummary.textContent = "Dashboard unreachable; the 30 s refresh has stopped.";
+      stopHealthPoll();
+    } finally {
+      healthInFlight = false;
+    }
+  }
+
+  function startHealthPoll() {
+    stopHealthPoll();
+    healthTimer = setInterval(pollDashboard, HEALTH_POLL_MS);
+  }
+
+  function healthVisible() {
+    return healthOnScreen && document.visibilityState === "visible";
+  }
+
+  function syncHealthPoll() {
+    if (!healthVisible()) {
+      stopHealthPoll();
+    } else if (!healthTimer) {
+      startHealthPoll();
+      pollDashboard();
+    }
+  }
+
+  if (opsHealthPanel && "IntersectionObserver" in window) {
+    new IntersectionObserver((entries) => {
+      healthOnScreen = entries[entries.length - 1].isIntersecting;
+      syncHealthPoll();
+    }).observe(opsHealthPanel);
+  }
+  document.addEventListener("visibilitychange", syncHealthPoll);
+
+  document.getElementById("ops-dashboard").addEventListener("click", async () => {
+    if (await loadDashboard()) syncHealthPoll();
   });
 
   document.getElementById("ops-verifications").addEventListener("click", async () => {

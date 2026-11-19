@@ -320,16 +320,17 @@ def tester_setup(body: dict[str, Any] | None) -> dict[str, Any]:
 def tester_run(session_id: str) -> dict[str, Any]:
     if not session_id:
         raise HarnessError(400, "session_id is required", "tester")
+    # The check and the mark are one step under the lock, so two concurrent runs of one
+    # session get one 200 and one 409 (Testing Interface, "Runs"; audit fix round).
     with _lock:
         session = _tester_sessions.get(session_id)
-    if session is None:
-        raise HarnessError(404, "unknown session_id", "tester")
-    if session.status == "running":
-        raise HarnessError(409, "suite is already running", "tester")
-    if session.status in ("complete", "aborted"):
-        raise HarnessError(409, "suite already finished for this session", "tester")
-
-    session.status = "running"
+        if session is None:
+            raise HarnessError(404, "unknown session_id", "tester")
+        if session.status == "running":
+            raise HarnessError(409, "suite is already running", "tester")
+        if session.status in ("complete", "aborted"):
+            raise HarnessError(409, "suite already finished for this session", "tester")
+        session.status = "running"
     try:
         _execute_tester(session)
         session.status = "complete"
@@ -445,7 +446,10 @@ def _result(
 def _execute_tester(session: TesterSession) -> None:
     project = _project_base(session.target_url)
     access = session.access
-    results: list[dict[str, Any]] = []
+    # Each result is stored on the session as it is recorded, so an abort keeps the results
+    # already available (Testing Interface, "Aborting a run"; audit fix round).
+    session.results = []
+    results = session.results
 
     # T-01 health
     results.append(_probe_health(project))
@@ -481,7 +485,6 @@ def _execute_tester(session: TesterSession) -> None:
     code_cov, cov_result = _pull_system_code_coverage(session)
     results.append(cov_result)
 
-    session.results = results
     session.coverage = _coverage_from_results(results, code_cov, session.same_team)
 
 

@@ -1,7 +1,7 @@
 """Request logging and counters for the API (spec 1.8; decision 126).
 
-- One JSON log line per request on the `api.request` logger, at INFO (ERROR for a 5xx other
-  than the stubs' 501):
+- One JSON log line per request on the `api.request` logger, at INFO, or at ERROR
+  for any 5xx response:
   ts, level, request_id, actor_id, method, path, status, duration_ms, plus event_id when the
   request is about one event, error_code for an error response and outcome for an ingest.
   The path is logged without its query string. Nothing else from the request is logged: no
