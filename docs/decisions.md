@@ -2644,6 +2644,13 @@ November 2026**, D7 and D15 with the conditions written in them.
      target's `coverage.code` against the interface's coverage rules and reports an invalid one as
      null counts with a basis naming the problem, never the target's text.
 
+     Follow-up (audit F-04; SS, follow-up round). A target's `coverage.code` of `covered` 0 and
+     `total` 0 is valid and is copied unchanged: the interface asks for "nonnegative integer counts
+     with covered no greater than total", which 0 of 0 meets, and its "do not substitute zero"
+     applies to a measure the target knows is unavailable, which a tester cannot tell from the
+     counts. The `total == 0` rejection in `harness._code_problem` is removed; the other checks
+     above are unchanged.
+
 329. **A probe that cannot reach the target is an error, not a failure.** Communication errors
      become `error` with source `communication`; a fault in the probe code becomes `error` with
      source `tester`. Only an observed wrong answer is `fail`.
