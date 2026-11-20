@@ -2697,7 +2697,9 @@ November 2026**, D7 and D15 with the conditions written in them.
      (`git revert -m 1 4e6e0d0`) conflicts in `docs/decisions.md` in one region, Part 2's whole
      decision block (274 to 288, including the in-place R3 note in 286): resolve that region to
      the revert side (drop the block), and say in the cut commit's message that decision 336
-     then refers to a removed decision. Migration ids 0008 and 0009 are shared by Part 3's
+     then refers to a removed decision. The Part 4 cut is `git revert -m 1 af584c3` (the Part 4
+     merge); if it conflicts in `docs/decisions.md` only, resolve to the revert side (drop
+     Part 4's block). Migration ids 0008 and 0009 are shared by Part 3's
      placeholders and the real migrations, so a database migrated at one checkpoint is not
      reused at another without a downgrade first.
 
@@ -2720,3 +2722,30 @@ November 2026**, D7 and D15 with the conditions written in them.
      builds on the updated constant. Until Part 4 lands its Phase 5 Model 5 fixture, the
      runner and the Model 5 step are expected to fail on Model 5 Ex-2 (step 8 expects 501 and
      gets 200).
+
+338. **Part 4 is merged at `c2cbc72` (merge `af584c3`, `git merge --no-ff`, no conflict; the
+     merge tree equals `c2cbc72`'s tree `270f327`; SS).** On the merged tip the flagged suite
+     (`--run-integration`) is 1838 passed and the unflagged suite 1756 passed, 82 skipped; the
+     HTTP acceptance runner now has 185 cases (133 before Phase 5, plus the five new acceptance
+     files and the role matrix's Δ routes), all passed. Rounds, one line each:
+     - Audit at `92dfd2d` (Part 4 compliance audit): 19 findings, F-01 to F-19 (7 major, 6
+       minor, 6 notes).
+     - Fix round 1 (`4f25bfe` to `93fb60a`): F-01 to F-05 and F-08 to F-13 closed, F-06's
+       `coverage.model` rules R1 to R7 met with probe tests, the atomic run check and the
+       aborted run that keeps its results, and the Part 4 report (F-07).
+     - Fix round 2 (`f4021c7` to `c2cbc72`): SS's D-1 (one active system session) and D-3 (a
+       target's `coverage.code` is checked; an invalid one becomes null with a reason).
+     - Integration check (this merge): every item re-verified independently, by tests,
+       mutants and live calls, before the merge.
+     D-1's idle window is 600 s by default, configurable with `SESSION_IDLE_SECONDS` (decision
+     328). A report carries `coverage.model` only for a same-team target: the self target
+     (`SUITE_BASE_URL` + `/system`) or a URL listed exactly in `SAME_TEAM_SYSTEM_URLS`
+     (decision 325).
+
+339. **Recorded deviations that remain after the Part 4 merge (SS).** The LIM-03 advisory slot
+     is not built (spec 1.2 and 10.3; decision 319, audit fix round). AC-18 over HTTP checks
+     that the export before erasure is a prefix of the export after it, not exactly
+     `len(E0) + 1` entries (spec 4.5 step 6; decision 320); the exact check stays in-process.
+     The console suite runner (`POST /v1/test/suite`) and `POST /v1/test/reset` are not
+     covered by the one-session rule of D-1 and can still reset the data under an active
+     session (decision 328).
