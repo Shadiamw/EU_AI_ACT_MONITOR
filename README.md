@@ -1233,6 +1233,50 @@ with `ENVIRONMENT=test`. What a run does to the target, and what it does not pro
   carries null counts and a basis saying the target's `coverage.code` was invalid and why, never
   the target's own text, and `T-08`'s message says so.
 
+**System and component coverage (follow-up round 2, audit F-07; SS's decision).** The suite
+report's `coverage.system` and `coverage.component` follow the Testing Interface: system counts
+"acceptance criteria from the shared pod specification the suite evaluated out of all criteria in
+scope", component counts "how many pod-defined components its tests covered". Before this round
+both counted invented names (seven criterion ids such as `AC-health`, six component names such as
+`metrics_ingest`). The mapping is `_PROBE_COVERAGE` in `app/harness.py`; a test keeps the table
+below equal to it.
+
+- **System.** `total` is 18: AC-01 to AC-18 of the pod's REQ/AC document (Project Requirements,
+  the acceptance-criteria table), all in scope. AC-16's method is manual-only (trace review); it
+  stays in the total. A criterion counts once, and only when at least one test performs that
+  criterion's own Setup, Action and Expected through the target's public interface and ends
+  `pass` or `fail`; a probe that touches the same route without performing the criterion's action
+  does not count it. No probe does today, so `covered` is 0 in every run, which is a valid count.
+  `basis` starts "Acceptance criteria listed in the pod specification".
+- **Component.** `total` is 10, the components of the system architecture listed below. A
+  component counts once, and only when at least one test sends a request that passes through it
+  and ends `pass` or `fail` on that component's own observable behaviour. `T-03` to `T-07` also
+  pass on 401 or 403, so their outcome says nothing about the component behind the route and
+  counts none; `T-01` (liveness) and `T-08` (the code-coverage pull) reach no listed component.
+  A run that passes everything counts 1 cross-team and 7 same-team. `basis` is "Components of the
+  system architecture (README 17.2)".
+- **Both.** `error` and `skip` never count. No probe was added for this.
+
+The repository has no architecture document that names components (the architecture options
+PDF cited in `docs/part1_context.md` is not in the repository), so the names are SS's; the second
+column gives the modules that implement each one.
+
+| Component | Modules | Probes that exercise it |
+|---|---|---|
+| Ingestion API | `app/ingestion.py`, `app/api/ingestion_routes.py` | M-02, M-07 (sample stored, 201) |
+| Rules engine | threshold check in `app/ingestion.py` | M-02, M-07 (a breach returns `flagged_event_id`) |
+| Event service | `app/events.py` | M-02, M-07 (the flagged event reads 200), M-09 (evidence null) |
+| Gap sweeper | `app/gaps.py` | none |
+| Access control | `app/auth.py` | T-02 (no key: 401 or 403 only), M-01 (eight routes 401), M-05 (viewer and system 403) |
+| Config service | `app/config.py` | none |
+| Workflow engine | incident opened, serious-incident decision, deadline tier, deadline countdown: `app/review.py`, `app/dispositions.py`, `app/deadlines.py`, `app/escalations.py` | M-03 (OTHER_SERIOUS disposition 200), M-07 (NOT_SERIOUS with rationale 200) |
+| Notification outbox | `app/notifications.py`, `app/webhooks.py` | none |
+| Reporting service | `app/reports.py`, `app/report_render.py` | M-02 (409 NO_DISPOSITION), M-03, M-04, M-06, M-07, M-09 (410 after erasure) |
+| Audit ledger | `app/ledger/`, `app/audit.py`, `app/ledger_ops.py` | M-09 (verify valid after erasure), M-10 (verification run) |
+
+`M-08` (erasure refused before `retain_until`), `M-11` (ops dashboard) and `M-12` (`/healthz`
+fields) reach no listed component: retention, operations and health are not among the ten.
+
 ### 17.3 Running
 
 ```bash

@@ -2611,6 +2611,21 @@ November 2026**, D7 and D15 with the conditions written in them.
      evaluate nothing and cover nothing. `covered` never exceeds `total`, and both are counts,
      never null, because the measure is always available for a same-team run.
 
+     Follow-up (audit F-07; SS, follow-up round 2). No decision recorded how `coverage.system`
+     and `coverage.component` are counted; this is the coverage decision nearest to them. Until
+     this round both counted names invented in the harness (seven criterion ids such as
+     `AC-health`, six component names such as `metrics_ingest`), so every run reported 7 of 7
+     and 6 of 6. Now `coverage.system` counts AC-01 to AC-18 of the pod's REQ/AC document, all
+     in scope (AC-16, manual-only, stays in the total): a criterion counts once, and only when a
+     test performs that criterion's own Setup, Action and Expected through the target's public
+     interface and ends `pass` or `fail`. `coverage.component` counts the ten components of the
+     system architecture (README 17.2): a component counts once, and only when a test sends a
+     request that passes through it and ends `pass` or `fail` on that component's own observable
+     behaviour. `error` and `skip` never count, and 0 is a valid count. `_PROBE_COVERAGE` in
+     `app/harness.py` is the one mapping from probe to criteria and components. No probe
+     performs a whole criterion, so system is 0 of 18 in every run; a run that passes everything
+     reports component 1 of 10 cross-team (T-02) and 7 of 10 same-team. No probe was added.
+
 327. **Thirteen of the 26 rows are probed.** The other rows (the PDF's usability, the anchor
      workflow, the deployment and its secrets, the manual checks, documents) cannot be observed
      through the API without changing the target's data beyond the test clock. They are tested

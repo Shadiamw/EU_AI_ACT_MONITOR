@@ -25,26 +25,68 @@ _lock = threading.Lock()
 _system_sessions: dict[str, SystemSession] = {}
 _tester_sessions: dict[str, TesterSession] = {}
 
-# Pod components exercised by the shared project API (pod_spec.txt).
-_COMPONENTS = (
-    "health",
-    "metrics_ingest",
-    "events",
-    "ledger",
-    "test_reset",
-    "auth",
+# coverage.system (Cross-team Testing Interface, "Coverage fields"; follow-up round 2, SS's
+# decision): the acceptance criteria of the shared pod specification, AC-01 to AC-18 of the pod's
+# REQ/AC document (Project Requirements). All 18 are in scope and in the total, AC-16 included,
+# whose method is manual-only. A criterion counts once, and only when a probe performs that
+# criterion's own Setup, Action and Expected through the target's public interface and ends pass
+# or fail.
+_CRITERIA: tuple[str, ...] = tuple(f"AC-{n:02d}" for n in range(1, 19))
+
+# coverage.component: the components of the system architecture (README 17.2). The workflow
+# engine covers incident opened, the serious-incident decision, the deadline tier and the
+# deadline countdown. A component counts once, and only when a probe sends a request that passes
+# through it and ends pass or fail on that component's own observable behaviour.
+_COMPONENTS: tuple[str, ...] = (
+    "Ingestion API",
+    "Rules engine",
+    "Event service",
+    "Gap sweeper",
+    "Access control",
+    "Config service",
+    "Workflow engine",
+    "Notification outbox",
+    "Reporting service",
+    "Audit ledger",
 )
 
-# Acceptance criteria in scope for cross-team black-box probes (pod REQs).
-_CRITERIA = (
-    "AC-health",
-    "AC-auth-required",
-    "AC-ledger-verify",
-    "AC-events-list",
-    "AC-event-unknown-404",
-    "AC-metrics-rejects-bad",
-    "AC-test-reset",
+_SYSTEM_BASIS = (
+    "Acceptance criteria listed in the pod specification: AC-01 to AC-18 of the pod's REQ/AC "
+    "document, all in scope (AC-16 is manual-only and stays in the total). A criterion counts "
+    "once, when a probe performs its own Setup, Action and Expected and ends pass or fail."
 )
+_COMPONENT_BASIS = "Components of the system architecture (README 17.2)"
+
+# Probe -> (the criteria it fully evaluates, the components it exercises), for every planned
+# probe: T-01 to T-08 in every run, M-01 to M-12 in a same-team run. The single source for both
+# counts; README 17.2 gives each row's reason. No probe performs an acceptance criterion's whole
+# Setup, Action and Expected, so no row lists one. T-03 to T-07 also pass on 401 or 403, so their
+# outcome says nothing about the component behind the route.
+_PROBE_COVERAGE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "T-01": ((), ()),
+    "T-02": ((), ("Access control",)),
+    "T-03": ((), ()),
+    "T-04": ((), ()),
+    "T-05": ((), ()),
+    "T-06": ((), ()),
+    "T-07": ((), ()),
+    "T-08": ((), ()),
+    "M-01": ((), ("Access control",)),
+    "M-02": ((), ("Ingestion API", "Rules engine", "Event service", "Reporting service")),
+    "M-03": ((), ("Workflow engine", "Reporting service")),
+    "M-04": ((), ("Reporting service",)),
+    "M-05": ((), ("Access control",)),
+    "M-06": ((), ("Reporting service",)),
+    "M-07": (
+        (),
+        ("Ingestion API", "Rules engine", "Event service", "Workflow engine", "Reporting service"),
+    ),
+    "M-08": ((), ()),
+    "M-09": ((), ("Event service", "Reporting service", "Audit ledger")),
+    "M-10": ((), ("Audit ledger",)),
+    "M-11": ((), ()),
+    "M-12": ((), ()),
+}
 
 
 class HarnessError(Exception):
@@ -441,32 +483,17 @@ def _planned_tests(same_team: bool = False) -> list[dict[str, Any]]:
     base = _base_tests()
     if not same_team:
         return base
-    model = [
-        {"test_id": test_id, "criterion": None, "components": ()}
-        for test_id, _ in harness_model.MODEL_TESTS
-    ]
+    model = [_plan_entry(test_id) for test_id, _ in harness_model.MODEL_TESTS]
     return [*base[:-1], *model, base[-1]]
 
 
 def _base_tests() -> list[dict[str, Any]]:
-    return [
-        {"test_id": "T-01", "criterion": "AC-health", "components": ("health",)},
-        {"test_id": "T-02", "criterion": "AC-auth-required", "components": ("auth", "ledger")},
-        {"test_id": "T-03", "criterion": "AC-ledger-verify", "components": ("ledger", "auth")},
-        {"test_id": "T-04", "criterion": "AC-events-list", "components": ("events", "auth")},
-        {
-            "test_id": "T-05",
-            "criterion": "AC-event-unknown-404",
-            "components": ("events", "auth"),
-        },
-        {
-            "test_id": "T-06",
-            "criterion": "AC-metrics-rejects-bad",
-            "components": ("metrics_ingest", "auth"),
-        },
-        {"test_id": "T-07", "criterion": "AC-test-reset", "components": ("test_reset", "auth")},
-        {"test_id": "T-08", "criterion": "AC-ledger-verify", "components": ("ledger",)},
-    ]
+    return [_plan_entry(f"T-0{n}") for n in range(1, 9)]
+
+
+def _plan_entry(test_id: str) -> dict[str, Any]:
+    criteria, components = _PROBE_COVERAGE[test_id]
+    return {"test_id": test_id, "criteria": criteria, "components": components}
 
 
 def _result(
@@ -816,18 +843,18 @@ def _coverage_from_results(
     code: dict[str, Any] | None,
     same_team: bool = False,
 ) -> dict[str, Any]:
-    plan = {t["test_id"]: t for t in _base_tests()}
     covered_components: set[str] = set()
     covered_criteria: set[str] = set()
     for row in results:
-        # pass/fail means the criterion was evaluated; error/skip did not complete evaluation.
+        # pass/fail means the probe was evaluated; error/skip did not complete evaluation.
         if row.get("outcome") not in ("pass", "fail"):
             continue
-        meta = plan.get(row.get("test_id", ""))
-        if not meta:
+        meta = _PROBE_COVERAGE.get(row.get("test_id", ""))
+        if meta is None:
             continue
-        covered_components.update(meta["components"])
-        covered_criteria.add(meta["criterion"])
+        criteria, components = meta
+        covered_criteria.update(criteria)
+        covered_components.update(components)
 
     if isinstance(code, dict) and "basis" in code:
         code_entry = {
@@ -840,16 +867,8 @@ def _coverage_from_results(
 
     coverage = {
         "code": code_entry,
-        "component": _coverage_entry(
-            len(covered_components),
-            len(_COMPONENTS),
-            "Components listed in the pod specification",
-        ),
-        "system": _coverage_entry(
-            len(covered_criteria),
-            len(_CRITERIA),
-            "Acceptance criteria listed in the pod specification",
-        ),
+        "component": _coverage_entry(len(covered_components), len(_COMPONENTS), _COMPONENT_BASIS),
+        "system": _coverage_entry(len(covered_criteria), len(_CRITERIA), _SYSTEM_BASIS),
     }
     if same_team:
         coverage["model"] = harness_model.model_coverage(results)
