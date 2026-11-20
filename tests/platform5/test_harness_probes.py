@@ -166,6 +166,10 @@ def test_a_self_run_reports_model_coverage_and_stores_the_same_report(
     for entry in coverage.values():
         _assert_entry(entry)
     assert (coverage["model"]["covered"], coverage["model"]["total"]) == (13, 26)
+    # Follow-up round 2: AC-01 to AC-18 and the ten architecture components (README 17.2).
+    assert (coverage["system"]["covered"], coverage["system"]["total"]) == (0, 18)
+    assert (coverage["component"]["covered"], coverage["component"]["total"]) == (7, 10)
+    assert coverage["component"]["basis"] == "Components of the system architecture (README 17.2)"
     assert coverage["code"] == {
         "covered": None,
         "total": None,
@@ -194,6 +198,8 @@ def test_a_cross_team_run_has_no_probes_and_no_model_coverage(
     report = run.json()
     assert [row["test_id"] for row in report["results"]] == BASE_IDS
     assert set(report["coverage"]) == {"code", "component", "system"}
+    assert report["coverage"]["system"]["total"] == 18
+    assert report["coverage"]["component"]["total"] == 10
     stored = harness_client.get(f"/tester/test/report?session_id={session_id}").json()
     assert "model" not in stored["coverage"] and stored == report
 
