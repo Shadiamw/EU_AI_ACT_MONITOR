@@ -250,7 +250,7 @@ def session_idle_seconds() -> int:
     """SESSION_IDLE_SECONDS (600): how long a system test session stays active without activity
     (its setup, its system report reads, its tester run events). While one is active, a setup
     for another session is 409 (fix round 2, D-1; decision 328). The default is over 500 times
-    the longest measured self-run (about 1.1 s on a local stack)."""
+    the longest measured self-run (1.18 s on a local stack)."""
     return _positive_int("SESSION_IDLE_SECONDS", 600)
 
 

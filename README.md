@@ -1217,7 +1217,7 @@ with `ENVIRONMENT=test`. What a run does to the target, and what it does not pro
   in between, is no longer protected after it. The trade-off is a lockout: a session that is
   set up and then abandoned blocks every other setup for up to the window; there is no way to
   end it early except a restart of the API (sessions are in memory). 600 s is over 500 times the
-  longest self-run measured on a local stack (about 1.1 s; the measurement is in the Part 4
+  longest self-run measured on a local stack (1.18 s; the measurement is in the Part 4
   report, fix round 2). Two things are outside this rule: the console's suite runner
   (`/v1/test/suite`) and direct calls to `/v1/test/reset` still reset the data at any time.
 - **One run per tester session.** A second `POST /tester/test/run` of a session gets 409,

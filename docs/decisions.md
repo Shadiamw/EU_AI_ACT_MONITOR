@@ -2636,7 +2636,7 @@ November 2026**, D7 and D15 with the conditions written in them.
      interference", and one-session systems "may return 409 for conflicting setup requests"). A
      session ends at once when a tester run of the same id finishes or aborts (a self-run), and
      otherwise after `SESSION_IDLE_SECONDS` (default 600, over 500 times the longest measured
-     self-run of about 1.1 s) without activity; activity is its setup, its system report reads
+     self-run, 1.18 s) without activity; activity is its setup, its system report reads
      and its tester run events. Project API requests carry no session id and are not counted, so
      a longer staff run without report reads loses the protection after the window, and an
      abandoned session locks other setups out for up to the window. The console suite runner and
