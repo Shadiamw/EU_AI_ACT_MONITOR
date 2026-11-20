@@ -2735,6 +2735,10 @@ November 2026**, D7 and D15 with the conditions written in them.
      code, so it needs a Part 4 follow-up commit. This replaces "Part 2 alone at any time"
      above.
 
+     Follow-up (SS, follow-up round 2). The Part 4 cut is now three reverts, in this order: `git
+     revert -m 1 87b270f` (the Part 4 follow-up round 2 merge), then `git revert -m 1 21876ff`,
+     then `git revert -m 1 af584c3`.
+
 336. **Decision 286 is corrected in place (re-audit R3; SS).** Its sentence on
      `GET /v1/events/{id}/report` for a damaged stored report said the route is 500. That holds
      for a changed nonce, ciphertext or tag; a changed `pd1:` prefix gives 200 with the stored
@@ -2801,3 +2805,32 @@ November 2026**, D7 and D15 with the conditions written in them.
      and the suite runner under an active session, decision 339) and F-12 (AC-18 over HTTP,
      decision 320). Merged into `phase5-integration` at `21876ff` (`git merge --no-ff`, no
      conflict).
+
+342. **System coverage counts AC-01 to AC-18; component coverage counts the architecture
+     components (audit F-07; SS, follow-up round 2).** The Cross-team Testing Interface counts,
+     for `coverage.system`, the "acceptance criteria from the shared pod specification the suite
+     evaluated out of all criteria in scope", using "the pod's criterion IDs and stated
+     evaluation rules", each once; and, for `coverage.component`, "how many pod-defined
+     components its tests covered". The tester counted seven criterion ids and six component
+     names that it had invented. Now:
+     - `coverage.system`: `total` is 18, AC-01 to AC-18 of the pod's REQ/AC document (Project
+       Requirements), all in scope; AC-16, whose method is manual-only, stays in the total. A
+       criterion counts as evaluated only if at least one test performs that criterion's own
+       Setup, Action and Expected through the target's public interface and ends `pass` or
+       `fail`; a probe that does not perform the criterion's action does not count it. No probe
+       does, so `covered` is 0 in every run. `basis` starts "Acceptance criteria listed in the
+       pod specification" and adds the scope note.
+     - `coverage.component`: `total` is 10, the components of the system architecture (Ingestion
+       API, Rules engine, Event service, Gap sweeper, Access control, Config service, Workflow
+       engine, Notification outbox, Reporting service, Audit ledger). A component counts as
+       exercised only if at least one test sends a request that passes through it and ends
+       `pass` or `fail` on that component's own observable behaviour. A run that passes
+       everything reports 1 of 10 cross-team and 7 of 10 same-team. `basis` is "Components of the
+       system architecture (README 17.2)". The repository has no architecture document naming
+       components, so README 17.2 lists them with the modules that implement each.
+     - Both: each item counts once; `error` and `skip` never count; 0 is a valid count. No probe
+       was added and `pod_spec.txt` is unchanged.
+     The registry's pod-specification link must point to a document that lists the criteria;
+     `pod_spec.txt` lists routes and REQs, not AC ids. On `phase5-part4-platform`: tests
+     `429377a`, fix `c8a32e3` (decision 326's Follow-up; README 17.2). Merged into
+     `phase5-integration` at `87b270f` (`git merge --no-ff`, no conflict).
