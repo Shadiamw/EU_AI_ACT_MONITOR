@@ -1138,3 +1138,122 @@ stops the API and the worker at start-up with an error naming the setting, as a 
 | Tables | `migrations/versions/0010_ledger_ops.py` (`ledger_verification_run`, `platform_counter`) |
 | Anchor | `tools/verify_ledger.py`, `.github/workflows/chain-head.yml` |
 | Tests | `tests/ledger_ops/` |
+
+## 17. Phase 5 Part 4: platform
+
+Part 4 owns the Phase 5 platform pieces (spec 11.4): the console views, the Model 5 Phase 5
+fixture and runner, `tools/demo_phase5.py`, the HTTP acceptance tests, `PHASE5_REQUIRED` in
+the gate, the second reviewer key, the models, the contract delta and the manual checklist.
+It is built on `phase5-integration`, which already merged Parts 1 to 3 (decision 314).
+
+### 17.1 What this part adds
+
+| What | Where |
+| --- | --- |
+| Report and submission panel; ledger operations and health panel; version and ledger state in the health chip | `app/static/` (`/ui/`) |
+| Report headers readable by a console on another origin (CORS `expose_headers`) | `app/main.py` |
+| Second reviewer `rev-2`, seeded when `REVIEWER_2_KEY` is set | `app/config.py`, `tools/seed_part1.py`, `docker-compose.yml` |
+| Model 5 Phase 5 fixture (Ex-1 report and submission, Ex-2 closure report, Ex-5 in-process) | `tests/fixtures/phase5/`, `tools/run_model5.py` |
+| AC-16 end-to-end trace, paths S (breach to submission) and N (not serious) | `tools/demo_phase5.py`; CI step "Phase 5 demo (AC-16 trace)" |
+| HTTP acceptance tests for AC-05, AC-13, AC-16, AC-18, the Δ routes and the role matrix | `tests/acceptance/` |
+| Phase 5 gate entries | `PHASE5_REQUIRED` in `tools/check_acceptance.py` |
+| Schema, reset and seed tests; the in-process AC-16 trace | `tests/platform5/` |
+| Tester `coverage.model` (below) | `app/harness_model.py`, `app/harness.py` |
+| Models, contract delta (proposed), manual checks | `docs/models/phase5_models.md`, `docs/contract/phase5/delta.md`, `docs/manual_checks_phase5.md` |
+
+### 17.2 Tester model coverage (`coverage.model`)
+
+From Phase 5, the tester's suite report includes `coverage.model` when the tester and the
+target system belong to the same team, and omits it from cross-team reports (Cross-team
+Testing Interface, coverage). Same team means the target is this deployment (the self
+target) or a system URL listed in `SAME_TEAM_SYSTEM_URLS` (comma-separated, for our other
+deployments). For those runs the suite adds twelve design-requirement probes, `M-01` to
+`M-12`, between `T-07` and `T-08`. The self target is `SUITE_BASE_URL` + `/system` (default
+the Fly URL); a self run calls the API over loopback, so on a local stack set
+`SUITE_BASE_URL`, or target the Fly URL, to get a same-team run.
+
+- `total` is 26: the rows of the Phase 5 spec's scope table (section 1.1), DR-01 to DR-26.
+- `covered` is the number of those requirements that at least one probe evaluated, that is,
+  ended `pass` or `fail` (audit fix round: this line said "ran and passed"; the Testing
+  Interface counts what the suite evaluated, and the code always counted `fail` too). `error`
+  and `skip` evaluate nothing and do not count. With every probe run, `covered` is 13: the
+  other 13 requirements (the PDF review, the anchor workflow, the deployment, and so on) are
+  checked in-process or manually and cannot be probed through the API.
+- `basis` names the design version and links to the mapping,
+  [`docs/models/phase5_design_requirements.md`](docs/models/phase5_design_requirements.md).
+  A test checks that the table there matches the code.
+
+```bash
+# A same-team run against another of our deployments
+SAME_TEAM_SYSTEM_URLS=https://staging.example/system uvicorn app.main:app
+```
+
+**Sessions, state and cleanup (audit fix round).** The tester and system endpoints exist only
+with `ENVIRONMENT=test`. What a run does to the target, and what it does not protect against:
+
+- **Preparation.** `POST /system/test/setup` resets the whole target database
+  (`platform.reset()`: tables emptied, seed reinstalled, clock offset 0, `reset_count` + 1),
+  and `T-07` resets it again over `POST /v1/test/reset`, in every run, cross-team too.
+- **What a same-team run writes.** After those resets the probes ingest two breaches (`M-02`,
+  `M-07`), advance the clock 5 hours (`M-03`), record two dispositions and assemble two reports
+  (`M-03`, `M-07`), record a submission (`M-06`), advance the clock 186 days and erase a
+  record (`M-09`), and append a manual verification run (`M-10`) (decision 328).
+- **The default target is the deployment itself.** `SUITE_BASE_URL` defaults to the Fly URL,
+  so a tester running on Fly and given that URL tests its own deployment, over loopback,
+  and resets and changes the shared data there. On the deployed service a reset also breaks
+  the anchor series (`docs/operations.md` sections 5 and 8).
+- **Sessions share one database.** Every session on a deployment uses the same data.
+- **One active system session at a time (audit fix round 2).** While a system session is
+  active, `POST /system/test/setup` for another `session_id` answers 409 with source `system`
+  and a message saying another session is active; nothing is reset or written. A repeated
+  `session_id` is 409 as before, whether its session is active or not. A session is active from
+  its setup until it ends. It ends at once when a tester run of the same `session_id` finishes
+  or aborts, which happens only for a self-run (this deployment's tester against itself); any
+  other session ends when `SESSION_IDLE_SECONDS` (default 600) pass without activity. Activity
+  is the setup itself, a `GET /system/test/report` for that session, and each event of a tester
+  run of the same id (its start and every recorded result). Project API requests carry no
+  session id, so they cannot be attributed to a session and do not refresh the window: a staff
+  tester whose run against the project API takes longer than the window, with no report read
+  in between, is no longer protected after it. The trade-off is a lockout: a session that is
+  set up and then abandoned blocks every other setup for up to the window; there is no way to
+  end it early except a restart of the API (sessions are in memory). 600 s is over 500 times the
+  longest self-run measured on a local stack (1.18 s; the measurement is in the Part 4
+  report, fix round 2). Two things are outside this rule: the console's suite runner
+  (`/v1/test/suite`) and direct calls to `/v1/test/reset` still reset the data at any time.
+- **One run per tester session.** A second `POST /tester/test/run` of a session gets 409,
+  whether it is concurrent with the first, later, or after an abort. An aborted run keeps the
+  results it has; the test the abort prevented is `error` (source `tester`) and the rest are
+  `skip`.
+- **Memory only.** Tester and system sessions live in the API process; a restart loses them,
+  and `GET /test/report` then answers 404.
+- **Cleanup.** There is no cleanup step: the next setup's reset is the cleanup.
+- **A target's `coverage.code` is checked (audit fix round 2).** The tester copies a target's
+  `coverage.code` only when `covered` and `total` are both nonnegative integers with `covered` <=
+  `total` (and `total` above 0), or both null, with a nonempty `basis`. Otherwise its report
+  carries null counts and a basis saying the target's `coverage.code` was invalid and why, never
+  the target's own text, and `T-08`'s message says so.
+
+### 17.3 Running
+
+```bash
+# in-process (Postgres on 5433, database monitor_unit)
+pytest tests/platform5 tests/test_run_model5.py tests/test_check_acceptance.py
+# over HTTP, against the compose stack
+docker compose up -d --build
+BASE_URL=http://127.0.0.1:8000 WEBHOOK_SINK_URL=http://sink:8765/hook/m5 \
+  WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/m5 python tools/run_model5.py
+BASE_URL=http://127.0.0.1:8000 REVIEWER_2_KEY=test-reviewer-key-rev-2-3e8b1f6a9c2d4705 \
+  WEBHOOK_SINK_URL=http://sink:8765/hook/ac16 WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/ac16 \
+  python tools/demo_phase5.py
+```
+
+### 17.4 Not done here
+
+- `docs/contract/pod_contract_phase5.md` is not written: spec 9.4 exports it only after both
+  teams agree the delta, which is still proposed.
+- Deploying to Fly (`APP_VERSION`, the `REVIEWER_2_KEY` secret) is a team step (OD-1, spec 11.6).
+- The manual checks M1 to M7 are for people to perform; their result fields are empty.
+- The LIM-03 advisory slot (spec 1.2 and 10.3: the AC-16 trace refusing to start while another
+  trace holds the slot) is not built: the spec defines no mechanism, and a real one would need
+  a new test endpoint, a contract change. The control is the booking rule in
+  `docs/operations.md` section 8. Recorded deviation, decision 319 (audit fix round).

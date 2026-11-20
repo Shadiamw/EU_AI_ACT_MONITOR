@@ -58,9 +58,14 @@ def test_the_api_service_has_a_sink_channel_of_its_own() -> None:
 def test_the_95_conditions_are_unchanged() -> None:
     text = CI.read_text(encoding="utf-8")
     guarded = f"if: ${{{{ !cancelled() && ({CONDITION_95}) }}}}"
-    assert text.count(guarded) == 3, text
+    assert text.count(guarded) == 4, text
     assert text.count(f"if: {CONDITION_95}\n") == 2, text
-    for name in ("HTTP acceptance runner", "Model 5 examples", "Phase 4 demo"):
+    for name in (
+        "HTTP acceptance runner",
+        "Model 5 examples",
+        "Phase 4 demo",
+        "Phase 5 demo (AC-16 trace)",
+    ):
         assert guarded in _step(name), name
 
 

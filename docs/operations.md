@@ -311,6 +311,19 @@ tests against it (LIM-03).
 - **Keys** are public test keys: never put real personal data or secrets into the service or a
   webhook URL (LIM-13, LIM-14).
 
+**Staff and cross-team testing through `/system` and `/tester` (fix round 2).** The system test
+interface allows one active session at a time. While one is active, a setup for another session
+is refused with 409 (source `system`) and nothing is reset, so a tester that gets this 409 should
+not retry in a loop: either finish the run that holds the session (a self-run of this
+deployment's tester releases it as soon as the run ends or aborts), or wait until it has had no
+activity for `SESSION_IDLE_SECONDS` (600 s by default), then set up again. A session that was set
+up and abandoned blocks setups for up to that window; restarting the API also clears it. The
+window is refreshed only by the session's setup, its `GET /system/test/report` reads and its own
+tester run, not by project API calls, so a staff run longer than the window should read its
+system report now and then, or the window should be raised for the staff testing days. Book the
+window as for any other suite run: the console suite runner and `POST /v1/test/reset` are not
+covered by this rule and still reset the data at any time.
+
 ## 9. Known limitations
 
 Carried from Phase 4 (Phase 4 report Q7.2):

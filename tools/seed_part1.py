@@ -8,9 +8,10 @@ spec 4 ("Seed fixtures") from the environment (spec 5):
   gap_timeout_intervals = GAP_TIMEOUT_INTERVALS (3), last_received_at = now. An existing row is
   left as it is.
 - api_key: exactly three rows, the SHA-256 digests of INGEST_KEY_SYS_42 (SYSTEM, sys-42),
-  REVIEWER_KEY (REVIEWER, rev-1) and VIEWER_KEY (VIEWER, viewer-1). Rows for keys no longer
-  configured are deleted and the three are upserted, so the stored keys always match the
-  environment and two seeds at once do not collide (decision 153).
+  REVIEWER_KEY (REVIEWER, rev-1) and VIEWER_KEY (VIEWER, viewer-1), plus a fourth,
+  REVIEWER_2_KEY (REVIEWER, rev-2), only when that variable is set (Phase 5 spec 11.5, D17).
+  Rows for keys no longer configured are deleted and the rest are upserted, so the stored keys
+  always match the environment and two seeds at once do not collide (decision 153).
 - threshold_version, version 1: thr-1 accuracy_drift (drift) gt 0.30 and thr-2 accuracy
   (performance) lt 0.70. Existing rows are left as they are.
 - harm_context (Phase 4 spec 4.4): sys-42 fundamental_rights_infringement, only when the
@@ -50,11 +51,14 @@ def seed(session: Session) -> None:
     """Install the fixtures in the caller's transaction; the caller commits."""
     if not config.is_test_environment():
         raise RuntimeError("the Part 1 seed stand-in runs only in ENVIRONMENT=test")
-    keys = (
+    keys = [
         (config.ingest_key_sys_42(), "SYSTEM", SYSTEM_ID, SYSTEM_ID),
         (config.reviewer_key(), "REVIEWER", "rev-1", None),
         (config.viewer_key(), "VIEWER", "viewer-1", None),
-    )
+    ]
+    second_reviewer = config.reviewer_2_key()
+    if second_reviewer is not None:
+        keys.append((second_reviewer, "REVIEWER", "rev-2", None))
     now = clock.now()
     session.execute(
         text(
@@ -129,7 +133,8 @@ def main() -> None:
             session.commit()
     finally:
         engine.dispose()
-    print("seed fixtures installed (sys-42, three keys from the environment, two thresholds)")
+    count = "four" if config.reviewer_2_key() is not None else "three"
+    print(f"seed fixtures installed (sys-42, {count} keys from the environment, two thresholds)")
 
 
 if __name__ == "__main__":

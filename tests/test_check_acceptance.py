@@ -60,6 +60,7 @@ def _required_passing() -> list[tuple[str, str, str]]:
 @pytest.fixture
 def phase4_ac15(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gate, "PHASE4_REQUIRED", {"AC-15": (PHASE4_AC15,)})
+    monkeypatch.setattr(gate, "PHASE5_REQUIRED", {})
 
 
 @pytest.mark.usefixtures("phase4_ac15")
@@ -110,6 +111,77 @@ def test_the_merged_mapping_keeps_order_and_drops_duplicates(
     assert merged["AC-07"] == ("tests.part1.test_x::test_y",)
     assert "AC-08" not in merged
     assert merged["AC-02"] == gate.REQUIRED["AC-02"]
+
+
+def test_phase5_required_is_merged() -> None:
+    """Phase 5 spec 10.4: required_criteria() includes every PHASE5_REQUIRED id, after the
+    Phase 3 and 4 ids of the same criterion, and the eight Phase 5 criteria are filled."""
+    merged = gate.required_criteria()
+    assert set(gate.PHASE5_REQUIRED) == {
+        "AC-01",
+        "AC-03",
+        "AC-05",
+        "AC-06",
+        "AC-13",
+        "AC-14",
+        "AC-16",
+        "AC-18",
+    }
+    for criterion, names in gate.PHASE5_REQUIRED.items():
+        assert names, criterion
+        earlier = (*gate.REQUIRED.get(criterion, ()), *gate.PHASE4_REQUIRED.get(criterion, ()))
+        assert merged[criterion][: len(earlier)] == tuple(dict.fromkeys(earlier)), criterion
+        assert set(names) <= set(merged[criterion]), criterion
+    assert merged["AC-16"] == (
+        "tests.platform5.test_ac16_in_process::test_ac16_in_process_trace_both_paths",
+    )
+
+
+def test_phase5_required_is_pinned_exactly() -> None:
+    """Audit F-08: every Phase 5 gate id is pinned, so dropping or renaming any one fails here
+    (spec 10.4; decision 321)."""
+    assert gate.PHASE5_REQUIRED == {
+        "AC-01": ("tests.part1.test_ingestion::test_ac01_cadence_twelve_samples_no_gap",),
+        "AC-03": (
+            "tests.part1.test_ingestion::test_drift_boundary",
+            "tests.part1.test_ingestion::test_performance_boundary",
+            "tests.part1.test_ingestion::test_contract_example_1_flags_and_detail_shows_the_breach",
+        ),
+        "AC-05": (
+            "tests.records.test_retention::test_ac05_retrievable_at_5mo29d",
+            "tests.records.test_retention::test_ac05_at_6mo1d_presence_or_absence_is_accepted",
+            "tests.records.test_erasure::test_nothing_is_erased_before_retain_until",
+        ),
+        "AC-06": (
+            "tests.ledger_ops.test_nightly::test_nightly_verify_records_a_valid_run",
+            "tests.ledger_ops.test_nightly::test_model5_ex5_nightly_verify_finds_a_payload_edit",
+            "tests.ledger_ops.test_nightly::test_nightly_verify_runs_once_per_utc_day",
+            "tests.ledger_ops.test_nightly::test_head_regression_is_detected",
+            "tests.ledger_ops.test_nightly::test_tampered_report_bytes_are_found_by_the_nightly_check",
+            "tests.reports.test_report_storage::test_report_tables_are_insert_only",
+        ),
+        "AC-13": (
+            "tests.reports.test_report_schema::test_ac13_report_matches_the_schema",
+            "tests.reports.test_report_schema::test_ac13_three_timestamps_are_non_null_and_distinct",
+            "tests.reports.test_report_schema::test_closure_report_for_not_serious_has_no_deadline",
+            "tests.reports.test_report_schema::test_closure_report_is_marked_not_for_submission",
+            "tests.reports.test_report_storage::test_report_bytes_are_served_exactly_as_stored",
+            "tests.reports.test_report_storage::test_report_hashes_are_in_the_ledger",
+            "tests.reports.test_report_storage::test_pdf_contains_every_required_field",
+        ),
+        "AC-14": (
+            "tests.reports.test_report_api::test_ac14_the_reviewer_gets_the_report_and_others_are_denied",
+            "tests.reports.test_submission::test_submission_roles",
+        ),
+        "AC-16": ("tests.platform5.test_ac16_in_process::test_ac16_in_process_trace_both_paths",),
+        "AC-18": (
+            "tests.records.test_erasure::test_ac18_personal_data_is_unreadable_after_erasure",
+            "tests.records.test_erasure::test_ac18_chain_positions_and_hashes_are_unchanged_and_verify",
+            "tests.records.test_erasure::test_ac18_standalone_verifier_agrees_after_erasure",
+            "tests.records.test_erasure::test_erasure_before_retain_until_is_409_and_changes_nothing",
+            "tests.records.test_erasure::test_erasure_twice_is_409",
+        ),
+    }
 
 
 def test_a_skipped_required_test_counts_as_missing(

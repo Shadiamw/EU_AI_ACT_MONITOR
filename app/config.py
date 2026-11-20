@@ -235,3 +235,23 @@ def app_version() -> str | None:
 
 
 # End of the Phase 5 Part 3 slot.
+
+
+# Phase 5 Part 4 slot: the second reviewer (Phase 5 spec 11.5, D17).
+
+
+def reviewer_2_key() -> str | None:
+    """REVIEWER_2_KEY (optional): the seeded REVIEWER key for rev-2. Unset or empty means no
+    rev-2 row, so the Phase 3 three-key fixtures stay exactly as they were."""
+    return os.environ.get("REVIEWER_2_KEY") or None
+
+
+def session_idle_seconds() -> int:
+    """SESSION_IDLE_SECONDS (600): how long a system test session stays active without activity
+    (its setup, its system report reads, its tester run events). While one is active, a setup
+    for another session is 409 (fix round 2, D-1; decision 328). The default is over 500 times
+    the longest measured self-run (1.18 s on a local stack)."""
+    return _positive_int("SESSION_IDLE_SECONDS", 600)
+
+
+# End of the Phase 5 Part 4 slot.

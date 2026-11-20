@@ -131,6 +131,21 @@ main {
   animation-delay: 0.05s;
 }
 
+.panel.reports,
+.panel.ops-health {
+  animation-delay: 0.06s;
+}
+
+.banner {
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.85rem;
+  border: 2px solid #b91c1c;
+  color: #b91c1c;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

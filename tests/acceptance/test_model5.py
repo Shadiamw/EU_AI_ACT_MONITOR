@@ -1,7 +1,9 @@
-"""Model 5 shared fixtures Ex-1, Ex-2 and Ex-4 over HTTP (Phase 4 spec 4.7; decision 144).
+"""Model 5 shared fixtures Ex-1, Ex-2 and Ex-4 over HTTP (Phase 5 spec 8.6; Phase 4 spec 4.7;
+decision 144).
 
-Each example in tests/fixtures/phase4/model5_examples.json is run by tools/run_model5.py against
-BASE_URL, with the sink for the webhook expectations. Ex-1's reminder steps need Part 3.
+Each HTTP example in tests/fixtures/phase5/model5_examples.json is run by tools/run_model5.py
+against BASE_URL, with the sink for the webhook expectations. Ex-5 is in-process only (it edits
+a ledger row as the owner role) and is run by the test its `in_process` key names.
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ from tools import run_model5
 
 pytestmark = pytest.mark.integration
 
-EXAMPLES: list[dict[str, Any]] = json.loads(run_model5.FIXTURE.read_text(encoding="utf-8"))[
-    "examples"
+EXAMPLES: list[dict[str, Any]] = [
+    example
+    for example in json.loads(run_model5.FIXTURE.read_text(encoding="utf-8"))["examples"]
+    if "in_process" not in example
 ]
 
 
