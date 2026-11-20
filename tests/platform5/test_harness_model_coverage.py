@@ -40,8 +40,10 @@ def test_model_coverage_counts_evaluated_requirements_once() -> None:
     assert (model["covered"], model["total"]) == (13, 26)
     assert harness_model.DESIGN_VERSION in model["basis"]
     assert harness_model.MAPPING_URL in model["basis"]
-    # Components and criteria are unchanged by the probes.
-    assert coverage["system"]["covered"] == len(harness._CRITERIA)
+    # The probes exercise six more architecture components and perform no acceptance criterion
+    # (follow-up round 2; tests/platform5/test_harness_pod_coverage.py).
+    assert (coverage["system"]["covered"], coverage["system"]["total"]) == (0, 18)
+    assert (coverage["component"]["covered"], coverage["component"]["total"]) == (7, 10)
 
 
 def test_errors_and_skips_do_not_count_and_a_fail_does() -> None:
