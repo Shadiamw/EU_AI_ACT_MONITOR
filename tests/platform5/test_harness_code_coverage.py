@@ -29,7 +29,6 @@ INVALID: list[tuple[str, Any]] = [
     ("string-count", {"covered": "7", "total": 10, "basis": f"Lines {SECRET}"}),
     ("float-count", {"covered": 7.0, "total": 10, "basis": f"Lines {SECRET}"}),
     ("boolean-count", {"covered": True, "total": 10, "basis": f"Lines {SECRET}"}),
-    ("zero-for-unavailable", {"covered": 0, "total": 0, "basis": f"Not measured {SECRET}"}),
     ("one-count-null", {"covered": None, "total": 10, "basis": f"Lines {SECRET}"}),
     ("missing-count", {"total": 10, "basis": f"Lines {SECRET}"}),
     ("missing-basis", {"covered": 3, "total": 10}),
@@ -44,6 +43,7 @@ VALID: list[tuple[str, dict[str, Any]]] = [
     ("full", {"covered": 10, "total": 10, "basis": "Branches of app/"}),
     ("none-covered", {"covered": 0, "total": 10, "basis": "Lines of app/"}),
     ("unavailable", {"covered": None, "total": None, "basis": "Lines; not instrumented"}),
+    ("zero-of-zero", {"covered": 0, "total": 0, "basis": f"Not measured {SECRET}"}),
 ]
 
 

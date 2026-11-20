@@ -83,6 +83,7 @@ def test_the_delta_lists_the_as_built_additions_as_proposed() -> None:
         "no invisible lock cycle",
     ):
         assert token in section, token
+    assert "| A5 |" in section
     assert section.lower().count("proposed") >= 1
     assert not (DELTA.parent.parent / "pod_contract_phase5.md").exists()
 

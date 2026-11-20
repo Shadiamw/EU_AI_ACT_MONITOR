@@ -808,8 +808,6 @@ def _code_problem(code: Any) -> str | None:
         return "a count is negative"
     if covered > total:
         return "covered exceeds total"
-    if total == 0:
-        return "zero counts for an unavailable measure; null is required"
     return None
 
 

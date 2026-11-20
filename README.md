@@ -1229,7 +1229,7 @@ with `ENVIRONMENT=test`. What a run does to the target, and what it does not pro
 - **Cleanup.** There is no cleanup step: the next setup's reset is the cleanup.
 - **A target's `coverage.code` is checked (audit fix round 2).** The tester copies a target's
   `coverage.code` only when `covered` and `total` are both nonnegative integers with `covered` <=
-  `total` (and `total` above 0), or both null, with a nonempty `basis`. Otherwise its report
+  `total` (0 of 0 included; follow-up round, audit F-04), or both null, with a nonempty `basis`. Otherwise its report
   carries null counts and a basis saying the target's `coverage.code` was invalid and why, never
   the target's own text, and `T-08`'s message says so.
 
