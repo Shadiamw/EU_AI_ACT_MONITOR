@@ -2710,6 +2710,16 @@ November 2026**, D7 and D15 with the conditions written in them.
      placeholders and the real migrations, so a database migrated at one checkpoint is not
      reused at another without a downgrade first.
 
+     Follow-up (audit F-08; SS, follow-up round). The Part 4 cut is now two reverts, in this
+     order: `git revert -m 1 21876ff` (the Part 4 follow-up merge), then `git revert -m 1
+     af584c3`. A Part 2 cut (`git revert -m 1 4e6e0d0`) also conflicts in `pyproject.toml`
+     (the `reportlab` and `cryptography` pins), and it leaves eight `PHASE5_REQUIRED` entries
+     (AC-05 twice, `test_nothing_is_erased_before_retain_until`, AC-18 five times) plus Part 4's
+     AC-05 and AC-18 HTTP files (`tests/acceptance/test_ac05_retention.py`,
+     `tests/acceptance/test_ac18_erasure.py`) and the M-08 and M-09 probes pointing at removed
+     code, so it needs a Part 4 follow-up commit. This replaces "Part 2 alone at any time"
+     above.
+
 336. **Decision 286 is corrected in place (re-audit R3; SS).** Its sentence on
      `GET /v1/events/{id}/report` for a damaged stored report said the route is 500. That holds
      for a changed nonce, ciphertext or tag; a changed `pd1:` prefix gives 200 with the stored
@@ -2756,3 +2766,23 @@ November 2026**, D7 and D15 with the conditions written in them.
      The console suite runner (`POST /v1/test/suite`) and `POST /v1/test/reset` are not
      covered by the one-session rule of D-1 and can still reset the data under an active
      session (decision 328).
+
+340. **LIM-07's dashboard item is not built; the Pinned 7.2 shape governs (audit F-02; SS).**
+     Spec 1.2's LIM-07 row says "The dashboard shows reminders delivered for events now CLOSED
+     (informational)", but the Pinned dashboard shape of spec 7.2 has no field for it, and
+     `GET /v1/ops/dashboard` returns exactly that shape. No informational count is added. LIM-07
+     itself is unchanged and stays stated in `docs/operations.md` section 9. This is a recorded
+     deviation from spec 1.2's LIM-07 row.
+
+341. **Follow-up round after the independent audit of `494255a` (SS).** The audit
+     (`/mnt/project-files/phase5/audit-final/report.md`) found every Phase 5 REQ and AC met in
+     its automated parts, with no Blocker or Major finding (8 Minor, 9 Notes). On
+     `phase5-part4-platform`, tests first in `e7e2d48`, then `2c5fffd`: F-04 (a target's 0 of 0
+     `coverage.code` is valid; decision 328's Follow-up), F-05 (delta row A5 is asserted) and
+     F-06 (the Health timer start is asserted). F-07 (the system-coverage criterion ids and the
+     component list) is deferred: the pod specification names neither, so the mapping is a
+     question for SS. Docs only: F-02 (decision 340) and F-08 (decision 335's Follow-up).
+     Accepted as recorded, with no code or test change: F-01 (LIM-03, decision 319), F-03 (reset
+     and the suite runner under an active session, decision 339) and F-12 (AC-18 over HTTP,
+     decision 320). Merged into `phase5-integration` at `21876ff` (`git merge --no-ff`, no
+     conflict).
