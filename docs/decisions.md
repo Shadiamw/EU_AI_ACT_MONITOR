@@ -2630,6 +2630,20 @@ November 2026**, D7 and D15 with the conditions written in them.
      is the cleanup. Run it only in a booked window (`docs/operations.md` section 8; README
      17.2).
 
+     Audit fix round 2 (SS's decisions D-1 and D-3). One system session is active at a time: a
+     setup for another `session_id` while one is active is 409 with source `system` and resets
+     nothing (Testing Interface, "Session state and concurrency": teams "must prevent unintended
+     interference", and one-session systems "may return 409 for conflicting setup requests"). A
+     session ends at once when a tester run of the same id finishes or aborts (a self-run), and
+     otherwise after `SESSION_IDLE_SECONDS` (default 600, over 500 times the longest measured
+     self-run of about 1.1 s) without activity; activity is its setup, its system report reads
+     and its tester run events. Project API requests carry no session id and are not counted, so
+     a longer staff run without report reads loses the protection after the window, and an
+     abandoned session locks other setups out for up to the window. The console suite runner and
+     `/v1/test/reset` are unchanged and can still reset under a session. The tester also checks a
+     target's `coverage.code` against the interface's coverage rules and reports an invalid one as
+     null counts with a basis naming the problem, never the target's text.
+
 329. **A probe that cannot reach the target is an error, not a failure.** Communication errors
      become `error` with source `communication`; a fault in the probe code becomes `error` with
      source `tester`. Only an observed wrong answer is `fail`.

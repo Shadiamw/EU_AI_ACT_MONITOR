@@ -1202,10 +1202,24 @@ with `ENVIRONMENT=test`. What a run does to the target, and what it does not pro
   so a tester running on Fly and given that URL tests its own deployment, over loopback,
   and resets and changes the shared data there. On the deployed service a reset also breaks
   the anchor series (`docs/operations.md` sections 5 and 8).
-- **Sessions share one database.** Every session on a deployment uses the same data. A second
-  system setup with a new `session_id` resets the data under a session that is still running;
-  only a repeated `session_id` gets 409. The interface leaves concurrency to the pod, so run one
-  session at a time per deployment, in a booked window (`docs/operations.md` section 8, LIM-03).
+- **Sessions share one database.** Every session on a deployment uses the same data.
+- **One active system session at a time (audit fix round 2).** While a system session is
+  active, `POST /system/test/setup` for another `session_id` answers 409 with source `system`
+  and a message saying another session is active; nothing is reset or written. A repeated
+  `session_id` is 409 as before, whether its session is active or not. A session is active from
+  its setup until it ends. It ends at once when a tester run of the same `session_id` finishes
+  or aborts, which happens only for a self-run (this deployment's tester against itself); any
+  other session ends when `SESSION_IDLE_SECONDS` (default 600) pass without activity. Activity
+  is the setup itself, a `GET /system/test/report` for that session, and each event of a tester
+  run of the same id (its start and every recorded result). Project API requests carry no
+  session id, so they cannot be attributed to a session and do not refresh the window: a staff
+  tester whose run against the project API takes longer than the window, with no report read
+  in between, is no longer protected after it. The trade-off is a lockout: a session that is
+  set up and then abandoned blocks every other setup for up to the window; there is no way to
+  end it early except a restart of the API (sessions are in memory). 600 s is over 500 times the
+  longest self-run measured on a local stack (about 1.1 s; the measurement is in the Part 4
+  report, fix round 2). Two things are outside this rule: the console's suite runner
+  (`/v1/test/suite`) and direct calls to `/v1/test/reset` still reset the data at any time.
 - **One run per tester session.** A second `POST /tester/test/run` of a session gets 409,
   whether it is concurrent with the first, later, or after an abort. An aborted run keeps the
   results it has; the test the abort prevented is `error` (source `tester`) and the rest are
@@ -1213,6 +1227,11 @@ with `ENVIRONMENT=test`. What a run does to the target, and what it does not pro
 - **Memory only.** Tester and system sessions live in the API process; a restart loses them,
   and `GET /test/report` then answers 404.
 - **Cleanup.** There is no cleanup step: the next setup's reset is the cleanup.
+- **A target's `coverage.code` is checked (audit fix round 2).** The tester copies a target's
+  `coverage.code` only when `covered` and `total` are both nonnegative integers with `covered` <=
+  `total` (and `total` above 0), or both null, with a nonempty `basis`. Otherwise its report
+  carries null counts and a basis saying the target's `coverage.code` was invalid and why, never
+  the target's own text, and `T-08`'s message says so.
 
 ### 17.3 Running
 
