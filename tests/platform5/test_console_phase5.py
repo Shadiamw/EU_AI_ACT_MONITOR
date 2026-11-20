@@ -101,6 +101,7 @@ def test_the_health_view_polls_the_dashboard_every_30_seconds(served: dict[str, 
     # Runs only while the panel is on screen and the tab is visible; stops otherwise.
     sync = _function(js, "syncHealthPoll")
     assert "healthVisible()" in sync and "stopHealthPoll();" in sync
+    assert "startHealthPoll();" in sync
     visible = _function(js, "healthVisible")
     assert 'document.visibilityState === "visible"' in visible
     assert "new IntersectionObserver(" in js
