@@ -447,7 +447,8 @@ def _execute_tester(session: TesterSession) -> None:
     project = _project_base(session.target_url)
     access = session.access
     # Each result is stored on the session as it is recorded, so an abort keeps the results
-    # already available (Testing Interface, "Aborting a run"; audit fix round).
+    # already available (Testing Interface, "Tester reports": "If the tester aborts, keep
+    # recorded outcomes"; audit fix round).
     session.results = []
     results = session.results
 
