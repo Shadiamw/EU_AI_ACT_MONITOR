@@ -188,3 +188,70 @@ def escalation_percentages() -> tuple[int, ...]:
 
 
 # End of the Phase 4 Part 3 slot.
+
+
+# Phase 5 Part 3 slot: ledger operations (Phase 5 spec 6 and 7; Part 3 decision 294).
+
+
+def nightly_verify_hour_utc() -> int:
+    """NIGHTLY_VERIFY_HOUR_UTC: the wall-clock UTC hour from which the nightly ledger
+    verification is due (Phase 5 spec 6.1; Part 3 decision 302). Default 2 when unset; anything
+    but an integer from 0 to 23, the empty string included, is an error, which stops start-up
+    (check_ledger_ops_settings)."""
+    raw = os.environ.get("NIGHTLY_VERIFY_HOUR_UTC")
+    if raw is None:
+        return 2
+    if not raw.isascii() or not raw.isdigit() or not 0 <= int(raw) <= 23:
+        raise RuntimeError("environment variable NIGHTLY_VERIFY_HOUR_UTC must be an integer 0-23")
+    return int(raw)
+
+
+def alert_deadline_warning_hours() -> int:
+    """ALERT_DEADLINE_WARNING_HOURS: alert A7's window before a reporting deadline (Phase 5
+    spec 7.3). Default 24 when unset; anything but a positive integer, the empty string included,
+    is an error, which stops start-up, as NIGHTLY_VERIFY_HOUR_UTC does."""
+    raw = os.environ.get("ALERT_DEADLINE_WARNING_HOURS")
+    if raw is None:
+        return 24
+    if not raw.isascii() or not raw.isdigit() or int(raw) < 1:
+        raise RuntimeError(
+            "environment variable ALERT_DEADLINE_WARNING_HOURS must be a positive integer"
+        )
+    return int(raw)
+
+
+def check_ledger_ops_settings() -> None:
+    """Read both Part 3 settings once, so a bad value stops start-up: app.main.create_app and
+    app.worker.main call this, as they call escalation_percentages (decision 302)."""
+    nightly_verify_hour_utc()
+    alert_deadline_warning_hours()
+
+
+def app_version() -> str | None:
+    """APP_VERSION: the deployed main commit, set at image build from the Dockerfile's ARG
+    GIT_SHA (Phase 5 spec 6.5, D15; Part 3 decision 295). Unset or empty is None. Never read
+    from git at run time."""
+    return os.environ.get("APP_VERSION") or None
+
+
+# End of the Phase 5 Part 3 slot.
+
+
+# Phase 5 Part 4 slot: the second reviewer (Phase 5 spec 11.5, D17).
+
+
+def reviewer_2_key() -> str | None:
+    """REVIEWER_2_KEY (optional): the seeded REVIEWER key for rev-2. Unset or empty means no
+    rev-2 row, so the Phase 3 three-key fixtures stay exactly as they were."""
+    return os.environ.get("REVIEWER_2_KEY") or None
+
+
+def session_idle_seconds() -> int:
+    """SESSION_IDLE_SECONDS (600): how long a system test session stays active without activity
+    (its setup, its system report reads, its tester run events). While one is active, a setup
+    for another session is 409 (fix round 2, D-1; decision 328). The default is over 500 times
+    the longest measured self-run (1.18 s on a local stack)."""
+    return _positive_int("SESSION_IDLE_SECONDS", 600)
+
+
+# End of the Phase 5 Part 4 slot.

@@ -126,6 +126,66 @@
         <pre class="out" id="review-out" aria-live="polite">No event loaded.</pre>
       </section>
 
+      <section class="panel reports" aria-labelledby="reports-title">
+        <div class="panel-head">
+          <h1 id="reports-title">Report and submission</h1>
+          <p>
+            For the event above (reviewer key). The first request after a disposition
+            assembles and stores a report; later ones return the same bytes. A not-serious
+            closure report is marked NOT FOR SUBMISSION and cannot be submitted.
+          </p>
+        </div>
+        <div class="actions" role="group" aria-label="Report actions">
+          <button type="button" id="report-json">Get report</button>
+          <button type="button" id="report-pdf">Download PDF</button>
+          <button type="button" id="report-list">List versions</button>
+        </div>
+        <p class="banner" id="report-banner" hidden>NOT FOR SUBMISSION</p>
+        <pre class="out" id="report-summary">No report loaded.</pre>
+        <div class="key-row">
+          <label>
+            Report type
+            <select id="submission-type">
+              <option value="Initial" selected>Initial</option>
+              <option value="Follow up">Follow up</option>
+              <option value="Combined initial and final">Combined initial and final</option>
+              <option value="Final (Reportable incident)">Final (Reportable incident)</option>
+            </select>
+          </label>
+          <label>
+            Expected next report date (optional)
+            <input id="submission-next" type="date" />
+          </label>
+          <label>
+            Authority reference (optional)
+            <input id="submission-ref" type="text" autocomplete="off" />
+          </label>
+        </div>
+        <div class="actions" role="group" aria-label="Submission actions">
+          <button type="button" id="report-submit" class="primary" disabled>
+            Record submission of the loaded report
+          </button>
+        </div>
+        <pre class="out" id="report-out" aria-live="polite"></pre>
+      </section>
+
+      <section class="panel ops-health" aria-labelledby="opshealth-title">
+        <div class="panel-head">
+          <h1 id="opshealth-title">Ledger operations and health</h1>
+          <p>
+            The operations dashboard, the ledger-verification history (nightly and manual
+            runs) and the deployed version. A manual verification run needs the reviewer key.
+          </p>
+        </div>
+        <div class="actions" role="group" aria-label="Operations health actions">
+          <button type="button" id="ops-dashboard">Dashboard</button>
+          <button type="button" id="ops-verifications">Verification history</button>
+          <button type="button" id="ops-verify-now" class="warn">Run verification now</button>
+        </div>
+        <pre class="out" id="opshealth-summary">Load the dashboard to see alerts.</pre>
+        <pre class="out" id="opshealth-out" aria-live="polite"></pre>
+      </section>
+
       <section class="panel suite" aria-labelledby="suite-title">
         <div class="panel-head">
           <h1 id="suite-title">Test suite</h1>

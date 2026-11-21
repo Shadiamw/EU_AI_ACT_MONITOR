@@ -42,14 +42,14 @@ jobs:
       - name: Tests
         run: pytest --ignore=tests/acceptance --junitxml=test-results.xml
       # Phase 4 Addendum 9.5: the integration-marked tests, the acceptance gate and the image
-      # job's acceptance runner, Model 5 runner and demo run only on main, on phase4-integration
-      # and on pull requests into main. The gate reads the flagged run's own JUnit file, because
-      # it counts a skipped test as not passed.
+      # job's acceptance runner, Model 5 runner and demo run only on main, on phase4-integration,
+      # on phase5-integration (Phase 5 spec 10.4) and on pull requests into main. The gate reads
+      # the flagged run's own JUnit file, because it counts a skipped test as not passed.
       - name: Tests, including integration
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main'
         run: pytest --run-integration --ignore=tests/acceptance --junitxml=test-results-integration.xml
       - name: Every acceptance criterion passed
-        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main'
+        if: github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main'
         run: python tools/check_acceptance.py test-results-integration.xml
 
   image:
@@ -71,9 +71,10 @@ jobs:
       # the 9.5 condition lets the runner, Model 5 and the demo each report on their own, so a
       # failure in one (Part 3 absent) does not skip the others.
       - name: HTTP acceptance runner
-        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
+          REVIEWER_2_KEY: test-reviewer-key-rev-2-3e8b1f6a9c2d4705
           WEBHOOK_SINK_URL: http://sink:8765/hook/ci
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/ci
         # With a sink configured nothing here may skip: a skipped sink test is a reminder or a
@@ -96,19 +97,29 @@ jobs:
           PY
           exit $status
       - name: Model 5 examples
-        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/model5
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/model5
         run: python tools/run_model5.py
       - name: Phase 4 demo
-        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.base_ref == 'main') }}
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
         env:
           BASE_URL: http://127.0.0.1:8000
           WEBHOOK_SINK_URL: http://sink:8765/hook/demo
           WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/demo
         run: python tools/demo_phase4.py
+      # Phase 5 spec 10.3 and 10.4: the AC-16 trace, both paths; rev-2 (compose) makes S6's
+      # revision. Its printed trace is the artifact of manual check M6.
+      - name: Phase 5 demo (AC-16 trace)
+        if: ${{ !cancelled() && (github.ref_name == 'main' || github.ref_name == 'phase4-integration' || github.ref_name == 'phase5-integration' || github.base_ref == 'main') }}
+        env:
+          BASE_URL: http://127.0.0.1:8000
+          REVIEWER_2_KEY: test-reviewer-key-rev-2-3e8b1f6a9c2d4705
+          WEBHOOK_SINK_URL: http://sink:8765/hook/ac16
+          WEBHOOK_SINK_READ_URL: http://127.0.0.1:8765/hook/ac16
+        run: python tools/demo_phase5.py
       - name: Stack logs
         if: always()
         run: docker compose logs --no-color > compose.log 2>&1 || true

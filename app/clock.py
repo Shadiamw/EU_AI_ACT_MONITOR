@@ -39,5 +39,7 @@ def now() -> datetime:
 
 
 def wall_now() -> datetime:
-    """Real (wall-clock) UTC time, never simulated. Only for the sweeper heartbeat."""
+    """Real (wall-clock) UTC time, never simulated. For what must not follow the test clock:
+    the sweeper heartbeat, the nightly verification and its run times, the wall-clock alert and
+    health ages, and the tester's session times."""
     return datetime.now(UTC)

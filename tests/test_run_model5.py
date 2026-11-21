@@ -272,10 +272,36 @@ def test_the_clock_is_moved_to_each_steps_offset_from_the_start() -> None:
     assert moves == [14400, 3 * 86400 - 14400, 2 * 86400 + 4 * 3600]
 
 
+def test_the_runner_reads_the_phase5_fixture() -> None:
+    """Phase 5 spec 10.2: the runner switches to the Phase 5 file; the Phase 4 file stays."""
+    assert m5.FIXTURE.parts[-2:] == ("phase5", "model5_examples.json")
+    assert (m5.FIXTURE.parent.parent / "phase4" / "model5_examples.json").is_file()
+
+
+def test_a_header_can_be_saved_and_a_missing_one_fails_the_step() -> None:
+    response = httpx.Response(200, json={"report_id": "rpt-1"}, headers={"X-Report-Sha256": "ab"})
+    variables: dict[str, str] = {}
+    m5._check_response(
+        response, {"save": {"sha": "@header:X-Report-Sha256", "id": "$.report_id"}}, variables
+    )
+    assert variables == {"sha": "ab", "id": "rpt-1"}
+    with pytest.raises(m5.Mismatch, match="no ETag header"):
+        m5._check_response(response, {"save": {"tag": "@header:ETag"}}, {})
+
+
+def test_an_in_process_example_is_listed_and_skipped(capsys: pytest.CaptureFixture[str]) -> None:
+    client = _server({})
+    example = {"id": "ex5", "title": "t", "in_process": "tests/x.py::test_y", "steps": []}
+    assert m5.run_all(client, {"version": 2, "examples": [example]}, KEYS, SINK) == 0
+    assert "skipping ex5: t (in-process: tests/x.py::test_y)" in capsys.readouterr().out
+
+
 def test_the_shipped_fixture_parses_and_uses_only_known_expectations() -> None:
     data = json.loads(m5.FIXTURE.read_text(encoding="utf-8"))
-    assert data["version"] == 1
-    assert [example["id"] for example in data["examples"]] == ["ex1", "ex2", "ex4"]
+    assert data["version"] == 2
+    assert [example["id"] for example in data["examples"]] == ["ex1", "ex2", "ex4", "ex5"]
+    [ex5] = [example for example in data["examples"] if "in_process" in example]
+    assert ex5["in_process"].endswith("::test_model5_ex5_nightly_verify_finds_a_payload_edit")
     for example in data["examples"]:
         offsets = [m5.parse_offset(step["at"]) for step in example["steps"]]
         assert offsets == sorted(offsets), example["id"]

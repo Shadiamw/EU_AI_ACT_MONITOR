@@ -6,8 +6,8 @@ Role matrix, spec section 7 and Addendum rules 6 and 7: POST /v1/metrics SYSTEM 
 GET /v1/events any role; POST .../disposition and GET .../report REVIEWER only; GET and
 POST /v1/test/suite REVIEWER only; every other endpoint REVIEWER or VIEWER. Wrong role: 403
 FORBIDDEN_ROLE; missing or unknown key: 401 MISSING_OR_INVALID_KEY. An allowed caller gets the
-endpoint's own answer, listed per row. D1: the reviewer's report passes the role check (409
-before a disposition, 501 after); "reviewer succeeds" for reports completes in Phase 5.
+endpoint's own answer, listed per row. The reviewer's report is 409 before a disposition and
+200 after one (Phase 5 spec 3.6).
 
 The suite row posts {"scope": "full"}, which is 400 for the reviewer, so no run starts. The
 webhook row uses an address that refuses connections, so the allowed answer is 422.
@@ -92,6 +92,29 @@ ROUTES = [
     Route("POST /v1/test/reset", _post("/v1/test/reset", None), {"viewer": 204, "reviewer": 204}),
     Route("GET /v1/test/suite", _get("/v1/test/suite"), {"reviewer": 200}),
     Route("POST /v1/test/suite", _post("/v1/test/suite", {"scope": "full"}), {"reviewer": 400}),
+    # Phase 5 contract delta (spec 9.2; Part 4 adds them here, spec 10.2). Every write is
+    # REVIEWER-only (9.3). The event has no disposition and no report, so the reviewer's
+    # submission names an unknown report (404) and the erasure is before retain_until (409).
+    Route(
+        "POST /v1/events/{id}/report/submission",
+        _post(
+            "/v1/events/{event_id}/report/submission",
+            {"report_id": "rpt-unknown", "json_sha256": "0" * 64, "report_type": "Initial"},
+        ),
+        {"reviewer": 404},
+    ),
+    Route("GET /v1/events/{id}/reports", _get("/v1/events/{event_id}/reports"), READERS),
+    Route("GET /v1/reports/{id}", _get("/v1/reports/rpt-unknown"), {"reviewer": 404}),
+    Route("GET /v1/ledger/verifications", _get("/v1/ledger/verifications"), READERS),
+    Route(
+        "POST /v1/ledger/verifications", _post("/v1/ledger/verifications", None), {"reviewer": 201}
+    ),
+    Route(
+        "POST /v1/events/{id}/erasure",
+        _post("/v1/events/{event_id}/erasure", None),
+        {"reviewer": 409},
+    ),
+    Route("GET /v1/ops/dashboard", _get("/v1/ops/dashboard"), READERS),
 ]
 CASES = [
     pytest.param(route, role, id=f"{route.name} as {role}") for route in ROUTES for role in ROLES
@@ -141,4 +164,4 @@ def test_a_non_reviewer_is_denied_both_actions_and_the_reviewer_is_not(api: Api,
     assigned = api.disposed(event_id, "OTHER_SERIOUS")
     assert assigned["state"] == "DISPOSITIONED"
     assert assigned["disposition"]["reviewer_id"] == "rev-1"
-    assert api.report(event_id).status_code == 501  # passes the guard; the report is Phase 5
+    assert api.report(event_id).status_code == 200  # the reviewer succeeds (Phase 5)

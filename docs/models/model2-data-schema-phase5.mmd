@@ -1,0 +1,63 @@
+---
+title: "Model 2 - Data schema, Phase 5 tables as built (migrations 0008 to 0010)"
+---
+erDiagram
+    event ||--o{ report : "FK event_id"
+    disposition ||--o| report : "FK disposition_id (unique)"
+    report ||--o| report_submission : "FK report_id (unique: at most one)"
+    event ||--o{ report_submission : "FK event_id"
+    event ||..o| record_key : "subject_id = event_id, no FK"
+    event {
+        text event_id PK
+        timestamptz retain_until
+        timestamptz erased_at "new (0009)"
+    }
+    report {
+        text report_id PK
+        text event_id FK
+        int report_version
+        text disposition_id FK
+        text report_kind
+        text schema_version
+        bytea json_bytes "sealed"
+        bytea pdf_bytes "sealed"
+        text json_sha256
+        text pdf_sha256
+        timestamptz assembled_at
+        text assembled_by
+    }
+    report_submission {
+        text submission_id PK
+        text report_id FK
+        text event_id FK
+        text submitted_by
+        timestamptz submitted_at
+        text submission_kind
+        text report_type
+        date expected_next_report_date
+        text authority_reference
+    }
+    record_key {
+        text subject_id PK
+        bytea data_key "NULL once destroyed"
+        timestamptz created_at
+        timestamptz destroyed_at
+    }
+    ledger_verification_run {
+        text run_id PK
+        text trigger "NIGHTLY or MANUAL"
+        timestamptz started_at
+        timestamptz finished_at
+        bool valid
+        int entries_checked
+        text first_mismatch
+        bigint head_seq
+        text head_hash
+        text head_check
+        jsonb projection_mismatches
+        jsonb report_mismatches
+    }
+    platform_counter {
+        bool singleton PK
+        bigint reset_count
+    }

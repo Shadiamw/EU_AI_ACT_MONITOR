@@ -17,6 +17,7 @@ answer. Storing it and appending WEBHOOK_REGISTERED share one transaction; the a
 last write.
 """
 
+import hashlib
 import ipaddress
 import logging
 import socket
@@ -156,6 +157,12 @@ def is_success(status: int | None) -> bool:
     return status is not None and 200 <= status <= 299
 
 
+def url_sha256(url: str) -> str:
+    """The lowercase hex SHA-256 of the UTF-8 URL. The ledger carries this instead of the URL
+    (Phase 5 spec 4.6, D16): the URL may embed a token or a name, and the export is shared."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
 def register(
     session: Session,
     actor_id: str,
@@ -197,6 +204,6 @@ def register(
         "WEBHOOK_REGISTERED",
         actor_id,
         webhook_id,
-        {"webhook_id": webhook_id, "url": url, "event_types": stored_types},
+        {"webhook_id": webhook_id, "url_sha256": url_sha256(url), "event_types": stored_types},
     )
     return webhook_id

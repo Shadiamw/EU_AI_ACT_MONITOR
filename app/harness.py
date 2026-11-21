@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 import urllib.error
 import urllib.request
 import uuid
@@ -20,32 +19,74 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from app import platform
+from app import clock, config, harness_model, platform
 
 _lock = threading.Lock()
 _system_sessions: dict[str, SystemSession] = {}
 _tester_sessions: dict[str, TesterSession] = {}
 
-# Pod components exercised by the shared project API (pod_spec.txt).
-_COMPONENTS = (
-    "health",
-    "metrics_ingest",
-    "events",
-    "ledger",
-    "test_reset",
-    "auth",
+# coverage.system (Cross-team Testing Interface, "Coverage fields"; follow-up round 2, SS's
+# decision): the acceptance criteria of the shared pod specification, AC-01 to AC-18 of the pod's
+# REQ/AC document (Project Requirements). All 18 are in scope and in the total, AC-16 included,
+# whose method is manual-only. A criterion counts once, and only when a probe performs that
+# criterion's own Setup, Action and Expected through the target's public interface and ends pass
+# or fail.
+_CRITERIA: tuple[str, ...] = tuple(f"AC-{n:02d}" for n in range(1, 19))
+
+# coverage.component: the components of the system architecture (README 17.2). The workflow
+# engine covers incident opened, the serious-incident decision, the deadline tier and the
+# deadline countdown. A component counts once, and only when a probe sends a request that passes
+# through it and ends pass or fail on that component's own observable behaviour.
+_COMPONENTS: tuple[str, ...] = (
+    "Ingestion API",
+    "Rules engine",
+    "Event service",
+    "Gap sweeper",
+    "Access control",
+    "Config service",
+    "Workflow engine",
+    "Notification outbox",
+    "Reporting service",
+    "Audit ledger",
 )
 
-# Acceptance criteria in scope for cross-team black-box probes (pod REQs).
-_CRITERIA = (
-    "AC-health",
-    "AC-auth-required",
-    "AC-ledger-verify",
-    "AC-events-list",
-    "AC-event-unknown-404",
-    "AC-metrics-rejects-bad",
-    "AC-test-reset",
+_SYSTEM_BASIS = (
+    "Acceptance criteria listed in the pod specification: AC-01 to AC-18 of the pod's REQ/AC "
+    "document, all in scope (AC-16 is manual-only and stays in the total). A criterion counts "
+    "once, when a probe performs its own Setup, Action and Expected and ends pass or fail."
 )
+_COMPONENT_BASIS = "Components of the system architecture (README 17.2)"
+
+# Probe -> (the criteria it fully evaluates, the components it exercises), for every planned
+# probe: T-01 to T-08 in every run, M-01 to M-12 in a same-team run. The single source for both
+# counts; README 17.2 gives each row's reason. No probe performs an acceptance criterion's whole
+# Setup, Action and Expected, so no row lists one. T-03 to T-07 also pass on 401 or 403, so their
+# outcome says nothing about the component behind the route.
+_PROBE_COVERAGE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "T-01": ((), ()),
+    "T-02": ((), ("Access control",)),
+    "T-03": ((), ()),
+    "T-04": ((), ()),
+    "T-05": ((), ()),
+    "T-06": ((), ()),
+    "T-07": ((), ()),
+    "T-08": ((), ()),
+    "M-01": ((), ("Access control",)),
+    "M-02": ((), ("Ingestion API", "Rules engine", "Event service", "Reporting service")),
+    "M-03": ((), ("Workflow engine", "Reporting service")),
+    "M-04": ((), ("Reporting service",)),
+    "M-05": ((), ("Access control",)),
+    "M-06": ((), ("Reporting service",)),
+    "M-07": (
+        (),
+        ("Ingestion API", "Rules engine", "Event service", "Workflow engine", "Reporting service"),
+    ),
+    "M-08": ((), ()),
+    "M-09": ((), ("Event service", "Reporting service", "Audit ledger")),
+    "M-10": ((), ("Audit ledger",)),
+    "M-11": ((), ()),
+    "M-12": ((), ()),
+}
 
 
 class HarnessError(Exception):
@@ -63,9 +104,7 @@ def _new_id() -> str:
 
 
 def _public_base() -> str:
-    return (
-        os.environ.get("SUITE_BASE_URL") or "https://eu-ai-act-monitor-api.fly.dev"
-    ).rstrip("/")
+    return (os.environ.get("SUITE_BASE_URL") or "https://eu-ai-act-monitor-api.fly.dev").rstrip("/")
 
 
 def _self_system_url() -> str:
@@ -77,6 +116,16 @@ def _is_self_system(target_url: str) -> bool:
     candidates = {_self_system_url(), f"{_public_base()}/system"}
     # Also treat bare public host /system path variants.
     return target in candidates or target == _public_base()
+
+
+def _is_same_team(target_url: str) -> bool:
+    """Our own system: the self target, or a system URL listed in SAME_TEAM_SYSTEM_URLS
+    (comma-separated, for our other deployments). Only these reports carry coverage.model."""
+    if _is_self_system(target_url):
+        return True
+    listed = os.environ.get("SAME_TEAM_SYSTEM_URLS", "")
+    target = target_url.rstrip("/")
+    return any(target == url.strip().rstrip("/") for url in listed.split(",") if url.strip())
 
 
 def _project_base(system_target: str) -> str:
@@ -94,9 +143,7 @@ def _project_base(system_target: str) -> str:
     return base
 
 
-def _coverage_entry(
-    covered: int | None, total: int | None, basis: str
-) -> dict[str, Any]:
+def _coverage_entry(covered: int | None, total: int | None, basis: str) -> dict[str, Any]:
     return {"covered": covered, "total": total, "basis": basis}
 
 
@@ -105,36 +152,34 @@ def _null_code_coverage(reason: str) -> dict[str, Any]:
 
 
 def _empty_suite_coverage() -> dict[str, Any]:
-    return {
-        "code": _null_code_coverage(
-            "Source lines; target instrumentation unavailable"
-        ),
-        "component": _coverage_entry(
-            0, len(_COMPONENTS), "Components listed in the pod specification"
-        ),
-        "system": _coverage_entry(
-            0, len(_CRITERIA), "Acceptance criteria listed in the pod specification"
-        ),
-    }
+    return _coverage_from_results([], None)
 
 
 @dataclass
 class SystemSession:
     session_id: str
     status: str = "ready"  # preparing | ready
-    created_at: float = field(default_factory=time.time)
+    created_at: float = field(default_factory=lambda: clock.wall_now().timestamp())
     setup: dict[str, Any] = field(default_factory=dict)
     # Request counts since setup (best-effort; no line instrumentation).
     project_requests: int = 0
+    # One active session at a time (fix round 2, D-1; decision 328). Activity is the setup, a
+    # system report read and the events of a tester run with the same session id; project API
+    # requests carry no session id and cannot be attributed. A tester run of the same id that
+    # finishes or aborts ends the session at once (only a self-run has one here).
+    last_activity: float = field(default_factory=lambda: clock.wall_now().timestamp())
+    ended_at: float | None = None
+
+    def active(self, now: float) -> bool:
+        """Prepared or running, not ended, and within SESSION_IDLE_SECONDS of its last activity."""
+        return self.ended_at is None and now - self.last_activity < config.session_idle_seconds()
 
     def code_coverage(self) -> dict[str, Any]:
         # No source-line instrumentation in this deployment.
         return {
             "session_id": self.session_id,
             "coverage": {
-                "code": _null_code_coverage(
-                    "Source lines; target instrumentation unavailable"
-                )
+                "code": _null_code_coverage("Source lines; target instrumentation unavailable")
             },
         }
 
@@ -144,11 +189,15 @@ class TesterSession:
     session_id: str
     target_url: str
     status: str = "ready"  # ready | running | complete | aborted
-    created_at: float = field(default_factory=time.time)
+    created_at: float = field(default_factory=lambda: clock.wall_now().timestamp())
     finished_at: float | None = None
     results: list[dict[str, Any]] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=_empty_suite_coverage)
     access: dict[str, str] = field(default_factory=dict)
+    same_team: bool = False
+
+    def __post_init__(self) -> None:
+        self.coverage = _coverage_from_results([], None, self.same_team)
 
     def report(self) -> dict[str, Any]:
         return {
@@ -187,6 +236,16 @@ def system_setup(body: dict[str, Any] | None) -> dict[str, Any]:
         existing = _system_sessions.get(session_id)
         if existing is not None:
             raise HarnessError(409, "session_id already exists", "system")
+        # Testing Interface, "Session state and concurrency": one active session at a time,
+        # and a conflicting setup is 409 and changes nothing (fix round 2, D-1).
+        now = clock.wall_now().timestamp()
+        if any(other.active(now) for other in _system_sessions.values()):
+            raise HarnessError(
+                409,
+                "another test session is active on this system; retry when its tester run ends "
+                f"or after {config.session_idle_seconds()} s without activity",
+                "system",
+            )
         session = SystemSession(session_id=session_id, status="preparing", setup=dict(setup))
         _system_sessions[session_id] = session
 
@@ -212,9 +271,28 @@ def system_report(session_id: str) -> dict[str, Any]:
         session = _system_sessions.get(session_id)
     if session is None:
         raise HarnessError(404, "unknown session_id", "system")
+    _touch_system(session_id)
     if session.status == "preparing":
         raise HarnessError(409, "session preparation is still in progress", "system")
     return session.code_coverage()
+
+
+def _touch_system(session_id: str) -> None:
+    """Refresh the idle window of an active system session with this id (none: no effect)."""
+    now = clock.wall_now().timestamp()
+    with _lock:
+        session = _system_sessions.get(session_id)
+        if session is not None and session.active(now):
+            session.last_activity = now
+
+
+def _end_system(session_id: str) -> None:
+    """End the system session with this id, if there is one (a self-run's)."""
+    now = clock.wall_now().timestamp()
+    with _lock:
+        session = _system_sessions.get(session_id)
+        if session is not None and session.ended_at is None:
+            session.ended_at = now
 
 
 def get_system(session_id: str) -> SystemSession | None:
@@ -313,6 +391,7 @@ def tester_setup(body: dict[str, Any] | None) -> dict[str, Any]:
         session_id=session_id,
         target_url=target,
         access=_access_from_body(body),
+        same_team=_is_same_team(target),
     )
     with _lock:
         _tester_sessions[session_id] = session
@@ -322,20 +401,23 @@ def tester_setup(body: dict[str, Any] | None) -> dict[str, Any]:
 def tester_run(session_id: str) -> dict[str, Any]:
     if not session_id:
         raise HarnessError(400, "session_id is required", "tester")
+    # The check and the mark are one step under the lock, so two concurrent runs of one
+    # session get one 200 and one 409 (Testing Interface, "Runs"; audit fix round).
     with _lock:
         session = _tester_sessions.get(session_id)
-    if session is None:
-        raise HarnessError(404, "unknown session_id", "tester")
-    if session.status == "running":
-        raise HarnessError(409, "suite is already running", "tester")
-    if session.status in ("complete", "aborted"):
-        raise HarnessError(409, "suite already finished for this session", "tester")
-
-    session.status = "running"
+        if session is None:
+            raise HarnessError(404, "unknown session_id", "tester")
+        if session.status == "running":
+            raise HarnessError(409, "suite is already running", "tester")
+        if session.status in ("complete", "aborted"):
+            raise HarnessError(409, "suite already finished for this session", "tester")
+        session.status = "running"
+    _touch_system(session_id)
     try:
         _execute_tester(session)
         session.status = "complete"
-        session.finished_at = time.time()
+        session.finished_at = clock.wall_now().timestamp()
+        _end_system(session_id)
         return session.report()
     except HarnessError as exc:
         if exc.status == 500 and exc.source == "tester":
@@ -346,13 +428,11 @@ def tester_run(session_id: str) -> dict[str, Any]:
         raise HarnessError(500, exc.message, "tester") from exc
     except Exception as exc:  # noqa: BLE001
         _mark_abort(session, f"{type(exc).__name__}: {exc}")
-        raise HarnessError(
-            500, f"tester aborted: {type(exc).__name__}: {exc}", "tester"
-        ) from exc
+        raise HarnessError(500, f"tester aborted: {type(exc).__name__}: {exc}", "tester") from exc
 
 
 def _mark_abort(session: TesterSession, message: str) -> None:
-    planned = [t["test_id"] for t in _planned_tests()]
+    planned = [t["test_id"] for t in _planned_tests(session.same_team)]
     seen = {r["test_id"] for r in session.results if "test_id" in r}
     # First unexecuted planned test records the abort; the rest are skip.
     remaining = [tid for tid in planned if tid not in seen]
@@ -374,9 +454,12 @@ def _mark_abort(session: TesterSession, message: str) -> None:
                     "message": "Test was not executed because the tester aborted.",
                 }
             )
-    session.coverage = _coverage_from_results(session.results, session.coverage.get("code"))
+    session.coverage = _coverage_from_results(
+        session.results, session.coverage.get("code"), session.same_team
+    )
     session.status = "aborted"
-    session.finished_at = time.time()
+    session.finished_at = clock.wall_now().timestamp()
+    _end_system(session.session_id)
 
 
 def tester_report(session_id: str) -> dict[str, Any]:
@@ -394,26 +477,23 @@ def tester_report(session_id: str) -> dict[str, Any]:
 # --- Suite execution --------------------------------------------------------
 
 
-def _planned_tests() -> list[dict[str, Any]]:
-    """Canonical ordered plan. Every test_id appears exactly once in a finished report."""
-    return [
-        {"test_id": "T-01", "criterion": "AC-health", "components": ("health",)},
-        {"test_id": "T-02", "criterion": "AC-auth-required", "components": ("auth", "ledger")},
-        {"test_id": "T-03", "criterion": "AC-ledger-verify", "components": ("ledger", "auth")},
-        {"test_id": "T-04", "criterion": "AC-events-list", "components": ("events", "auth")},
-        {
-            "test_id": "T-05",
-            "criterion": "AC-event-unknown-404",
-            "components": ("events", "auth"),
-        },
-        {
-            "test_id": "T-06",
-            "criterion": "AC-metrics-rejects-bad",
-            "components": ("metrics_ingest", "auth"),
-        },
-        {"test_id": "T-07", "criterion": "AC-test-reset", "components": ("test_reset", "auth")},
-        {"test_id": "T-08", "criterion": "AC-ledger-verify", "components": ("ledger",)},
-    ]
+def _planned_tests(same_team: bool = False) -> list[dict[str, Any]]:
+    """Canonical ordered plan. Every test_id appears exactly once in a finished report. A
+    same-team session adds the model probes M-01..M-12 before the coverage pull (T-08)."""
+    base = _base_tests()
+    if not same_team:
+        return base
+    model = [_plan_entry(test_id) for test_id, _ in harness_model.MODEL_TESTS]
+    return [*base[:-1], *model, base[-1]]
+
+
+def _base_tests() -> list[dict[str, Any]]:
+    return [_plan_entry(f"T-0{n}") for n in range(1, 9)]
+
+
+def _plan_entry(test_id: str) -> dict[str, Any]:
+    criteria, components = _PROBE_COVERAGE[test_id]
+    return {"test_id": test_id, "criteria": criteria, "components": components}
 
 
 def _result(
@@ -435,35 +515,53 @@ def _result(
 def _execute_tester(session: TesterSession) -> None:
     project = _project_base(session.target_url)
     access = session.access
-    results: list[dict[str, Any]] = []
+    # Each result is stored on the session as it is recorded, so an abort keeps the results
+    # already available (Testing Interface, "Tester reports": "If the tester aborts, keep
+    # recorded outcomes"; audit fix round).
+    # Each one also refreshes the idle window of a system session with this id (fix round 2).
+    session.results = []
+    results = session.results
 
     # T-01 health
-    results.append(_probe_health(project))
+    _record(session, _probe_health(project))
 
     # T-02 unauthenticated ledger verify → expect 401
-    results.append(_probe_unauth_ledger(project))
+    _record(session, _probe_unauth_ledger(project))
 
     # T-03 authenticated ledger verify
-    results.append(_probe_auth_ledger(project, access.get("viewer_key", "")))
+    _record(session, _probe_auth_ledger(project, access.get("viewer_key", "")))
 
     # T-04 events list
-    results.append(_probe_events_list(project, access.get("viewer_key", "")))
+    _record(session, _probe_events_list(project, access.get("viewer_key", "")))
 
     # T-05 unknown event 404
-    results.append(_probe_unknown_event(project, access.get("viewer_key", "")))
+    _record(session, _probe_unknown_event(project, access.get("viewer_key", "")))
 
     # T-06 metrics bad body
-    results.append(_probe_metrics_bad(project, access.get("ingest_key", "")))
+    _record(session, _probe_metrics_bad(project, access.get("ingest_key", "")))
 
     # T-07 test reset
-    results.append(_probe_reset(project, access.get("reviewer_key", "")))
+    _record(session, _probe_reset(project, access.get("reviewer_key", "")))
+
+    # M-01..M-12: Phase 5 design requirements, own system only (coverage.model)
+    if session.same_team:
+        keys = {
+            "ingest": access.get("ingest_key", ""),
+            "reviewer": access.get("reviewer_key", ""),
+            "viewer": access.get("viewer_key", ""),
+        }
+        _record(session, *harness_model.run_probes(project, keys))
 
     # T-08 pull system code coverage into suite report
     code_cov, cov_result = _pull_system_code_coverage(session)
-    results.append(cov_result)
+    _record(session, cov_result)
 
-    session.results = results
-    session.coverage = _coverage_from_results(results, code_cov)
+    session.coverage = _coverage_from_results(results, code_cov, session.same_team)
+
+
+def _record(session: TesterSession, *rows: dict[str, Any]) -> None:
+    session.results.extend(rows)
+    _touch_system(session.session_id)
 
 
 def _probe_health(project: str) -> dict[str, Any]:
@@ -645,9 +743,7 @@ def _pull_system_code_coverage(
     if _is_self_system(session.target_url):
         try:
             report = system_report(session.session_id)
-            code = report.get("coverage", {}).get("code", default)
-            if not isinstance(code, dict):
-                code = default
+            code = _checked_code(report.get("coverage", {}).get("code", default))
             return code, _result(
                 "T-08",
                 "pass",
@@ -692,35 +788,73 @@ def _pull_system_code_coverage(
             "system",
         )
     code = default
+    message = "Copied coverage.code from system /test/report."
     if isinstance(parsed, dict):
         cov = parsed.get("coverage")
-        if isinstance(cov, dict) and isinstance(cov.get("code"), dict):
-            code = cov["code"]
-        elif isinstance(parsed.get("code"), dict):
-            code = parsed["code"]
-    return code, _result(
-        "T-08",
-        "pass",
-        "Copied coverage.code from system /test/report.",
-    )
+        if isinstance(cov, dict) and "code" in cov:
+            code = _checked_code(cov["code"])
+        elif "code" in parsed:
+            code = _checked_code(parsed["code"])
+        if code["covered"] is None and str(code["basis"]).startswith(_INVALID_CODE):
+            message = "System /test/report coverage.code was invalid; reported as null."
+    return code, _result("T-08", "pass", message)
+
+
+_INVALID_CODE = "The target's coverage.code was invalid"
+
+
+def _checked_code(code: Any) -> dict[str, Any]:
+    """A target's coverage.code, checked against the Testing Interface's coverage rules (fix
+    round 2, D-3): covered and total both nonnegative integers with covered <= total, or both
+    null, and a nonempty basis. A valid entry is copied unchanged; anything else becomes null
+    counts with a basis naming the problem, never the target's own text."""
+    problem = _code_problem(code)
+    if problem is None:
+        return {"covered": code["covered"], "total": code["total"], "basis": code["basis"]}
+    return _null_code_coverage(f"{_INVALID_CODE} ({problem}); its counts are not reported.")
+
+
+def _code_problem(code: Any) -> str | None:
+    if not isinstance(code, dict):
+        return "not an object"
+    basis = code.get("basis")
+    if not isinstance(basis, str):
+        return "basis missing or not a string"
+    if not basis.strip():
+        return "basis empty"
+    if "covered" not in code or "total" not in code:
+        return "covered or total missing"
+    covered, total = code["covered"], code["total"]
+    if covered is None and total is None:
+        return None
+    if covered is None or total is None:
+        return "only one count is null"
+    if type(covered) is not int or type(total) is not int:
+        return "counts are not integers"
+    if covered < 0 or total < 0:
+        return "a count is negative"
+    if covered > total:
+        return "covered exceeds total"
+    return None
 
 
 def _coverage_from_results(
     results: list[dict[str, Any]],
     code: dict[str, Any] | None,
+    same_team: bool = False,
 ) -> dict[str, Any]:
-    plan = {t["test_id"]: t for t in _planned_tests()}
     covered_components: set[str] = set()
     covered_criteria: set[str] = set()
     for row in results:
-        # pass/fail means the criterion was evaluated; error/skip did not complete evaluation.
+        # pass/fail means the probe was evaluated; error/skip did not complete evaluation.
         if row.get("outcome") not in ("pass", "fail"):
             continue
-        meta = plan.get(row.get("test_id", ""))
-        if not meta:
+        meta = _PROBE_COVERAGE.get(row.get("test_id", ""))
+        if meta is None:
             continue
-        covered_components.update(meta["components"])
-        covered_criteria.add(meta["criterion"])
+        criteria, components = meta
+        covered_criteria.update(criteria)
+        covered_components.update(components)
 
     if isinstance(code, dict) and "basis" in code:
         code_entry = {
@@ -729,23 +863,16 @@ def _coverage_from_results(
             "basis": code["basis"],
         }
     else:
-        code_entry = _null_code_coverage(
-            "Source lines; target instrumentation unavailable"
-        )
+        code_entry = _null_code_coverage("Source lines; target instrumentation unavailable")
 
-    return {
+    coverage = {
         "code": code_entry,
-        "component": _coverage_entry(
-            len(covered_components),
-            len(_COMPONENTS),
-            "Components listed in the pod specification",
-        ),
-        "system": _coverage_entry(
-            len(covered_criteria),
-            len(_CRITERIA),
-            "Acceptance criteria listed in the pod specification",
-        ),
+        "component": _coverage_entry(len(covered_components), len(_COMPONENTS), _COMPONENT_BASIS),
+        "system": _coverage_entry(len(covered_criteria), len(_CRITERIA), _SYSTEM_BASIS),
     }
+    if same_team:
+        coverage["model"] = harness_model.model_coverage(results)
+    return coverage
 
 
 def _http(

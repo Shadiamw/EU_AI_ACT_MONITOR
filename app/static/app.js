@@ -65,7 +65,7 @@
     } catch {
       /* keep text */
     }
-    return { ok: res.ok, status: res.status, data, text };
+    return { ok: res.ok, status: res.status, data, text, headers: res.headers };
   }
 
   function setOps(msg) {
@@ -82,6 +82,13 @@
     } else if (status === 503) {
       state = "stale";
       label = "sweeper stale";
+    }
+    // Phase 5 spec 6.5: the deployed version and the last ledger verification.
+    if (data && typeof data === "object" && "version" in data) {
+      const last = data.last_verification;
+      label += ` · ${data.version || "version unset"}`;
+      if (last) label += ` · ledger ${last.valid ? "valid" : "INVALID"}`;
+      if (last && !last.valid) state = "bad";
     }
     healthChip.dataset.state = state;
     healthLabel.textContent = label;
@@ -466,6 +473,243 @@
       renderRisk(loadedEvent, loadedNow || { ms: Date.parse(loadedEvent.detected_at), source: "event" });
       renderHistory(loadedEvent);
     }
+  });
+
+  // Report and submission (Phase 5 spec 3.6 to 3.9). The report is reviewer-only; the hash
+  // sent with a submission is the X-Report-Sha256 of the JSON the reviewer loaded.
+  const reportSummary = document.getElementById("report-summary");
+  const reportBanner = document.getElementById("report-banner");
+  const reportOut = document.getElementById("report-out");
+  const reportSubmit = document.getElementById("report-submit");
+  let loadedReport = null;
+
+  function currentEventId() {
+    const eventId = eventIdInput.value.trim();
+    if (!eventId) reportOut.textContent = "Enter an event id in the review panel.";
+    return eventId;
+  }
+
+  function renderReport(report, sha) {
+    const det = report.determination || {};
+    const ts = report.timestamps || {};
+    reportSummary.textContent = [
+      `report ${report.report_id} · version ${report.report_version} · ${report.report_kind}`,
+      `tier ${det.tier_label || det.tier} · deadline_utc ${det.deadline_utc ?? "null"}`,
+      `detected ${ts.detected_at} · determined ${ts.determined_at}`,
+      `last revised ${ts.last_revised_at ?? "—"} · assembled ${ts.assembled_at}`,
+      `JSON SHA-256 ${sha}`,
+    ].join("\n");
+    const closure = report.submission_marking != null;
+    reportBanner.hidden = !closure;
+    if (closure) reportBanner.textContent = report.submission_marking;
+    reportSubmit.disabled = closure;
+  }
+
+  document.getElementById("report-json").addEventListener("click", async () => {
+    const eventId = currentEventId();
+    if (!eventId) return;
+    const result = await api(`/v1/events/${encodeURIComponent(eventId)}/report`, {
+      auth: "reviewer",
+    });
+    if (!result.ok) {
+      loadedReport = null;
+      reportSubmit.disabled = true;
+      reportBanner.hidden = true;
+      reportSummary.textContent = describeError(result);
+      return;
+    }
+    const sha = result.headers.get("X-Report-Sha256");
+    loadedReport = { eventId, report: result.data, sha };
+    renderReport(result.data, sha);
+    reportOut.textContent = pretty(result.data);
+  });
+
+  document.getElementById("report-pdf").addEventListener("click", async () => {
+    const eventId = currentEventId();
+    if (!eventId) return;
+    const res = await fetch(
+      `${API_BASE}/v1/events/${encodeURIComponent(eventId)}/report?format=pdf`,
+      { headers: { Authorization: `Bearer ${reviewerInput.value}` } },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      let data = text;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        /* keep text */
+      }
+      reportOut.textContent = describeError({ status: res.status, data, text });
+      return;
+    }
+    const blob = await res.blob();
+    const sha = res.headers.get("X-Report-Sha256");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${res.headers.get("X-Report-Id") || eventId}.pdf`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    reportOut.textContent = `PDF downloaded (${blob.size} bytes), SHA-256 ${sha}`;
+  });
+
+  document.getElementById("report-list").addEventListener("click", async () => {
+    const eventId = currentEventId();
+    if (!eventId) return;
+    const result = await api(`/v1/events/${encodeURIComponent(eventId)}/reports`, {
+      auth: "viewer",
+    });
+    if (!result.ok) {
+      reportOut.textContent = describeError(result);
+      return;
+    }
+    const rows = result.data || [];
+    reportOut.textContent = rows.length
+      ? rows
+          .map(
+            (row) =>
+              `v${row.report_version} ${row.report_id} ${row.report_kind} ${row.status}` +
+              ` · assembled ${row.assembled_at}`,
+          )
+          .join("\n")
+      : "No report assembled yet.";
+  });
+
+  reportSubmit.addEventListener("click", async () => {
+    if (!loadedReport) {
+      reportOut.textContent = "Get the report first.";
+      return;
+    }
+    const body = {
+      report_id: loadedReport.report.report_id,
+      json_sha256: loadedReport.sha,
+      report_type: document.getElementById("submission-type").value,
+    };
+    const next = document.getElementById("submission-next").value;
+    const ref = document.getElementById("submission-ref").value.trim();
+    if (next) body.expected_next_report_date = next;
+    if (ref) body.authority_reference = ref;
+    const result = await api(
+      `/v1/events/${encodeURIComponent(loadedReport.eventId)}/report/submission`,
+      { method: "POST", auth: "reviewer", body: JSON.stringify(body) },
+    );
+    reportOut.textContent = result.ok
+      ? `Recorded ${result.data.submission_kind} submission ${result.data.submission_id}` +
+        ` by ${result.data.submitted_by} at ${result.data.submitted_at}`
+      : describeError(result);
+  });
+
+  // Ledger operations and health (Phase 5 spec 6.1 and 7).
+  const opsSummary = document.getElementById("opshealth-summary");
+  const opsHealthOut = document.getElementById("opshealth-out");
+
+  function summarizeDashboard(d) {
+    const last = d.ledger && d.ledger.last_verification;
+    const alerts = d.alerts || [];
+    return [
+      `version ${d.version ?? "unset"} · environment ${d.environment}`,
+      `ledger ${d.ledger.entries} entries · last verification ` +
+        (last
+          ? `${last.trigger} ${last.valid ? "valid" : "INVALID"} (${last.head_check}),` +
+            ` ${d.ledger.last_verification_age_seconds}s ago`
+          : "none yet"),
+      `reports assembled ${d.reports.assembled} · submitted ${d.reports.submitted}` +
+        ` · deadlines passed unsubmitted ${d.deadlines.passed_unsubmitted}`,
+      alerts.length
+        ? `alerts: ${alerts.map((a) => `${a.code} (${a.severity})`).join(", ")}`
+        : "alerts: none",
+    ].join("\n");
+  }
+
+  // The Health view polls the dashboard every 30 s while the panel is on screen and the tab is
+  // visible (spec 7.1; audit fix round). It stops when the panel or the tab is hidden or a call
+  // fails, never runs two calls at once, and has its own timer, separate from the suite poll.
+  const HEALTH_POLL_MS = 30000;
+  const opsHealthPanel = document.querySelector("section.panel.ops-health");
+  let healthTimer = null;
+  let healthInFlight = false;
+  let healthOnScreen = false;
+
+  async function loadDashboard() {
+    const result = await api("/v1/ops/dashboard", { auth: "viewer" });
+    if (!result.ok) {
+      opsSummary.textContent = describeError(result);
+      return false;
+    }
+    opsSummary.textContent = summarizeDashboard(result.data);
+    opsHealthOut.textContent = pretty(result.data);
+    return true;
+  }
+
+  function stopHealthPoll() {
+    if (healthTimer) {
+      clearInterval(healthTimer);
+      healthTimer = null;
+    }
+  }
+
+  async function pollDashboard() {
+    if (healthInFlight) return;
+    healthInFlight = true;
+    try {
+      const ok = await loadDashboard();
+      if (!ok) stopHealthPoll();
+    } catch {
+      opsSummary.textContent = "Dashboard unreachable; the 30 s refresh has stopped.";
+      stopHealthPoll();
+    } finally {
+      healthInFlight = false;
+    }
+  }
+
+  function startHealthPoll() {
+    stopHealthPoll();
+    healthTimer = setInterval(pollDashboard, HEALTH_POLL_MS);
+  }
+
+  function healthVisible() {
+    return healthOnScreen && document.visibilityState === "visible";
+  }
+
+  function syncHealthPoll() {
+    if (!healthVisible()) {
+      stopHealthPoll();
+    } else if (!healthTimer) {
+      startHealthPoll();
+      pollDashboard();
+    }
+  }
+
+  if (opsHealthPanel && "IntersectionObserver" in window) {
+    new IntersectionObserver((entries) => {
+      healthOnScreen = entries[entries.length - 1].isIntersecting;
+      syncHealthPoll();
+    }).observe(opsHealthPanel);
+  }
+  document.addEventListener("visibilitychange", syncHealthPoll);
+
+  document.getElementById("ops-dashboard").addEventListener("click", async () => {
+    if (await loadDashboard()) syncHealthPoll();
+  });
+
+  document.getElementById("ops-verifications").addEventListener("click", async () => {
+    const result = await api("/v1/ledger/verifications", { auth: "viewer" });
+    opsHealthOut.textContent = result.ok
+      ? (result.data || [])
+          .map(
+            (run) =>
+              `${run.finished_at} ${run.trigger} ${run.valid ? "valid" : "INVALID"}` +
+              ` ${run.entries_checked} entries · head ${run.head_check}` +
+              ` · projection ${run.projection_mismatches.length}` +
+              ` · reports ${run.report_mismatches.length}`,
+          )
+          .join("\n") || "No verification run yet."
+      : describeError(result);
+  });
+
+  document.getElementById("ops-verify-now").addEventListener("click", async () => {
+    const result = await api("/v1/ledger/verifications", { method: "POST", auth: "reviewer" });
+    opsHealthOut.textContent = result.ok ? pretty(result.data) : describeError(result);
+    await refreshHealth();
   });
 
   refreshHealth().catch(() => {

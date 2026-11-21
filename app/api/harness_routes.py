@@ -110,9 +110,7 @@ def _mount_tester(router: APIRouter) -> None:
             return _err(exc)
         except Exception as exc:  # noqa: BLE001
             return _err(
-                harness.HarnessError(
-                    500, f"tester setup failed: {type(exc).__name__}", "tester"
-                )
+                harness.HarnessError(500, f"tester setup failed: {type(exc).__name__}", "tester")
             )
         return JSONResponse(payload, status_code=201)
 

@@ -618,7 +618,7 @@ record the choices the specification left open.
 | Deadline | `deadline_utc = compute(anchor, tier, calendar)`, where the anchor and calendar are the first row's. NOT_SERIOUS has none and closes the event. | 2.5, 6 |
 | No silent extension | A serious tier whose window is longer than the most recent serious tier's needs a non-blank rationale, including on a reopen from NOT_SERIOUS (409 without one). | Addendum rule 1 |
 | Event fields | `disposition`: tier and rationale from the latest row, reviewer_id and assigned_at from the first. `revisions`: one entry per later row, oldest first. `deadline_utc`: the event row's. | 2.7 |
-| GET /v1/events/{id}/report | REVIEWER only. 404 unknown event; 409 NO_DISPOSITION without a disposition row (gap events always); otherwise 501 until Phase 5 (D1). Reads only. | 2.8, Addendum rule 6 |
+| GET /v1/events/{id}/report | REVIEWER only. 404 unknown event; 409 NO_DISPOSITION without a disposition row (gap events always); otherwise the report (200), see section 14. | Phase 5 spec 3.6 |
 | Ledger | DISPOSITION_RECORDED (first) and DISPOSITION_REVISED (later), actor the reviewer, subject the event id, with the payloads of spec 2.10. | 2.10 |
 | Logging | One INFO line per recorded disposition on `api.disposition`, after the commit; never the rationale or evidence. | decision 187 |
 
@@ -633,7 +633,6 @@ record the choices the specification left open.
 | 409 | HARM_FIELDS_UNCONFIRMED | `all four harm fields must be CONFIRMED or NOT_APPLICABLE` |
 | 409 | DEADLINE_EXTENSION_REQUIRES_RATIONALE | `extending a running deadline requires a rationale` |
 | 409 | NO_DISPOSITION (report) | `no disposition has been recorded for this event` |
-| 501 | NOT_IMPLEMENTED (report) | `not implemented in this phase` |
 
 ### 11.3 Configuration
 
@@ -974,3 +973,331 @@ through `GET /v1/events?type=monitoring_gap`.
 `tests/acceptance`, the Model 5 runner, `tools/demo_phase4.py` and the console panel. They need
 Parts 1–3.
 
+## 14. Phase 5 Part 1: reports and submission
+
+A reviewer asks for a report, the system assembles it once per disposition, stores the bytes
+exactly as produced, and a reviewer can then record that it was submitted. Nothing is sent to an
+authority. The code is in `app/reports.py` (assembly, storage, submission, listing),
+`app/report_render.py` (JSON and PDF), `app/report_template.py` (the Article 73 field mapping)
+and `app/api/report_routes.py`; the tables come from migration 0008. The decisions are
+254 to 266 in `docs/decisions.md`. The Phase 5 specification is the source for everything here.
+
+### 14.1 Endpoints
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| GET /v1/events/{id}/report[?format=json\|pdf] | REVIEWER | The first request after a disposition assembles the report in one transaction (render JSON and PDF once, store both, append REPORT_ASSEMBLED). Every later request returns the stored bytes and writes nothing. Headers: `ETag`, `X-Report-Id`, `X-Report-Version`, `X-Report-Sha256`. |
+| POST /v1/events/{id}/report/submission | REVIEWER | Body `{report_id, json_sha256, report_type, expected_next_report_date?, authority_reference?}`. 201, one REPORT_SUBMITTED entry. The event stays DISPOSITIONED. |
+| GET /v1/events/{id}/reports | REVIEWER, VIEWER | The report rows, oldest first, without content: `status` is ASSEMBLED, SUBMITTED, SUPERSEDED or SUBMITTED_SUPERSEDED, derived when read. |
+| GET /v1/reports/{report_id}[?format=pdf] | REVIEWER | The stored bytes of that exact version. Never assembles. |
+
+Order of checks on the report: 401, 403, 400 MALFORMED_QUERY (`format` must be json or pdf), 404,
+410 RECORD_ERASED, 409 NO_DISPOSITION, then 200. Submission: 401, 403, 400 MALFORMED_BODY, 404,
+410, 409 NOT_SUBMITTABLE (a not-serious closure report), 409 REPORT_NOT_CURRENT, 409
+REPORT_HASH_MISMATCH, 409 REPORT_ALREADY_SUBMITTED, 201. A revision adds a disposition row, so the
+next report request assembles version 2; version 1 stays stored and can be submitted only while it
+is current.
+
+### 14.2 What a report contains
+
+The JSON has the shape of `docs/contract/phase5/report.schema.json`: the event data and evidence
+bundle, the four Article 3(49) harm fields, the reviewer's determination (tier, label, rationale,
+deadline, revisions), the detection, determination and assembly timestamps (microsecond
+resolution, so they are distinct), the ledger head at assembly, and `article73_template`, one
+entry for every field of the Commission template v1.0.0 (SB-10407). A field the system holds is
+`mapped` or `derivable` and has a value; every other field is listed by number and name as
+`requires_reviewer_input` or `not_available` with a null value, never guessed. A NOT_SERIOUS
+disposition gives a closure report marked `NOT FOR SUBMISSION` (JSON and every PDF page) that
+cannot be submitted.
+
+### 14.3 Known limits
+
+- The report contains the rationale and the evidence text, which are personal data. Until Part 2's
+  sealing lands, the stored bytes are plain; the code already calls `personal_data.seal_bytes` and
+  `open_bytes`, so sealing needs no change here.
+- Assembly holds the ledger append lock while the PDF is rendered (decision 258).
+- The template is a Commission draft of 26 September 2025; if a final version exists, the mapping
+  in `app/report_template.py` is redone.
+
+## 15. Phase 5 Part 2: records (retention, clock bound, sealing, erasure)
+
+Personal data can be made permanently unreadable after the retention period without touching
+the hash chain. The code is in `app/personal_data.py` (sealing), `app/retention.py` (erasure),
+`app/api/erasure_routes.py` and migration 0009; the decisions are 274 to 285 in
+`docs/decisions.md`.
+
+How it works, in plain words: each event gets a random key, stored in `record_key`. Personal
+text that goes into a table nobody may edit (the reviewer's rationale, the report) is
+encrypted with that key before it is stored, and the ledger hashes cover the encrypted text.
+Erasing an event deletes its key, so the encrypted text stays but can no longer be read, and
+no hash changes. The key sits in the same database, so this gives erasure, not secrecy.
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| POST /v1/events/{id}/erasure | REVIEWER | Body empty or `{}`. After `retain_until`: destroys the key, nulls the harm-field evidence, sets `erased_at`, appends RECORD_ERASED; 200 `{event_id, erased_at, erased_fields}`. Before `retain_until`: 409 RETENTION_NOT_EXPIRED. Again: 409 ALREADY_ERASED. |
+
+After erasure `GET /v1/events/{id}` has null evidence and rationale, the report routes answer
+410 RECORD_ERASED, and the ledger verifies exactly as before plus one entry. Other changes:
+the test clock and a sample timestamp stop at 9999-07-01 (400 MALFORMED_BODY), and
+`WEBHOOK_REGISTERED` carries `url_sha256` instead of the URL. Known limits: rows written before
+migration 0009 stay plain and cannot be erased; database backups keep a destroyed key until
+they expire; erasure is run by a person, never automatically.
+
+## 16. Phase 5 Part 3: ledger operations
+
+Part 3 of Phase 5 makes ledger tampering visible to operators: a nightly verification with a
+projection check, an external chain head on the `chain-heads` branch, `/healthz` fields that tie
+the service to a commit, and a dashboard with alerts A1 to A9 (spec 6, 7; D11 to D15). It is
+built on branch `phase5-part3-ledger-ops`. Decisions 294 to 313 in
+[docs/decisions.md](docs/decisions.md) record the choices the specification left open, and
+[docs/operations.md](docs/operations.md) is the operations note (release, alerts runbook,
+anchor restart, backups, secrets).
+
+### 16.1 Endpoints
+
+| Endpoint | Roles | Answer |
+| --- | --- | --- |
+| `POST /v1/ledger/verifications` | REVIEWER (SYSTEM and VIEWER 403, no key 401) | 201 with the stored run (trigger `MANUAL`) |
+| `GET /v1/ledger/verifications?limit=n` | REVIEWER or VIEWER | 200, bare array, newest first; `limit` default 10, maximum 100 |
+| `GET /v1/ops/dashboard` | REVIEWER or VIEWER | 200 with exactly the spec 7.2 keys; `clock` only when `ENVIRONMENT=test`; ids, counts, codes and timestamps only |
+| `GET /healthz` | no key | The four Phase 4 fields, then `version`, `last_verification`, `last_verification_age_seconds`, `reset_count` |
+| `GET /v1/ledger/verify` | unchanged | Exactly three fields, as before |
+
+A run stores `run_id`, `trigger`, `started_at`, `finished_at` (wall clock), verify's three
+fields, `head_seq`, `head_hash`, `head_check` (`OK`, `REGRESSED` or `FIRST_RUN`) and the
+projection and report mismatches, in `ledger_verification_run` (migration 0010), never in the
+ledger. The worker runs one `NIGHTLY` run per wall-clock UTC day.
+
+### 16.2 `/healthz` fields
+
+| Field | Meaning |
+| --- | --- |
+| `version` | `APP_VERSION`, set at image build from `--build-arg GIT_SHA=<commit>`; null when unset |
+| `last_verification` | `{finished_at, valid, head_check}` of the latest run, or null |
+| `last_verification_age_seconds` | Wall-clock seconds since that run finished, or null |
+| `reset_count` | Number of test resets the database has seen |
+
+Ledger integrity never makes `/healthz` 503. With the database unreachable the 503 body keeps
+`version` and sets the other three to null (decision 306).
+
+### 16.3 Alerts
+
+| Code | Severity | Raised when |
+| --- | --- | --- |
+| A1 | critical | The latest verification run is invalid, REGRESSED, or has a projection or report mismatch |
+| A2 | warning | No verification run for more than 26 hours (wall clock), or none at all |
+| A3 | critical | The sweeper has not run for more than 3 × `SWEEP_INTERVAL_SECONDS` |
+| A4 | warning | The oldest pending delivery is older than `NOTIFY_MAX_DELAY_SECONDS` |
+| A5 | warning | `overdue_escalations > 0` |
+| A6 | critical | A DISPOSITIONED event is past its deadline with no submitted report bound to its latest disposition |
+| A7 | warning | Such an event is due within `ALERT_DEADLINE_WARNING_HOURS` and not yet past it |
+| A8 | warning | A delivery failed in the last 24 hours |
+| A9 | info | Events are past `retain_until` and not erased |
+
+The dashboard lists the alerts that hold now. The worker logs each once per code and subject per
+wall-clock UTC day as `alert: code=<code> <name>=<value> …` (ERROR for critical, WARNING
+otherwise). A failing run also logs one `alert: code=LEDGER_INTEGRITY …` line when it is
+recorded; the runbook for each alert is item 4 of the operations note.
+
+### 16.4 The anchor tool and workflow
+
+`python tools/verify_ledger.py EXPORT_FILE --anchor HEADS_FILE` verifies the export exactly as
+without the option, then prints `anchor: OK seq=<s>` or `anchor: MISMATCH seq=<s>` for the last
+head in the JSON-lines heads file. Exit 0 only when the export is valid and the anchor is OK, 1
+otherwise, 2 when the heads file cannot be read or has no head line. Without `--anchor` nothing
+changes. Standard library only.
+
+`.github/workflows/chain-head.yml` runs it daily at 03:17 UTC and by hand, and appends each new
+head to `heads.jsonl` on `chain-heads`. A test reset makes the next run fail; a person restarts
+the series by hand with `new_series: true` and a reason (operations note item 5). The workflow
+runs only from main, and needs the repository variable `POD_BASE_URL`, the secret
+`POD_VIEWER_KEY` and the `chain-heads` branch, which are deploy-time steps that need the team's
+approval (decisions 311, 312).
+
+### 16.5 Settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NIGHTLY_VERIFY_HOUR_UTC` | 2 | Wall-clock UTC hour from which the day's nightly run is due; an integer 0 to 23 |
+| `ALERT_DEADLINE_WARNING_HOURS` | 24 | Window of alert A7 before a reporting deadline; a positive integer |
+| `APP_VERSION` | unset | The deployed main commit, set by the Dockerfile from `ARG GIT_SHA`; never read from git at run time |
+
+A bad `NIGHTLY_VERIFY_HOUR_UTC` or `ALERT_DEADLINE_WARNING_HOURS`, the empty string included,
+stops the API and the worker at start-up with an error naming the setting, as a bad
+`ESCALATION_PERCENTAGES` does (decision 302). Unset, the defaults apply.
+
+### 16.6 Where the code lives
+
+| What | Where |
+| --- | --- |
+| Nightly run, head check, projection check | `app/ledger_ops.py` |
+| Dashboard and alerts | `app/ops.py` |
+| Routes | `app/api/ops_routes.py`; `/healthz` in `app/api/health_routes.py` |
+| Worker steps | `run_nightly` and `run_alerts` in `app/worker.py` |
+| Settings | the Phase 5 Part 3 slot in `app/config.py` |
+| Tables | `migrations/versions/0010_ledger_ops.py` (`ledger_verification_run`, `platform_counter`) |
+| Anchor | `tools/verify_ledger.py`, `.github/workflows/chain-head.yml` |
+| Tests | `tests/ledger_ops/` |
+
+## 17. Phase 5 Part 4: platform
+
+Part 4 owns the Phase 5 platform pieces (spec 11.4): the console views, the Model 5 Phase 5
+fixture and runner, `tools/demo_phase5.py`, the HTTP acceptance tests, `PHASE5_REQUIRED` in
+the gate, the second reviewer key, the models, the contract delta and the manual checklist.
+It is built on `phase5-integration`, which already merged Parts 1 to 3 (decision 314).
+
+### 17.1 What this part adds
+
+| What | Where |
+| --- | --- |
+| Report and submission panel; ledger operations and health panel; version and ledger state in the health chip | `app/static/` (`/ui/`) |
+| Report headers readable by a console on another origin (CORS `expose_headers`) | `app/main.py` |
+| Second reviewer `rev-2`, seeded when `REVIEWER_2_KEY` is set | `app/config.py`, `tools/seed_part1.py`, `docker-compose.yml` |
+| Model 5 Phase 5 fixture (Ex-1 report and submission, Ex-2 closure report, Ex-5 in-process) | `tests/fixtures/phase5/`, `tools/run_model5.py` |
+| AC-16 end-to-end trace, paths S (breach to submission) and N (not serious) | `tools/demo_phase5.py`; CI step "Phase 5 demo (AC-16 trace)" |
+| HTTP acceptance tests for AC-05, AC-13, AC-16, AC-18, the Δ routes and the role matrix | `tests/acceptance/` |
+| Phase 5 gate entries | `PHASE5_REQUIRED` in `tools/check_acceptance.py` |
+| Schema, reset and seed tests; the in-process AC-16 trace | `tests/platform5/` |
+| Tester `coverage.model` (below) | `app/harness_model.py`, `app/harness.py` |
+| Models, contract delta (proposed), manual checks | `docs/models/phase5_models.md`, `docs/contract/phase5/delta.md`, `docs/manual_checks_phase5.md` |
+
+### 17.2 Tester model coverage (`coverage.model`)
+
+From Phase 5, the tester's suite report includes `coverage.model` when the tester and the
+target system belong to the same team, and omits it from cross-team reports (Cross-team
+Testing Interface, coverage). Same team means the target is this deployment (the self
+target) or a system URL listed in `SAME_TEAM_SYSTEM_URLS` (comma-separated, for our other
+deployments). For those runs the suite adds twelve design-requirement probes, `M-01` to
+`M-12`, between `T-07` and `T-08`. The self target is `SUITE_BASE_URL` + `/system` (default
+the Fly URL); a self run calls the API over loopback, so on a local stack set
+`SUITE_BASE_URL`, or target the Fly URL, to get a same-team run.
+
+- `total` is 26: the rows of the Phase 5 spec's scope table (section 1.1), DR-01 to DR-26.
+- `covered` is the number of those requirements that at least one probe evaluated, that is,
+  ended `pass` or `fail` (audit fix round: this line said "ran and passed"; the Testing
+  Interface counts what the suite evaluated, and the code always counted `fail` too). `error`
+  and `skip` evaluate nothing and do not count. With every probe run, `covered` is 13: the
+  other 13 requirements (the PDF review, the anchor workflow, the deployment, and so on) are
+  checked in-process or manually and cannot be probed through the API.
+- `basis` names the design version and links to the mapping,
+  [`docs/models/phase5_design_requirements.md`](docs/models/phase5_design_requirements.md).
+  A test checks that the table there matches the code.
+
+```bash
+# A same-team run against another of our deployments
+SAME_TEAM_SYSTEM_URLS=https://staging.example/system uvicorn app.main:app
+```
+
+**Sessions, state and cleanup (audit fix round).** The tester and system endpoints exist only
+with `ENVIRONMENT=test`. What a run does to the target, and what it does not protect against:
+
+- **Preparation.** `POST /system/test/setup` resets the whole target database
+  (`platform.reset()`: tables emptied, seed reinstalled, clock offset 0, `reset_count` + 1),
+  and `T-07` resets it again over `POST /v1/test/reset`, in every run, cross-team too.
+- **What a same-team run writes.** After those resets the probes ingest two breaches (`M-02`,
+  `M-07`), advance the clock 5 hours (`M-03`), record two dispositions and assemble two reports
+  (`M-03`, `M-07`), record a submission (`M-06`), advance the clock 186 days and erase a
+  record (`M-09`), and append a manual verification run (`M-10`) (decision 328).
+- **The default target is the deployment itself.** `SUITE_BASE_URL` defaults to the Fly URL,
+  so a tester running on Fly and given that URL tests its own deployment, over loopback,
+  and resets and changes the shared data there. On the deployed service a reset also breaks
+  the anchor series (`docs/operations.md` sections 5 and 8).
+- **Sessions share one database.** Every session on a deployment uses the same data.
+- **One active system session at a time (audit fix round 2).** While a system session is
+  active, `POST /system/test/setup` for another `session_id` answers 409 with source `system`
+  and a message saying another session is active; nothing is reset or written. A repeated
+  `session_id` is 409 as before, whether its session is active or not. A session is active from
+  its setup until it ends. It ends at once when a tester run of the same `session_id` finishes
+  or aborts, which happens only for a self-run (this deployment's tester against itself); any
+  other session ends when `SESSION_IDLE_SECONDS` (default 600) pass without activity. Activity
+  is the setup itself, a `GET /system/test/report` for that session, and each event of a tester
+  run of the same id (its start and every recorded result). Project API requests carry no
+  session id, so they cannot be attributed to a session and do not refresh the window: a staff
+  tester whose run against the project API takes longer than the window, with no report read
+  in between, is no longer protected after it. The trade-off is a lockout: a session that is
+  set up and then abandoned blocks every other setup for up to the window; there is no way to
+  end it early except a restart of the API (sessions are in memory). 600 s is over 500 times the
+  longest self-run measured on a local stack (1.18 s; the measurement is in the Part 4
+  report, fix round 2). Two things are outside this rule: the console's suite runner
+  (`/v1/test/suite`) and direct calls to `/v1/test/reset` still reset the data at any time.
+- **One run per tester session.** A second `POST /tester/test/run` of a session gets 409,
+  whether it is concurrent with the first, later, or after an abort. An aborted run keeps the
+  results it has; the test the abort prevented is `error` (source `tester`) and the rest are
+  `skip`.
+- **Memory only.** Tester and system sessions live in the API process; a restart loses them,
+  and `GET /test/report` then answers 404.
+- **Cleanup.** There is no cleanup step: the next setup's reset is the cleanup.
+- **A target's `coverage.code` is checked (audit fix round 2).** The tester copies a target's
+  `coverage.code` only when `covered` and `total` are both nonnegative integers with `covered` <=
+  `total` (0 of 0 included; follow-up round, audit F-04), or both null, with a nonempty `basis`. Otherwise its report
+  carries null counts and a basis saying the target's `coverage.code` was invalid and why, never
+  the target's own text, and `T-08`'s message says so.
+
+**System and component coverage (follow-up round 2, audit F-07; SS's decision).** The suite
+report's `coverage.system` and `coverage.component` follow the Testing Interface: system counts
+"acceptance criteria from the shared pod specification the suite evaluated out of all criteria in
+scope", component counts "how many pod-defined components its tests covered". Before this round
+both counted invented names (seven criterion ids such as `AC-health`, six component names such as
+`metrics_ingest`). The mapping is `_PROBE_COVERAGE` in `app/harness.py`; a test keeps the table
+below equal to it.
+
+- **System.** `total` is 18: AC-01 to AC-18 of the pod's REQ/AC document (Project Requirements,
+  the acceptance-criteria table), all in scope. AC-16's method is manual-only (trace review); it
+  stays in the total. A criterion counts once, and only when at least one test performs that
+  criterion's own Setup, Action and Expected through the target's public interface and ends
+  `pass` or `fail`; a probe that touches the same route without performing the criterion's action
+  does not count it. No probe does today, so `covered` is 0 in every run, which is a valid count.
+  `basis` starts "Acceptance criteria listed in the pod specification".
+- **Component.** `total` is 10, the components of the system architecture listed below. A
+  component counts once, and only when at least one test sends a request that passes through it
+  and ends `pass` or `fail` on that component's own observable behaviour. `T-03` to `T-07` also
+  pass on 401 or 403, so their outcome says nothing about the component behind the route and
+  counts none; `T-01` (liveness) and `T-08` (the code-coverage pull) reach no listed component.
+  A run that passes everything counts 1 cross-team and 7 same-team. `basis` is "Components of the
+  system architecture (README 17.2)".
+- **Both.** `error` and `skip` never count. No probe was added for this.
+
+The repository has no architecture document that names components (the architecture options
+PDF cited in `docs/part1_context.md` is not in the repository), so the names are SS's; the second
+column gives the modules that implement each one.
+
+| Component | Modules | Probes that exercise it |
+|---|---|---|
+| Ingestion API | `app/ingestion.py`, `app/api/ingestion_routes.py` | M-02, M-07 (sample stored, 201) |
+| Rules engine | threshold check in `app/ingestion.py` | M-02, M-07 (a breach returns `flagged_event_id`) |
+| Event service | `app/events.py` | M-02, M-07 (the flagged event reads 200), M-09 (evidence null) |
+| Gap sweeper | `app/gaps.py` | none |
+| Access control | `app/auth.py` | T-02 (no key: 401 or 403 only), M-01 (eight routes 401), M-05 (viewer and system 403) |
+| Config service | `app/config.py` | none |
+| Workflow engine | incident opened, serious-incident decision, deadline tier, deadline countdown: `app/review.py`, `app/dispositions.py`, `app/deadlines.py`, `app/escalations.py` | M-03 (OTHER_SERIOUS disposition 200), M-07 (NOT_SERIOUS with rationale 200) |
+| Notification outbox | `app/notifications.py`, `app/webhooks.py` | none |
+| Reporting service | `app/reports.py`, `app/report_render.py` | M-02 (409 NO_DISPOSITION), M-03, M-04, M-06, M-07, M-09 (410 after erasure) |
+| Audit ledger | `app/ledger/`, `app/audit.py`, `app/ledger_ops.py` | M-09 (verify valid after erasure), M-10 (verification run) |
+
+`M-08` (erasure refused before `retain_until`), `M-11` (ops dashboard) and `M-12` (`/healthz`
+fields) reach no listed component: retention, operations and health are not among the ten.
+
+### 17.3 Running
+
+```bash
+# in-process (Postgres on 5433, database monitor_unit)
+pytest tests/platform5 tests/test_run_model5.py tests/test_check_acceptance.py
+# over HTTP, against the compose stack
+docker compose up -d --build
+BASE_URL=http://127.0.0.1:8000 WEBHOOK_SINK_URL=http://sink:8765/hook/m5 \
+  WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/m5 python tools/run_model5.py
+BASE_URL=http://127.0.0.1:8000 REVIEWER_2_KEY=test-reviewer-key-rev-2-3e8b1f6a9c2d4705 \
+  WEBHOOK_SINK_URL=http://sink:8765/hook/ac16 WEBHOOK_SINK_READ_URL=http://127.0.0.1:8765/hook/ac16 \
+  python tools/demo_phase5.py
+```
+
+### 17.4 Not done here
+
+- `docs/contract/pod_contract_phase5.md` is not written: spec 9.4 exports it only after both
+  teams agree the delta, which is still proposed.
+- Deploying to Fly (`APP_VERSION`, the `REVIEWER_2_KEY` secret) is a team step (OD-1, spec 11.6).
+- The manual checks M1 to M7 are for people to perform; their result fields are empty.
+- The LIM-03 advisory slot (spec 1.2 and 10.3: the AC-16 trace refusing to start while another
+  trace holds the slot) is not built: the spec defines no mechanism, and a real one would need
+  a new test endpoint, a contract change. The control is the booking rule in
+  `docs/operations.md` section 8. Recorded deviation, decision 319 (audit fix round).

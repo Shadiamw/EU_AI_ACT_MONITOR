@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app import clock, evidence, gaps, ledger, notifications, observability, review
 from app.auth import Principal
 from app.errors import ApiError
-from app.formats import new_id, retain_until
+from app.formats import TIME_LIMIT, new_id, retain_until
 
 detection_logger = logging.getLogger("api.detection")
 
@@ -69,6 +69,10 @@ class MetricIn(BaseModel):
     def utc(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() != timedelta(0):
             raise ValueError("timestamp must be UTC")
+        # Phase 5 spec 5.4: retain_until adds six months to this time, which overflows after
+        # 9999-12-31 less six months. The clock advance stops at the same instant.
+        if value >= TIME_LIMIT:
+            raise ValueError("timestamp must be before 9999-07-01")
         return value
 
 

@@ -1891,3 +1891,978 @@ Decided 17 and 18 October 2026.
      merged into this tree, by decision of the project owner (1 November 2026), so on this tree
      GET /livez is 404. Whoever deploys must bring /livez in from `development-deploy`, or point
      the Fly health check at /healthz.
+
+## Phase 5 specification decisions (numbers 234 to 253)
+
+Spec section 12 (decision records D1 to D20), copied verbatim from
+`docs/phase5_implementation_spec.md` on `origin/phase5-spec` (834555f) in the Part 4 audit fix
+round. Dk is decision 233 + k; only the number moved from "Dk (n)." to the list number. As the
+spec says: "Decided" means SS chose the option in the project thread on 2 November 2026.
+**Every other record (D3 to D10, D13 to D16, D19, D20) was approved as proposed by SS on 2
+November 2026**, D7 and D15 with the conditions written in them.
+
+234. **D1. Report and submission status live on the report record; Event.state keeps four values.**
+     *Options:* A, statuses on the report (derived); B, add REPORT_READY and SUBMITTED to Event.state.
+     *Choice:* **A (decided).** *Reason:* the contract fixes the state enum and wins over Model 1;
+     an additive listing is easier to agree than an enum change the other team already tests.
+     *Consequence:* after a submission, `event.state` stays **DISPOSITIONED**. "Submitted" is
+     exposed by `GET /v1/events/{event_id}/reports` (`status = "SUBMITTED"` and the `submission`
+     object) and by the `REPORT_SUBMITTED` audit entry. The Event object does not change. Model 1
+     draws the two statuses in a report region (8.2).
+
+235. **D2. A NOT_SERIOUS disposition in force gets a closure report that cannot be submitted.**
+     *Options:* A, closure report; B, 409 NOT_REPORTABLE. *Check required by SS:* AC-16, REQ-12 and the
+     contract's report endpoint were re-read (0.2, 0.3). None of them limits reports to serious tiers:
+     REQ-12 says "when severity is confirmed"; AC-16 requires only that the not-serious path
+     "terminate without a deadline"; the contract's only report error besides 404 is "409 if no
+     disposition recorded yet". *Choice:* **A (decided).** *Reason:* the Phase 5 text says the
+     other team will "trace the not-serious path and download the report". *Consequence:* the
+     closure report carries `report_kind = "NOT_SERIOUS_CLOSURE"`, the JSON field `"submission_marking":
+     "NOT FOR SUBMISSION"`, and a visible "NOT FOR SUBMISSION" banner at the top of every PDF page
+     (3.3.5); a submission is 409 NOT_SUBMITTABLE. Model 5 Ex-2 and Model 1 differ (Conflict C2).
+
+236. **D3. Report generation is the reviewer's GET; assembly is lazy, once per disposition row.**
+     *Options:* A, assemble on the first GET after a disposition or revision; B, assemble inside the
+     disposition transaction; C, a new POST to generate. *Choice:* A. *Reason:* the contract has only
+     the GET; B makes `assembled_at` equal the determination time (AC-13 "distinct") and couples to
+     Phase 4 code; C is a contract change with no gain. *Consequence:* the first GET writes; later GETs
+     read only.
+
+237. **D4. Report bytes are stored in PostgreSQL, sealed, with plaintext hashes on the row and in the ledger.**
+     *Options:* A, database bytea; B, object storage (Model 2's `pdf_ref`). *Choice:* A. *Reason:* no
+     object store in the Fly deployment, and one backup, reset and erasure path. *Consequence:*
+     Model 2 changes (8.3); database size grows by a few kB per report.
+
+238. **D5. PDF library: reportlab, in invariant mode (Open; recommendation).**
+     *Options:* reportlab (BSD), fpdf2 (LGPL-3.0), WeasyPrint (needs system libraries). *Choice:*
+     reportlab. *Reason:* pure Python wheels, a permissive licence, and a documented invariant
+     mode for reproducible output. *Consequence:* one runtime dependency; the stored bytes remain the
+     record regardless (3.4).
+
+239. **D6. Submission: REVIEWER only, hash-checked, once per report, follow-ups allowed after a revision.**
+     *Choice:* 3.7. *Reason:* "mark a report as submitted" (6.3); Art. 73(5) initial and complete
+     reports (summary, UNVERIFIED); the contract allows revisions at any time. *Consequence:* new
+     endpoint (Δ3) and four 409 codes.
+
+240. **D7. Erasure by per-record keys (crypto-shredding) for append-only stores; null for mutable columns.**
+     *Options:* A, commitments plus an erasable store; B, per-record keys; C, payload digests
+     (rejected). *Choice:* **B (approved by SS)**, with two statements SS required: **the keys are
+     unwrapped and stored in the same database, so the design provides erasure, not
+     confidentiality**; and **only rows written from migration 0009 on are erasable**. *Reason:*
+     section 4.2 table: no updates to append-only tables, ledger hashes unchanged (INV-11 as
+     written), one erasure point covers the report bytes, and the verifier is unchanged. Keys are
+     not wrapped, so no secret is needed. *Consequence:* `cryptography` dependency; readers of
+     rationale change; pre-0009 rows are not erasable (4.7); merged last and first to drop (1.4).
+
+241. **D8. Erasure is reviewer-triggered after `retain_until`, never automatic.**
+     *Choice:* 4.4. *Reason:* REQ-16 says "support"; no legal-hold rule exists. *Consequence:* alert
+     A9 lists due records; an operator acts.
+
+242. **D9. No purge in Phase 5.** *Reason:* AC-05 accepts presence at 6mo1d; a purge needs
+     referential rules that no artifact gives. *Consequence:* storage grows; the operations note says
+     so.
+
+243. **D10. The clock and sample-time bound is 9999-07-01T00:00:00Z.** *Reason:* the last
+     instant whose `retain_until` is representable (5.4); closes LIM-12. *Consequence:* changes
+     decision 226's bound and its tests.
+
+244. **D11. The nightly verification runs in the worker; the dashboard is an API endpoint and a console view.**
+     *Choice:* **A (decided).** *Consequence:* no new process; results go to `ledger_verification_run`,
+     not the ledger (6.1).
+
+245. **D12. External chain head: a scheduled GitHub Actions workflow commits each head to the `chain-heads` branch.**
+     *Choice:* **A (decided)**, with SS's condition: **each run compares the new head with the
+     previous committed head and fails if the chain is shorter or the old head is missing** (6.2).
+     *Consequence:* GitHub secret `POD_VIEWER_KEY` (approval needed); a legitimate test reset also
+     fails the run, and a person restarts the series by hand (6.2).
+
+246. **D13. Event-table edits are detected by a nightly projection check against the ledger.**
+     *Options:* A, projection check; B, add more fields to ledger payloads; C, document only.
+     *Choice:* A, plus a documented list of uncovered columns. *Reason:* no change to pinned
+     payloads. *Consequence:* `detected_at`, `retain_until`, the evidence bundle and harm evidence
+     text stay uncovered (Q-7: SS decided not to add them).
+
+247. **D14. Alerts are delivered through the dashboard and logs, not a new webhook type.** *Reason:*
+     the contract fixes `event_types`. *Consequence:* no alert webhook (Q-8: SS decided no).
+
+248. **D15. `/healthz` reports `version` from a build-time `APP_VERSION`; deployment config stays on `development-deploy`.**
+     *Choice:* approved, with OD-1 decided by SS: `fly.toml` and `/livez` stay on
+     `development-deploy` and are not added to main or the base commit. The Dockerfile `ARG GIT_SHA`
+     and the `/healthz` `version` field stay on main (Part 3). *Consequence:* the deployer merges main
+     into `development-deploy`, deploys from there and passes `--build-arg GIT_SHA=<the main commit
+     being deployed>` explicitly; 11.6 step 5 checks `version` equals that commit (6.5, 7.5, 11.6).
+
+249. **D16. `WEBHOOK_REGISTERED` carries `url_sha256` instead of `url` (LIM-13).**
+     *Consequence:* changes a Phase 3 payload and its tests; the export no longer shows URLs.
+
+250. **D17. A second reviewer `rev-2` is seeded from `REVIEWER_2_KEY` when set.** *Choice:*
+     **A (decided).** *Consequence:* **setting `REVIEWER_2_KEY` as a Fly secret is a deployer step that
+     needs the team's approval** (11.6 step 4).
+
+251. **D18. The Article 73 field mapping comes from the Commission's reporting template, newest version.**
+     *Choice:* **C (decided):** SS uploaded the template and the draft guidance on 2 November 2026.
+     The newest version found is "Reporting Template Version: 1.0.0" (SB-10407), a draft of
+     26 September 2025; a later final version is open question Q-13. *Consequence:* section 3.3.4
+     maps every template field with a status, the report carries the mapping in
+     `article73_template`, submission records the template's 1.2 e type, and manual check M3 uses
+     the guidance-based checks U1 to U8. Template-versus-requirements conflicts are C17 to C21.
+
+252. **D19. Reading a stored report appends nothing; assembly, submission and erasure append.**
+     *Reason:* Part 2 addendum rule 9 (only detail and audit reads are logged) is not changed by this
+     phase. *Consequence:* Conflict C4 with REQ-14's "views", for the pod to confirm.
+
+253. **D20. Actor ids are pseudonymous and are not erased.** *Reason:* `actor_id` is a canonical
+     hash field, and no mapping to a person is stored. *Consequence:* assumption A-3.
+
+## Part 1 decisions (Phase 5 reports and submission; numbers 254 to 273)
+
+254. **Part 1 is built on main plus the part of the base commit it needs.** The Phase 5 base
+     commit (spec 11.1, Part 4) has not landed, so this branch adds the pieces Part 1 cannot
+     work without: the three new ledger types in `app/ledger/canonical.py` and
+     `tools/verify_ledger.py` (REPORT_ASSEMBLED, REPORT_SUBMITTED and RECORD_ERASED, and the
+     count test, now 17); migration `0008_reports.py` (head pins moved from 0007 to 0008);
+     `app/personal_data.py` as the identity stub of spec 11.3; `PHASE5_TABLES = ("report",
+     "report_submission")` in `app/platform.py`, which `with_phase4_tables` also checks with
+     `to_regclass`; and the dependencies reportlab (runtime), jsonschema and pypdf (dev), with
+     a mypy override for the two that ship no types. Not added: placeholders 0009 and 0010,
+     the other parts' tables, the `/healthz` fields, the CI branch conditions and
+     `PHASE5_REQUIRED`. When the base commit lands, take its version of every shared file and
+     keep the 0008 content and the Part 1 slot in `tests/worker/test_schema.py`.
+
+255. **The report route moved to `app/api/report_routes.py` and the Phase 4 guard is gone.**
+     `dispositions.report_guard` and the 501 branch of `observability.py` (decision 126) are
+     removed; a 5xx is always logged at ERROR. The Phase 4 tests that expected 501 now expect
+     200 (the list is spec 10.2): `test_a_report_after_any_disposition_is_501_until_phase_5`
+     is replaced by `test_report_after_a_disposition_is_200_not_501`; the observability test
+     uses a 410 RECORD_ERASED as its INFO example; the AC-08 and AC-14 acceptance tests expect
+     200. `tests/fixtures/phase4/model5_examples.json` still expects 501 at Ex-2's report step.
+     It is left unchanged (spec 10.2) and Part 4's Phase 5 fixture replaces it (spec 8.6), so
+     the HTTP Model 5 run fails at that step until then.
+
+256. **A stored report is read without a lock; only assembly locks.** `assemble_or_get` checks
+     404, 410 and 409 NO_DISPOSITION, then looks for a report bound to the latest disposition
+     row and serves it. Only when there is none does it lock the event row (`FOR UPDATE`, the
+     lock the disposition transaction takes), read the dispositions and the report again, and
+     assemble. A concurrent first request therefore waits, finds the winner's report and serves
+     it; `report.disposition_id` is unique as the backstop. Twenty parallel first requests give
+     one row and one REPORT_ASSEMBLED (test).
+
+257. **The report status is derived when listed, never stored (spec 3.2).** ASSEMBLED when the
+     report is bound to the latest disposition row and has no submission; SUBMITTED when it also
+     has one; SUPERSEDED or SUBMITTED_SUPERSEDED when a later disposition row exists. The report
+     tables are insert-only (INV-4), so there is no status column to update.
+
+258. **The ledger lock is held through rendering.** The report records the ledger head as
+     `ledger_anchor`, and spec 3.8 says it is read under the append lock immediately before
+     REPORT_ASSEMBLED is appended. Because the anchor is inside the bytes that are hashed and
+     then named in that entry, the lock is taken (`pg_advisory_xact_lock`, which `ledger.append`
+     takes again at no cost) before the report is built and held until the commit. Every append
+     waits for one PDF render (about 0.1 to 0.3 s in the tests). Spec 3.8 pins this order. An
+     empty ledger gives the anchor `{seq: 0, hash: 64 zeros}`, the genesis value.
+
+259. **Details of the Article 73 mapping that the spec leaves open.** (a) Each entry has the four
+     keys of the example and, for a field whose status needs a reason, an additive `note`.
+     (b) Sub-fields are listed one by one (1.3.2 a to l, 1.3.3 a to l, 1.3.4 a to l, 2.2 c to
+     h, 3.3 a to k), as the example's `"1.3.2 a"` shows; headings are rows with status `section`
+     or `group`, and section rows are named `§1` to `§5`. (c) Field 1.2 a is `derivable` with a
+     null value, because the submission does not exist when the bytes are assembled.
+     (d) Field 4.2 b is listed in a serious report as `not_available` (it is for a Final
+     non-reportable report) and is `mapped` to the rationale in a closure report. (e) The `§5`
+     value is `{report_id, report_version, ledger_anchor}`; the JSON hash cannot be inside its
+     own bytes, so it is in the `X-Report-Sha256` header and printed in the PDF. (f) 1.2 b is
+     the date part of `detected_at`. (g) The `3.1 a` value is `{what_went_wrong, effects,
+     likely_causality}`: a plain statement of metric, system, observed value, threshold and
+     time; the evidence texts of CONFIRMED fields; and null for causality, which is never
+     asserted.
+
+260. **Timestamps.** `assembled_at` is read once from `clock.now()` after the lock is taken and
+     is written with `api_time`, so it keeps microseconds and is never rounded to seconds
+     (spec 3.3.3, Q-3). The REPORT_ASSEMBLED entry takes its own `recorded_at` inside
+     `ledger.append`, truncated to milliseconds, so on the real clock the two can differ by
+     microseconds (they are equal on the fake clock). `determined_at` is the first disposition
+     row's `assigned_at`; `last_revised_at` is the latest row's, or null without a revision.
+     The ordering `detected_at < determined_at < assembled_at` is a test assertion, not a
+     schema rule, and the code does not refuse to assemble if a clock jump breaks it.
+
+261. **Submission checks.** A `json_sha256` that is not the stored hash, whatever its format
+     (upper case, 63 characters, the PDF hash), is 409 REPORT_HASH_MISMATCH, as spec 3.7 step 8
+     says; only a field of the wrong type is 400. `authority_reference` is at most 200
+     characters with no U+0000 or lone surrogate (not in the spec; the same text rule as the
+     rationale). `report_type` must equal one of the four template strings exactly (case
+     included). The first submission of an event is INITIAL and every later one FOLLOW_UP,
+     whatever `report_type` says. A report of another event is 404, as an unknown id.
+
+262. **The PDF.** reportlab (D5) in invariant mode, so the same dict gives the same bytes; the
+     creation date is therefore reportlab's fixed one, not `assembled_at` (spec 3.4 item 5 says
+     SHOULD; the stored bytes are the record either way). A4, tables only, no images. A closure
+     report draws "NOT FOR SUBMISSION" in 18 pt red bold at the top of every page, larger than
+     the 15 pt title. The footer carries the report id, version and page number. The tests read
+     every page back with pypdf.
+
+263. **The schema file** (`docs/contract/phase5/report.schema.json`, Draft 2020-12) is
+     `additionalProperties: false` on every object, requires every REQ-12 part non-null, and
+     branches on `report_kind`: a serious report has `submission_marking` null, a tier other
+     than NOT_SERIOUS and a deadline; a closure report has the exact marking, tier NOT_SERIOUS,
+     a rationale and a null deadline and window. `event.type` is `threshold_breach`, the only
+     kind that can be reported. It is a proposal (C3) until both teams agree.
+
+264. **The report holds personal data and is sealed at rest.** It contains the reviewer's
+     rationale and the evidence text of the harm fields, so both byte strings go through
+     `personal_data.seal_bytes` (identity until Part 2 lands) and every read goes through
+     `open_bytes`. The two hashes are over the plaintext. `is_erased` is checked at every
+     route (410 RECORD_ERASED, spec 3.6 step 5), so Part 2 only has to make it true.
+
+265. **`reports.verify_stored(session)`** returns `{report_id, which}` for every non-erased
+     report whose `json_bytes` or `pdf_bytes` hash differs from the row, or whose
+     REPORT_ASSEMBLED payload is missing or has other hashes (`ledger_payload`). It reads only.
+     Part 3's nightly job calls it. The tests change a byte, and a hash, as the owner with the
+     trigger disabled.
+
+266. **Not done here (other parts).** The AC-13 and AC-16 acceptance files, the console
+     views, the Model 5 Phase 5 fixture, `tools/demo_phase5.py`, `PHASE5_REQUIRED`, the manual
+     checklist M3 and the contract-delta document are Part 4's. Erasure and the sealing itself
+     are Part 2's. The nightly job, the anchor and the dashboard are Part 3's.
+
+## Part 2 decisions (Phase 5 records: retention, clock bound, sealing, erasure; numbers 274 to 293)
+
+274. **Part 2 is built on Part 1, not on a base commit.** The Phase 5 base commit (spec 11.1,
+     Part 4) has not landed, and erasure needs Part 1's tables and the three ledger types, so
+     `phase5-part2-records` is cut from `phase5-part1-reports`. It adds migration `0009`, moves
+     the head pins to 0009, adds `record_key` to `PHASE5_TABLES` (reset truncates it), and adds
+     the runtime dependency `cryptography`. When the base commit lands, take its version of
+     every shared file and keep the 0009 content and the Part 2 slot of
+     `tests/worker/test_schema.py` (the `event.erased_at` column and `record_key`).
+
+275. **The clock and sample bound is 9999-07-01T00:00:00Z (2a, D10, LIM-12).**
+     `formats.TIME_LIMIT` is the one constant. `platform._check_representable` refuses an
+     advance whose simulated time is at or after it (the 2^63 - 1 offset check stays), and the
+     ingest model refuses a sample timestamp at or after it, both as 400 MALFORMED_BODY. The
+     last accepted instant, 9999-06-30T23:59:59Z, gives `retain_until` 9999-12-30T23:59:59Z.
+     Decision 226's `datetime.max` rule is replaced. The exact boundary is a unit test with the
+     wall clock fixed; the HTTP test uses a one-minute margin because the wall clock moves.
+
+276. **AC-05 is tested in-process with the fake clock (2a).** `tests/records/test_retention.py`
+     checks the event, its evidence bundle (whose hash reproduces) and its five samples at
+     5 months 29 days, and 200-or-404 at 6 months 1 day. The fake clock runs no sweep, so the
+     six-month jump opens no gap events; the HTTP version is Part 4's acceptance file.
+
+277. **Sealing is AES-256-GCM under a per-event key (2b, D7).** `personal_data.seal` returns
+     `pd1:` plus base64url (no padding) of nonce, ciphertext and tag; `seal_bytes` returns the
+     bytes `pd1:` followed by nonce, ciphertext and tag. The nonce is 12 random bytes, so the
+     same text seals differently each time. The associated data is `subject_id|field`, so a
+     value cannot be moved to another event or field (opening it there raises `SealError`, a
+     test). The key is 32 random bytes in `record_key`, created on first use with `INSERT ...
+     ON CONFLICT DO NOTHING`, and stored unwrapped: this is erasure, not confidentiality.
+
+278. **`open` passes unsealed values through, returns None for a destroyed key and raises for a
+     changed one.** A value without the `pd1:` prefix (a row written before 0009) is returned as
+     it is and creates no key. A destroyed key gives None. A sealed value that fails
+     authentication raises `SealError`; the API then answers 500, because a stored value that
+     was altered is a fault, not a client error. Sealing for a destroyed key raises
+     `KeyDestroyedError` (not reachable through the routes: the report and disposition routes
+     check erasure first, and an erased event is past `retain_until`).
+
+279. **The rationale is sealed once and the same string goes in two places.**
+     `dispositions.record` seals the trimmed rationale as field `disposition.rationale`, and
+     that one string is written to the `disposition` row and to the `DISPOSITION_RECORDED` or
+     `_REVISED` payload. `dispositions.summary` opens the latest row. A null rationale is not
+     sealed. The ledger hash covers the sealed string, so erasure changes no hash (INV-11).
+     The export and the audit view therefore show `pd1:...` where they showed the text.
+
+280. **Erasure (2b, D8) is `POST /v1/events/{id}/erasure`, REVIEWER only, in one transaction.**
+     `retention.erase` locks the event row, then checks `now < retain_until` (409
+     RETENTION_NOT_EXPIRED) and `erased_at` (409 ALREADY_ERASED), in that order. Then it
+     destroys the key, nulls `harm_field.evidence` and `prefill_evidence`, sets
+     `event.erased_at` and appends RECORD_ERASED. At exactly `retain_until` erasure is allowed
+     (the check is strictly "before"). The body must be empty or `{}`, else 400 MALFORMED_BODY.
+     It is never automatic. Nothing else is deleted (D9).
+
+281. **`erased_fields` lists only fields that held something.** The names are checked before
+     the change: `disposition.rationale` and `ledger_entry.payload.rationale` when a sealed
+     value is there, `harm_field.evidence` and `harm_field.prefill_evidence` when non-null,
+     `report.json_bytes` and `report.pdf_bytes` when sealed. Field names only, never values
+     (the log line carries the event and the actor only). `key_destroyed` is False for an event
+     that never had a key (no rationale and no report).
+
+282. **`is_erased` is `event.erased_at IS NOT NULL`.** Part 1's routes already check it (410
+     RECORD_ERASED), so Part 2 only had to make it true. `GET /v1/events/{id}` still answers
+     200 after erasure with evidence and rationale null and everything else unchanged;
+     `GET .../reports` still lists the rows and hashes; the audit view shows RECORD_ERASED.
+
+283. **`record_key` keeps a tombstone.** The application role has SELECT, INSERT and UPDATE and
+     no DELETE; the table check `(data_key IS NULL) = (destroyed_at IS NOT NULL)` keeps the two
+     columns consistent, and a second check keeps the key at 32 bytes. Reset empties it with the
+     other tables.
+
+284. **`WEBHOOK_REGISTERED` carries `url_sha256` (D16, LIM-13).** The payload is `{webhook_id,
+     url_sha256, event_types}`, where `url_sha256` is the lowercase hex SHA-256 of the UTF-8 URL.
+     The URL stays in `webhook.url`, which delivery needs and which is not exported. The Phase 3
+     tests that read `url` from the payload read the hash.
+
+285. **Limits, as the spec states them (4.7).** Only rows written from 0009 on are erasable; the
+     deployment resets after migrating. Backups keep a destroyed key until they expire. `actor_id`
+     is a pseudonymous account id and is not erased (D20). The HTTP acceptance test that reads a
+     rationale from a ledger payload (`tests/acceptance/test_ac11_deadlines.py`) and the
+     Phase 4 fixtures that read the webhook `url` belong to Part 4's list (10.2); they need the
+     deployed stack and were not run here.
+
+286. **A sealed report that cannot be opened is a mismatch, not an exception (audit B1; SS).**
+     `reports.verify_stored` opens each non-erased report's `json_bytes` and `pdf_bytes`. When
+     opening raises (a changed nonce, ciphertext or tag gives `SealError`; any other error from
+     `personal_data.open_bytes` is treated the same), the report is listed as `{report_id,
+     which}` with `which` = `json_bytes` or `pdf_bytes`, exactly like a hash mismatch, and the
+     run goes on, so Part 3's nightly and manual runs record it and raise A1. A changed `pd1:`
+     prefix was already a hash mismatch (the value no longer looks sealed). One WARNING line on
+     `reports.verify` names the report, the column and the exception type only, never the
+     value or the exception text. A database error is not a damaged value and still propagates
+     (the run's transaction is unusable after it). Erased reports stay skipped (a destroyed key
+     is not a fault). `GET /v1/events/{id}/report` on a damaged stored report is unchanged: a
+     changed nonce, ciphertext or tag gives 500 (`SealError`, decision 278). A changed `pd1:`
+     prefix makes the value look unsealed, so `open_bytes` passes it through (spec 4.3) and the
+     GET returns 200 with the stored sealed bytes as the body, under an `X-Report-Sha256` that
+     does not match them. The nightly and manual verification runs list both cases as
+     `{report_id, which}`. (Integration correction, re-audit R3; decision 336.) Test:
+     `test_verify_stored_reports_a_damaged_sealed_report`.
+
+287. **No disposition is recorded on an erased event (audit M2; SS).** Any disposition request
+     on an erased event, with or without a rationale, is refused with 409 `ALREADY_ERASED`
+     (the erasure endpoint's existing code; no new code) and the message "the personal data of
+     this event has been erased". Order: authentication, role and the body checks (400) as
+     before, then inside the transaction 404, then this check (`event.erased_at`, read with the
+     event lock), then `EVENT_NOT_REVIEWABLE`, the harm-field check, the deadline-extension
+     rule and everything else. Nothing is written, nothing is appended and no record-key
+     operation happens. A non-erased event is unchanged, including its 409
+     `DEADLINE_EXTENSION_REQUIRES_RATIONALE`. Before this, a revision with a rationale was a
+     500 (`KeyDestroyedError` from `seal`), and one without a rationale that did not extend the
+     deadline was accepted after erasure (200, a DISPOSITION_REVISED after RECORD_ERASED, and
+     the request's evidence written back to `harm_field` in plain text); decision 278's note
+     that the disposition route checks erasure first was not true until now. This is a new use
+     of `ALREADY_ERASED` on `POST /v1/events/{event_id}/disposition`, an addition for the
+     contract delta document (spec 9.2), which the Part 4 owner and SS carry to the other team.
+     Test: `test_revision_of_an_erased_event_is_refused_with_and_without_a_rationale`.
+
+288. **Part 2 is accepted as one commit, merged last, and cut by reverting its merge (audit M1;
+     SS).** The spec's two branches (2a and 2b from the base commit, merge order 2a, 1, 3, 4,
+     2b; spec 1.4, 11.4) are not made. `phase5-part2-records` stays stacked on Part 1, holds
+     2a and 2b together, and is merged after the other parts with a merge commit. If erasure
+     has to be cut (spec 1.4), the cut is a revert of that merge commit, which also takes out
+     2a (the 9999-07-01 bound and the AC-05 tests); nothing earlier is rewritten.
+
+## Part 3 decisions (Phase 5 ledger operations; numbers 294 to 313)
+
+294. **Part 3 carries the part of the Phase 5 base commit it needs.** The base commit (spec
+     11.1, Part 4) has not landed, so one prerequisites commit on this branch adds only what
+     Part 3 cannot work without: the placeholder migrations `0008_reports.py` (revises 0007)
+     and `0009_personal_data.py` (revises 0008) and Part 3's own `0010_ledger_ops.py` (revises
+     0009), all with empty upgrade and downgrade; the head pins of spec 10.2 moved from 0007 to
+     0010 (`test_migration_head_is_0007` renamed `test_migration_head_is_0010`,
+     `test_alembic_chain_is_0001_to_0007_with_one_head` renamed
+     `test_alembic_chain_is_0001_to_0010_with_one_head`, `test_database_is_at_head_0007`
+     renamed `test_database_is_at_head_0010`); `PHASE5_TABLES = ("ledger_verification_run",
+     "platform_counter")` in `app/platform.py` (Part 4's file, approved minimal edit), with the
+     comment and the `with_phase4_tables` loop copied byte for byte from Part 1's hunk so that
+     only the tuple line differs; `app/reports.py` as the spec 11.3 stub (`verify_stored`
+     returns []); the "Phase 5 Part 3" slot markers in `app/config.py`; the README section 16
+     heading; and this decision block. Not carried, because Part 3 does not need them: the
+     three new ledger entry types, `app/personal_data.py`, the other parts' tables and slots,
+     `PHASE5_REQUIRED`, the `phase5-integration` CI conditions and the new dependencies.
+     At integration with Part 1 the integrator keeps Part 1's `0008_reports.py` and
+     `app/reports.py`, sets the head pins to "0010", takes the union of the two `PHASE5_TABLES`
+     tuples, and keeps both blocks in `docs/decisions.md` and both sections in README.md. If
+     the base commit lands first, its version of every shared file wins and this branch keeps
+     only its own 0010 content and slots.
+
+295. **OD-1 was overtaken by main `a9bf283`; the Dockerfile gains only the build version.**
+     Spec 6.5 (OD-1) kept `fly.toml` and `GET /livez` on `development-deploy`, but main
+     `a9bf283` already has both, with `scripts/deploy-fly.sh`, `fly-wake.sh`, `fly-sleep.sh` and
+     `cloud-bootstrap-db.sql`. Part 3 builds on main as it is and leaves deployment config
+     untouched: `fly.toml`, `/livez`, the harness and the Dockerfile `HEALTHCHECK` are not
+     changed. The Dockerfile gains only `ARG GIT_SHA` and `ENV APP_VERSION=$GIT_SHA`, and
+     `config.app_version()` reads `APP_VERSION` (unset or empty is None; never read from git at
+     run time), which `/healthz` reports as `version`. The deployer passes
+     `--build-arg GIT_SHA=<the main commit being deployed>` explicitly.
+     `scripts/deploy-fly.sh` passes no build argument, so a deploy made with it shows
+     `"version": null`; Part 3 does not edit deployment scripts, and the operations note (M8)
+     gives the exact command.
+
+296. **The harness format and clock-rule fix is carried by branching from `fix/harness-ci`.**
+     Main `a9bf283` fails CI at `ruff format --check` (`app/harness.py:91` and `:117`) and, once
+     past that step, at `tests/worker/test_clock_rule.py` (`app/harness.py:167` called
+     `time.time()`). The fix is commit `aa89f5e` on `fix/harness-ci` (PR #7, not yet merged into
+     main), and `phase5-part3-ledger-ops` is cut from it, so no Part 3 commit touches
+     `app/harness.py`. If PR #7 is merged with a merge commit, `aa89f5e` is shared history. If
+     PR #7 is changed or squash-merged, this branch must be re-checked against main.
+
+297. **The Phase 4 Addendum 9.9 ledger gate is widened for `--anchor`.** The gate
+     (`git diff --stat 2cea34f..HEAD -- app/ledger app/audit.py tools/verify_ledger.py
+     migrations/versions/0002_ledger.py`) allowed only the entry-type lines. Spec 11.4 gives
+     Part 3 an edit to `tools/verify_ledger.py` for `--anchor` (spec 6.2, Delta 11), so the gate
+     now also allows one purely additive block in that file: new lines only, zero deletions, no
+     existing line changed, `USAGE` unchanged. Without `--anchor` the script's stdout, stderr
+     and exit codes stay byte-identical, which `test_verifier_output_without_anchor_is_unchanged`
+     and `tests/test_verify_script.py` check. `app/ledger/*`, `app/audit.py` and migration 0002
+     are untouched. The part report gives the exact gate output.
+
+298. **What `--anchor` compares and prints.** Form: `verify_ledger.py EXPORT_FILE --anchor
+     HEADS_FILE`. The heads file is JSON lines; blank lines are ignored. The head is the last
+     line that has `seq` (an integer of at least 1) and `hash` (64 lowercase hex) and no
+     `new_series` key. The export is verified exactly as without the option and the same lines
+     are printed; then one line follows on stdout: `anchor: OK seq=<s>` when entry `s` is inside
+     the verified part of the export (all of it when valid, the entries before
+     `first_mismatch` when not) and its stored hash equals the head's hash, otherwise
+     `anchor: MISMATCH seq=<s>`. A shorter chain has no entry `s` and is a mismatch (spec 6.2
+     case 2); a rewritten entry at or below `s` changes entry `s`'s hash even when the later
+     hashes are recomputed (case 3). The exit code is 0 only when the export is valid and the
+     anchor is OK, otherwise 1. Only the seq is printed, never a hash or payload value.
+
+299. **The first head comes only from a manual new-series run.** A heads file that cannot be
+     read, has a line that is not a JSON object, has a head line with a malformed `seq` or
+     `hash`, or has no head line at all, gives exit 2 with a reason on stderr (`anchor: ...`)
+     and nothing on stdout, so it can never pass as OK. The workflow (M8) therefore fails a
+     scheduled run when `heads.jsonl` has no head yet; the first head, like every restart after
+     a test reset, is written by a `workflow_dispatch` run with `new_series: true` and a reason.
+
+300. **`platform.reset()` keeps `reset_count` across the truncate.** `platform_counter` is in
+     `PHASE5_TABLES`, so every truncate list (reset's and the test fixtures') empties it. In
+     `reset()`'s owner transaction, `reset_count` is read before the `TRUNCATE`, the `TRUNCATE`
+     runs as before, and a row with the count plus one is inserted after it; a missing row
+     counts as 0. One transaction, so a failed reset changes neither the tables nor the count.
+     Resets are serialised by a session-level advisory lock (`pg_advisory_lock`, key ASCII
+     "RSET" = 1381188948, never the ledger's "LEDG" or the verification run's "LVRN"), taken on
+     its own connection and held over the truncate, the seed and the clock step, then released
+     with `pg_advisory_unlock` in a `finally` block, because reading `reset_count` before the
+     `TRUNCATE` and the post-commit seed otherwise deadlock concurrent resets. A reset
+     concurrent with ordinary requests that read the tables it truncates can still fail with
+     500, as before M6; that is outside this change.
+     Audit 2 (finding B2) fixed one lock order, advisory locks before tables: `RSET`, then the
+     verification lock `LVRN` (decision 302) as the first statement of the truncate
+     transaction, then the `TRUNCATE`'s table locks. So a reset waits for a verification run in
+     progress, and a run started during a reset waits for the reset's commit before it touches
+     a table; before this, a NIGHTLY run's holder connection (idle in transaction, waiting in
+     Python for its checks connection) and the `TRUNCATE` could wait on each other unseen by
+     PostgreSQL, and the service hung. A reader that locks several tables in one statement
+     (the alert step, a request) can still form a cycle with the `TRUNCATE`, which PostgreSQL
+     detects. A request that holds table locks on one connection while it waits in Python for
+     another (as the dashboard did until audit 3, R1, which now has it read the worker values
+     and clocks first) forms a cycle with a queued `TRUNCATE` that PostgreSQL cannot see; so
+     once `LVRN` is held, the truncate transaction sets `lock_timeout` to 2 s for itself only
+     (`SET LOCAL`), and the wait for `LVRN` stays unbounded. When a detected deadlock or that
+     lock timeout aborts the reset, the truncate transaction is retried, three attempts in all
+     with a short pause, and then the error is logged and raised (500). Each attempt rolls back
+     whole, so `reset_count` rises by exactly one. The order is written out at
+     `RESET_LOCK_KEY` in `app/platform.py`.
+     A test fixture that truncates the table sets the count back to 0, which `/healthz` shows
+     as `"reset_count": 0`.
+
+301. **Migration 0010 creates `platform_counter`.** No migration owned the table that spec 6.5
+     names, so Part 3's own `0010_ledger_ops.py` creates it: `singleton boolean` primary key,
+     default true, with the check `ck_platform_counter_single_row` (`singleton` must be true),
+     which keeps it to one row as `clock_state` does in migration 0001, and `reset_count bigint`
+     not null, default 0. The application role gets SELECT only; only `reset()` writes it, as
+     the owner. The migration inserts no row.
+
+302. **The nightly run happens once per wall-clock UTC day, from `NIGHTLY_VERIFY_HOUR_UTC`.**
+     `ledger_ops.nightly_due(engine)` is true when the wall-clock hour is at least
+     `NIGHTLY_VERIFY_HOUR_UTC` (default 2, an integer from 0 to 23) and no `NIGHTLY` row of
+     `ledger_verification_run` has a `started_at` on the current wall-clock UTC date. So a worker
+     that was down at 02:00 still runs later the same day, and two passes on one date give one
+     row. Two guards keep it to one row when several workers run at once: `run_verification`
+     takes a transaction advisory lock of its own (key ASCII "LVRN", never the ledger's "LEDG"
+     key) and re-checks the condition under it, and a unique index on
+     `((started_at AT TIME ZONE 'UTC')::date) WHERE trigger = 'NIGHTLY'` rejects a second row
+     even if the lock were bypassed. `LVRN` is the run's first lock: the holder takes it
+     before it reads or writes `ledger_verification_run`, and `platform.reset()` takes it
+     before its `TRUNCATE` (decision 300, audit 2 B2), so the holder never waits on a lock a
+     `TRUNCATE` holds. The checks run in one REPEATABLE READ, READ ONLY
+     transaction (one snapshot, so a write committed between the ledger read and the event read
+     cannot look like a mismatch); the result is then inserted by the transaction that holds the
+     lock. Results go to `ledger_verification_run`, never into the ledger (spec 6.1). The worker
+     step runs after the deliveries, in its own try/except, and logs a failure by type name
+     only, so a failed nightly run never affects the other passes. `NIGHTLY_VERIFY_HOUR_UTC` and
+     `ALERT_DEADLINE_WARNING_HOURS` are checked at start-up by `config.check_ledger_ops_settings()`,
+     called by `app.main.create_app` and `app.worker.main` next to `escalation_percentages()`, so
+     a bad value (anything but an integer 0 to 23, or a positive integer; the empty string
+     included) stops both processes, and an unset one takes the default 2 or 24.
+
+303. **`clock.wall_now()` is also used by the nightly step and alerts A2 and A3.** Its docstring
+     in `app/clock.py` still says "Only for the sweeper heartbeat"; `app/clock.py` is not
+     changed (it is Part 4's file). The nightly schedule, the run's `started_at` and
+     `finished_at`, and the A2 and A3 ages (M7) read the wall clock, because the simulated clock
+     jumps and these are operational times (spec 6.1, 7.3). Everything about events, deadlines
+     and reminders still reads `clock.now()`.
+
+304. **How the projection check replays gap events.** `ledger_ops.projection_check` (spec 6.3,
+     D13) replays the ledger entries of each event in `seq` order and compares the result with
+     the `event`, `disposition` and `harm_field` rows. A monitoring gap has no `EVENT_FLAGGED`
+     entry, so its `event.system_id` is expected from the `GAP_OPENED` payload and its
+     `metric_name`, `observed_value` and `threshold_value` are expected null. Harm fields are
+     compared only for an event with at least one `DISPOSITION_*` entry, because before that no
+     payload carries them (a breach's are pre-filled, a gap's are four NOT_APPLICABLE, and
+     neither is in the ledger). Timestamps are compared as instants and reported in the API
+     form; decimals are compared as exact strings (`format(value, "f")` against the payload).
+     A mismatch is `{event_id, column, expected, actual}` and nothing else (spec 6.1).
+
+305. **Tables of other parts that are absent are skipped, with zero counts.** Part 3's branch
+     runs without Part 1's `report` and `report_submission` tables and without Part 2b's
+     `event.erased_at`. Each is looked up first (`to_regclass` for a table, the catalog for a
+     column); when it is absent, the comparison or count that needs it is skipped and counts
+     as zero, never as an error. In M3 this covers the `report` rows of the projection check
+     (count and hashes against `REPORT_ASSEMBLED`); M4 and M7 use the same rule for their
+     counts. After the integration merge every lookup finds its table and nothing is skipped.
+
+306. **The `/healthz` 503 body for an unreachable database.** The old four fields keep their
+     503 values (decision 111, LIM-09). Of the four new ones, `version` comes from the
+     environment, because it needs no database, and `last_verification`,
+     `last_verification_age_seconds` and `reset_count` are null, because they could not be
+     read. When the database is reachable, all four come from the database and environment as
+     in spec 6.5, also on the stale-sweeper 503. `last_verification` is the latest
+     `ledger_verification_run` of any trigger (by `started_at`, then `finished_at`, then
+     `run_id`), shown as `{finished_at, valid, head_check}` only, never a hash or mismatch;
+     `last_verification_age_seconds` is whole seconds from its `finished_at` to
+     `clock.wall_now()`. Ledger integrity never makes `/healthz` 503 (spec 6.5).
+
+307. **Alert A8 reads the last attempt from the ledger.** `notification_delivery` has no
+     last-attempt column, so for a FAILED delivery the last attempt is the `recorded_at` of its
+     `NOTIFICATION_FAILED` entry (matched on the payload's `notification_id` and `webhook_id`),
+     which the worker stamps with `clock.now()`. `failed_deliveries_24h` (dashboard and A8)
+     counts FAILED deliveries whose entry is later than `clock.now()` minus 24 hours, so in the
+     test environment the window follows the simulated clock, like the other delivery times.
+
+308. **Alert A2 is raised when there is no verification run at all.** A platform that has never
+     verified its ledger is in a worse state than one whose last run is old, so A2 (warning)
+     is raised with `detail: {"last_run": null}` and `since: null`. Otherwise A2 holds when the
+     wall-clock time since the latest run's `finished_at` exceeds 26 hours, with
+     `detail: {"last_run": <run_id>}` and `since` 26 hours after that `finished_at`.
+
+309. **Once-a-day alert log lines are remembered in process.** There is no storage for them, so
+     `ops.raise_alerts` keeps a set of (wall-clock UTC date, code, subject) in memory; the
+     subject is the run for A1, the event for A6 and A7, and none for the other codes. Entries
+     of earlier dates are dropped. A restarted worker starts with an empty set, so a line can
+     repeat after a restart; that is accepted. The line is `alert: code=<code>` followed by the
+     detail's ids and counts as `name=value` (for A6, `alert: code=A6 event_id=evt-…`), at
+     ERROR for critical and WARNING otherwise, on the `ops` logger. For A1 the worker logs
+     `alert: code=A1 run_id=…`; the run's single `alert: code=LEDGER_INTEGRITY` line (spec 6.1)
+     is written by `ledger_ops` when the run is recorded and is never repeated by this step.
+     The step runs after the nightly step in each worker iteration, in its own read-only
+     transaction and its own try/except, so deliveries and the nightly run are unaffected.
+
+310. **`test_alert_deadline_passed_without_submission` is integration-marked and red until Part 1
+     merges.** It checks that A6 is raised once a DISPOSITIONED event's deadline has passed
+     without a submitted report and is cleared by a submission through Part 1's report routes.
+     On this branch the report route answers 501, so the test fails with a message naming the
+     missing Part 1 dependency, as the M3 and M4 integration tests do; it is the third
+     expected-red test. Until then, decision 305 applies: with no `report` or
+     `report_submission` table, every DISPOSITIONED event counts as unsubmitted for A6, A7 and
+     the deadlines block, and the reports block is all zero.
+
+311. **The anchor workflow's base URL is a repository variable, never a dispatch input.**
+     `chain-head.yml` reads the service URL from `vars.POD_BASE_URL` and the viewer key from
+     `secrets.POD_VIEWER_KEY`, both through the job's `env`, so neither is written into a shell
+     script, and `reason` reaches the script through `env` as well. A dispatch input for the URL
+     would let a manual run anchor another service's export into the same series. The variable
+     and the secret are deploy-time steps that need the team's approval (hard rule 3); neither is
+     created by this branch.
+
+312. **The anchor workflow is checked by hand; its first live run is deploy-time.** GitHub runs
+     scheduled and `workflow_dispatch` workflows only from the default branch, so
+     `chain-head.yml` cannot run before it reaches main. Its comparison logic is
+     `tools/verify_ledger.py --anchor`, tested in M1; at M8 the YAML was parsed and its shell
+     steps were run by hand against a local API with a scratch heads file. Choices made in the
+     YAML: job-level `permissions: contents: write` only; one `concurrency` group without
+     cancelling; the same action versions as `ci.yml` (`actions/checkout@v4`,
+     `actions/setup-python@v5`); main is checked out without persisted credentials and
+     `chain-heads` in a second directory; the export and `/healthz` go to the runner's temporary
+     directory and are deleted at the end, so they are never printed, uploaded or committed;
+     `/healthz` is logged (`reset_count`, `version`) but its status never fails the run; the head
+     line is the export's highest-seq entry; an empty export fails; a `new_series` run needs a
+     non-empty `reason`, verifies the export without `--anchor` and appends two lines (the
+     `new_series` line, then the head); `actor` is `github.actor`. The workflow does not create
+     `chain-heads`: the branch must exist before the first run, which is a deploy-time step with
+     the secret and the variable. After the audit (M10, findings S-1, S-2, S-4, S-5), neither
+     checkout persists credentials, the viewer key is in the download step's `env` only and the
+     write token (`github.token`) in the commit-and-push step's `env` only, the job times out
+     after 10 minutes and each `curl` after 60 seconds (10 to connect), and a base URL that does
+     not start with `https://` fails the run unless its host is `localhost` or `127.0.0.1` (runs
+     by hand). Pinning actions by SHA (S-3) and protecting `chain-heads` (S-6) are left to the
+     integrator.
+
+313. **M7 interpretations of spec 7.2 and 7.3.** Where the spec was silent, M7 chose:
+     - the dashboard's `ledger.last_verification` is the latest run without `head_hash`, with
+       the projection and report mismatch lists shown as counts;
+     - `since` for A2 to A9 is the moment the threshold was crossed (A2 with no run at all:
+       null), and for A1 the failing run's `finished_at`;
+     - A7 is not raised once the deadline has passed; then only A6 holds;
+     - A9 (info) is logged at WARNING, the level for every severity other than critical;
+     - the three `reports` counts are independent totals: all report rows, rows with a
+       submission, and rows not bound to their event's latest disposition;
+     - `generated_at` is wall-clock time;
+     - a failing run gives two ERROR lines: the `alert: code=LEDGER_INTEGRITY` run line,
+       written once by `ledger_ops` when the run is recorded, and the `alert: code=A1 run_id=…`
+       line of the worker's alert step, repeated once per wall-clock UTC day while that run is
+       the latest (decision 309).
+
+     M10 pinned the boundaries with a test: exactly at the deadline A7 holds and A6 does not,
+     and a deadline exactly 24 hours away is not counted in `due_within_24h_unsubmitted`
+     (`now <= deadline < now + 24 h`). A1 follows the latest run only, so after a REGRESSED run
+     it clears on the next clean run while the external anchor keeps failing; this is accepted
+     and written into the A1 runbook (operations note item 4; audit F-4). Audit 3 (N2, N3):
+     an erased event that was never disposed stays FLAGGED or UNDER_REVIEW, because every
+     disposition on it is 409 `ALREADY_ERASED`, and A6 stays raised for an erased, unsubmitted
+     serious event, because its submission is 410; neither is changed, and both are written into
+     the operations note (item 6).
+
+## Part 4 decisions (Phase 5 platform; numbers 314 to 333)
+
+314. **Part 4 is built on `phase5-integration`, not as a base commit.** Spec 11.1 makes Part 4's
+     base commit the first Phase 5 commit, but Parts 1 to 3 each carried the parts of it they
+     needed (decisions 254, 274, 294) and the integration branch merged them (decision 335).
+     The branch `phase5-part4-platform` is cut from `phase5-integration`, so the tables, the
+     migration head 0010, the ledger types and the CI conditions (decision 337) are already
+     there. Part 4 adds only the pieces spec 11.4 gives it that no part made.
+
+315. **The second reviewer is optional configuration.** `REVIEWER_2_KEY` seeds `rev-2` (role
+     REVIEWER) when it is set, and the seed removes the row when it is unset, so a deployment
+     without the key has exactly the Phase 4 keys. Compose and the CI runner step set it;
+     `tools/demo_phase5.py` uses it for step S6 (a second reviewer revises the tier to DEATH)
+     and falls back to `rev-1` when it is absent.
+
+316. **The Model 5 fixture moves to `tests/fixtures/phase5/` (spec 8.6).** The Phase 4 file is
+     left unchanged (spec 10.2). Ex-1 gains the report and submission steps at d3 + 1 h; Ex-2's
+     report step is 200 `NOT_SERIOUS_CLOSURE` instead of 501, and its submission is 409
+     `NOT_SUBMITTABLE`. This ends the known red Model 5 step that decision 337 recorded.
+
+317. **The runner saves values from response headers.** `save` accepts `@header:<Name>`, so
+     Ex-1 can submit with the `X-Report-Sha256` the report response carried. A missing header
+     is a mismatch, not a crash.
+
+318. **Ex-5 is in-process only.** Editing a ledger payload needs database access that the
+     HTTP runner does not have. The fixture names the in-process test
+     (`test_model5_ex5_nightly_verify_finds_a_payload_edit`) and the runner prints that it
+     skips it, so the example is listed rather than silently missing.
+
+319. **AC-16 has one implementation used three ways.** `tools/demo_phase5.py` holds the trace
+     for path S (breach to submission) and path N (not serious, no deadline). The CI step runs
+     it over HTTP; `tests/acceptance/test_ac16_trace.py` runs it through the HTTP runner; and
+     `tests/platform5/test_ac16_in_process.py` runs it in-process through the app client,
+     which is the AC-16 entry in `PHASE5_REQUIRED`. The CI step uses the same condition as
+     the Phase 4 demo, so `test_the_95_conditions_are_unchanged` now counts 4 guarded steps
+     and names "Phase 5 demo (AC-16 trace)"; the 2 unguarded steps are unchanged.
+
+     Audit fix round. The LIM-03 advisory slot is not built. Spec 1.2 says the AC-16 trace
+     "refuses to start while another trace holds the advisory slot (Part 4, 10.3)", but the
+     Phase 5 spec defines no mechanism for the slot: section 10.3 does not describe one. A real
+     mechanism would need a new test endpoint, which is a contract change. The control is the
+     booking rule in `docs/operations.md` (section 8, "Book a window"). This is a recorded
+     deviation from spec 1.2 and 10.3 (SS, decision in the Part 4 fix round).
+
+320. **The HTTP acceptance tests account for logged reads.** A reviewer's event read appends
+     `EVENT_VIEWED`, so the AC-18 test takes its "before" export after its own reads and its
+     "after" export straight after the erasure, then compares positions and hashes between
+     those two only. It registers its webhook at the runner's sink, because registration
+     needs a 2xx ping.
+
+321. **`PHASE5_REQUIRED` names in-process tests only.** The gate reads the flagged in-process
+     results, so its entries are the Part 1 to 3 tests for AC-01, 03, 05, 06, 13, 14 and 18
+     plus the in-process AC-16 trace. `required_criteria()` merges the Phase 4 and Phase 5
+     tables; a criterion in both needs every listed test.
+
+322. **The role matrix covers the Δ routes.** `test_ac14_role_matrix.py` adds the seven new
+     routes with the expected status per role. Routes that need an existing object use an
+     unknown id for the reviewer (404) where creating one would change the shared stack.
+
+323. **The console gets two panels and no new page.** "Report and submission" reuses the event
+     id of the review panel: it loads the JSON report (reviewer key), downloads the PDF as a
+     blob with the reviewer key, lists versions (viewer key) and records a submission with the
+     loaded report's `X-Report-Sha256`. The submit button is disabled for a report with
+     `submission_marking` set, and the marking is shown as a banner. "Ledger operations and
+     health" shows the dashboard summary, the verification history and a manual run. The
+     health chip adds the deployed version and the last verification result.
+
+324. **CORS exposes the report headers.** A browser hides response headers from another origin
+     unless the server lists them, so a console served from another origin could not read
+     `X-Report-Sha256` and could not submit. `app/main.py` adds `expose_headers` for `ETag`,
+     `X-Report-Id`, `X-Report-Version` and `X-Report-Sha256`. The same-origin console at `/ui/`
+     is not affected.
+
+325. **The tester reports `coverage.model` for same-team runs only.** The updated Cross-team
+     Testing Interface (Phase 5 and 6) asks for `coverage.model` when the tester and the target
+     belong to the same team, and for it to be omitted from cross-team reports. Same team is
+     the self target, or a URL in `SAME_TEAM_SYSTEM_URLS`. Cross-team reports are unchanged.
+
+     Audit fix round: the self target is `SUITE_BASE_URL` + `/system`, or the bare
+     `SUITE_BASE_URL`, and `SUITE_BASE_URL` defaults to the Fly URL
+     (`https://eu-ai-act-monitor-api.fly.dev`). That default is older than Part 4 (main
+     a9bf283); Part 4 only reuses it. For the self target, system setup runs in process and the
+     probes call the project API over loopback (`127.0.0.1:$PORT`), so a tester given the Fly
+     URL tests the deployment it runs in, not another machine. Any other URL, an empty one, or
+     one that only starts with the Fly URL, is cross-team: the model is omitted when in doubt.
+
+326. **Model coverage counts design requirements, not tests.** `total` is the 26 rows of the
+     spec's scope table (section 1.1). `covered` is the number of those rows with at least one
+     probe (`M-01` to `M-12`) that ran and passed; an error or a skip covers nothing. A probe
+     may cover more than one row, and a row covered by two probes counts once. The mapping
+     table is `docs/models/phase5_design_requirements.md`, linked from `basis`, and a test
+     keeps it equal to `MODEL_TESTS` in `app/harness_model.py`.
+
+     Audit fix round: "ran and passed" above is wrong. The Testing Interface sets `covered` to
+     the requirements the suite *evaluated*, and a `fail` is an evaluated response ("the
+     response can be evaluated and differs from expectations"). The code
+     (`harness_model.model_coverage`) has always counted `pass` and `fail`; `error` and `skip`
+     evaluate nothing and cover nothing. `covered` never exceeds `total`, and both are counts,
+     never null, because the measure is always available for a same-team run.
+
+     Follow-up (audit F-07; SS, follow-up round 2). No decision recorded how `coverage.system`
+     and `coverage.component` are counted; this is the coverage decision nearest to them. Until
+     this round both counted names invented in the harness (seven criterion ids such as
+     `AC-health`, six component names such as `metrics_ingest`), so every run reported 7 of 7
+     and 6 of 6. Now `coverage.system` counts AC-01 to AC-18 of the pod's REQ/AC document, all
+     in scope (AC-16, manual-only, stays in the total): a criterion counts once, and only when a
+     test performs that criterion's own Setup, Action and Expected through the target's public
+     interface and ends `pass` or `fail`. `coverage.component` counts the ten components of the
+     system architecture (README 17.2): a component counts once, and only when a test sends a
+     request that passes through it and ends `pass` or `fail` on that component's own observable
+     behaviour. `error` and `skip` never count, and 0 is a valid count. `_PROBE_COVERAGE` in
+     `app/harness.py` is the one mapping from probe to criteria and components. No probe
+     performs a whole criterion, so system is 0 of 18 in every run; a run that passes everything
+     reports component 1 of 10 cross-team (T-02) and 7 of 10 same-team. No probe was added.
+
+327. **Thirteen of the 26 rows are probed.** The other rows (the PDF's usability, the anchor
+     workflow, the deployment and its secrets, the manual checks, documents) cannot be observed
+     through the API without changing the target's data beyond the test clock. They are tested
+     in-process or manually, and the mapping lists those tests, but they are not counted.
+
+328. **The probes write only what the suite already writes.** They use the test endpoints the
+     interface allows (reset, clock advance) and the three test keys. The retention probe
+     advances the clock past 186 days; it runs after the base tests so their timing is not
+     affected, and the suite's last test (`T-08`) still runs after the probes.
+
+     Audit fix round: the title is inaccurate. The probes use only the test endpoints and keys
+     above, but they write more than the base tests do. A same-team run, after the system
+     setup's reset and T-07's reset, ingests two breaches (M-02, M-07), advances the clock 5
+     hours (M-03), records two dispositions and assembles two reports (M-03, M-07), records a
+     submission (M-06), advances the clock 186 days and erases a record (M-09), and appends a
+     manual verification run (M-10). Nothing is cleaned up afterwards: the next system setup's reset
+     is the cleanup. Run it only in a booked window (`docs/operations.md` section 8; README
+     17.2).
+
+     Audit fix round 2 (SS's decisions D-1 and D-3). One system session is active at a time: a
+     setup for another `session_id` while one is active is 409 with source `system` and resets
+     nothing (Testing Interface, "Session state and concurrency": teams "must prevent unintended
+     interference", and one-session systems "may return 409 for conflicting setup requests"). A
+     session ends at once when a tester run of the same id finishes or aborts (a self-run), and
+     otherwise after `SESSION_IDLE_SECONDS` (default 600, over 500 times the longest measured
+     self-run, 1.18 s) without activity; activity is its setup, its system report reads
+     and its tester run events. Project API requests carry no session id and are not counted, so
+     a longer staff run without report reads loses the protection after the window, and an
+     abandoned session locks other setups out for up to the window. The console suite runner and
+     `/v1/test/reset` are unchanged and can still reset under a session. The tester also checks a
+     target's `coverage.code` against the interface's coverage rules and reports an invalid one as
+     null counts with a basis naming the problem, never the target's text.
+
+     Follow-up (audit F-04; SS, follow-up round). A target's `coverage.code` of `covered` 0 and
+     `total` 0 is valid and is copied unchanged: the interface asks for "nonnegative integer counts
+     with covered no greater than total", which 0 of 0 meets, and its "do not substitute zero"
+     applies to a measure the target knows is unavailable, which a tester cannot tell from the
+     counts. The `total == 0` rejection in `harness._code_problem` is removed; the other checks
+     above are unchanged.
+
+329. **A probe that cannot reach the target is an error, not a failure.** Communication errors
+     become `error` with source `communication`; a fault in the probe code becomes `error` with
+     source `tester`. Only an observed wrong answer is `fail`.
+
+330. **`pod_contract_phase5.md` is not written yet.** Spec 9.4 exports the whole agreed contract
+     only when the delta is agreed. `docs/contract/phase5/delta.md` lists Δ1 to Δ11 as
+     proposed, with the as-built behaviour and the open inputs of spec 9.3; agreeing them is a
+     team step.
+
+331. **The Phase 5 models are drawn from the merged code.** `docs/models/phase5_models.md` adds
+     the context, Model 1 and Model 2 diagrams (Mermaid, rendered by GitHub), the Model 4
+     table and the Model 5 changes. Every test it cites exists on the branch; no PNG or SVG
+     export is added.
+
+332. **The manual checks are a form, not results.** `docs/manual_checks_phase5.md` lists M1 to
+     M7 with what passes and an empty result column. No result is filled in by the
+     implementation.
+
+333. **Deployment stays a team step (OD-1, spec 11.6).** Part 4 changes no Fly configuration.
+     Deploying needs `REVIEWER_2_KEY` as a Fly secret and `APP_VERSION` set; until then
+     the deployed service has the Phase 4 keys and `version` null.
+
+## Integration decisions (Phase 5 integration; numbers 334 to 353)
+
+334. **The integration starts from a harness base, not from PR #7 (integration plan, section 2;
+     SS).** On main `d9205f2`, CI stopped at Static checks (`ruff format` on `app/harness.py`
+     and `app/api/harness_routes.py`) and `tests/worker/test_clock_rule.py` failed on
+     `app/harness.py`. Commit `a908afa` (tree `09c68d1`), on `d9205f2`, replaces the four
+     direct system-time reads in `app/harness.py` (two `default_factory=time.time`, two
+     `finished_at = time.time()`) with `clock.wall_now().timestamp()`, the same value, and runs
+     `ruff format` on both files; nothing else changes. It is pushed as `phase5-harness-base`.
+     PR #7 (`aa89f5e`, `fix/harness-ci`) fixed `a9bf283`'s harness and does not apply to
+     `d9205f2`'s; it is left as it is (it is in Part 3's history, decision 296), and the
+     `app/harness.py` conflict at the Part 3 merge resolves to the harness base.
+
+335. **Merge order, resolutions and cut rule (integration plan, sections 3 to 5; decision 288;
+     SS).** `phase5-integration` is main `d9205f2`, then the harness base `a908afa`, then Part 1
+     `059dd1c` (merge `e0e9a70`, no conflict), then Part 3 `943bb99` (merge `359ae7f`, 11
+     conflicted files), then Part 2 `bcc88b4` (merge `4e6e0d0`, 8 conflicted files), each with
+     `git merge --no-ff`. Part 3 is merged once, at `943bb99` (its audit 3 round), not at
+     `9d16cac` and again later. Resolutions, as planned: `app/harness.py` the harness base;
+     `app/reports.py` and `0008_reports.py` Part 1's real files, `0009_personal_data.py` Part
+     2's, over Part 3's placeholders; `app/main.py` both routers, sorted; `PHASE5_TABLES` the
+     five tables of spec 11.1 in its order; the `app/platform.py` imports both (`app.formats`,
+     then `app.ledger_ops`); the head pins 0010; `tests/worker/test_schema.py` the union of the
+     column slots and grant exceptions; README sections 14, 15, 16 and the decision blocks in
+     number order. After the merges, Part 2's and Part 3's own files are byte-identical to
+     their heads. A part is cut by `git revert -m 1` of its merge commit, as a new commit:
+     Part 2 alone at any time; Part 3 and Part 1 only after the parts merged after them, in
+     reverse order. A reverted merge comes back by reverting the revert. Cutting Part 2
+     (`git revert -m 1 4e6e0d0`) conflicts in `docs/decisions.md` in one region, Part 2's whole
+     decision block (274 to 288, including the in-place R3 note in 286): resolve that region to
+     the revert side (drop the block), and say in the cut commit's message that decision 336
+     then refers to a removed decision. The Part 4 cut is `git revert -m 1 af584c3` (the Part 4
+     merge); if it conflicts in `docs/decisions.md` only, resolve to the revert side (drop
+     Part 4's block). Migration ids 0008 and 0009 are shared by Part 3's
+     placeholders and the real migrations, so a database migrated at one checkpoint is not
+     reused at another without a downgrade first.
+
+     Follow-up (audit F-08; SS, follow-up round). The Part 4 cut is now two reverts, in this
+     order: `git revert -m 1 21876ff` (the Part 4 follow-up merge), then `git revert -m 1
+     af584c3`. A Part 2 cut (`git revert -m 1 4e6e0d0`) also conflicts in `pyproject.toml`
+     (the `reportlab` and `cryptography` pins), and it leaves eight `PHASE5_REQUIRED` entries
+     (AC-05 twice, `test_nothing_is_erased_before_retain_until`, AC-18 five times) plus Part 4's
+     AC-05 and AC-18 HTTP files (`tests/acceptance/test_ac05_retention.py`,
+     `tests/acceptance/test_ac18_erasure.py`) and the M-08 and M-09 probes pointing at removed
+     code, so it needs a Part 4 follow-up commit. This replaces "Part 2 alone at any time"
+     above.
+
+     Follow-up (SS, follow-up round 2). The Part 4 cut is now three reverts, in this order: `git
+     revert -m 1 87b270f` (the Part 4 follow-up round 2 merge), then `git revert -m 1 21876ff`,
+     then `git revert -m 1 af584c3`.
+
+336. **Decision 286 is corrected in place (re-audit R3; SS).** Its sentence on
+     `GET /v1/events/{id}/report` for a damaged stored report said the route is 500. That holds
+     for a changed nonce, ciphertext or tag; a changed `pd1:` prefix gives 200 with the stored
+     bytes under a non-matching `X-Report-Sha256`. Docs only, no code change.
+
+337. **The integration branch runs the Phase 5 checks in CI (SS, Q1).** `.github/workflows/ci.yml`
+     adds `github.ref_name == 'phase5-integration'` to the five conditions of Phase 4 Addendum
+     9.5: the flagged suite and the acceptance gate in job `test`, and the HTTP acceptance
+     runner, the Model 5 examples and the Phase 4 demo in job `image`. Spec 10.4 and 11.1 give
+     this edit to Part 4's base commit, which does not exist; the integrator made it in a
+     separate commit after the last merge. The same commit updates the Phase 4 test that pins
+     these conditions: `CONDITION_95` in `tests/test_stack_config.py` gains the same clause, so
+     that `test_the_95_conditions_are_unchanged` checks the new condition; its assertions and
+     counts (3 guarded, 2 unguarded) are unchanged. Without it that test fails on the
+     integration branch. The integration plan missed this test, and the final run found it
+     (SS's choice). The comment above the flagged step names `phase5-integration` too. Part 4
+     builds on the updated constant. Until Part 4 lands its Phase 5 Model 5 fixture, the
+     runner and the Model 5 step are expected to fail on Model 5 Ex-2 (step 8 expects 501 and
+     gets 200).
+
+338. **Part 4 is merged at `c2cbc72` (merge `af584c3`, `git merge --no-ff`, no conflict; the
+     merge tree equals `c2cbc72`'s tree `270f327`; SS).** On the merged tip the flagged suite
+     (`--run-integration`) is 1838 passed and the unflagged suite 1756 passed, 82 skipped; the
+     HTTP acceptance runner now has 185 cases (133 before Phase 5, plus the five new acceptance
+     files and the role matrix's Δ routes), all passed. Rounds, one line each:
+     - Audit at `92dfd2d` (Part 4 compliance audit): 19 findings, F-01 to F-19 (7 major, 6
+       minor, 6 notes).
+     - Fix round 1 (`4f25bfe` to `93fb60a`): F-01 to F-05 and F-08 to F-13 closed, F-06's
+       `coverage.model` rules R1 to R7 met with probe tests, the atomic run check and the
+       aborted run that keeps its results, and the Part 4 report (F-07).
+     - Fix round 2 (`f4021c7` to `c2cbc72`): SS's D-1 (one active system session) and D-3 (a
+       target's `coverage.code` is checked; an invalid one becomes null with a reason).
+     - Integration check (this merge): every item re-verified independently, by tests,
+       mutants and live calls, before the merge.
+     D-1's idle window is 600 s by default, configurable with `SESSION_IDLE_SECONDS` (decision
+     328). A report carries `coverage.model` only for a same-team target: the self target
+     (`SUITE_BASE_URL` + `/system`) or a URL listed exactly in `SAME_TEAM_SYSTEM_URLS`
+     (decision 325).
+
+339. **Recorded deviations that remain after the Part 4 merge (SS).** The LIM-03 advisory slot
+     is not built (spec 1.2 and 10.3; decision 319, audit fix round). AC-18 over HTTP checks
+     that the export before erasure is a prefix of the export after it, not exactly
+     `len(E0) + 1` entries (spec 4.5 step 6; decision 320); the exact check stays in-process.
+     The console suite runner (`POST /v1/test/suite`) and `POST /v1/test/reset` are not
+     covered by the one-session rule of D-1 and can still reset the data under an active
+     session (decision 328).
+
+340. **LIM-07's dashboard item is not built; the Pinned 7.2 shape governs (audit F-02; SS).**
+     Spec 1.2's LIM-07 row says "The dashboard shows reminders delivered for events now CLOSED
+     (informational)", but the Pinned dashboard shape of spec 7.2 has no field for it, and
+     `GET /v1/ops/dashboard` returns exactly that shape. No informational count is added. LIM-07
+     itself is unchanged and stays stated in `docs/operations.md` section 9. This is a recorded
+     deviation from spec 1.2's LIM-07 row.
+
+341. **Follow-up round after the independent audit of `494255a` (SS).** The audit
+     (`/mnt/project-files/phase5/audit-final/report.md`) found every Phase 5 REQ and AC met in
+     its automated parts, with no Blocker or Major finding (8 Minor, 9 Notes). On
+     `phase5-part4-platform`, tests first in `e7e2d48`, then `2c5fffd`: F-04 (a target's 0 of 0
+     `coverage.code` is valid; decision 328's Follow-up), F-05 (delta row A5 is asserted) and
+     F-06 (the Health timer start is asserted). F-07 (the system-coverage criterion ids and the
+     component list) is deferred: the pod specification names neither, so the mapping is a
+     question for SS. Docs only: F-02 (decision 340) and F-08 (decision 335's Follow-up).
+     Accepted as recorded, with no code or test change: F-01 (LIM-03, decision 319), F-03 (reset
+     and the suite runner under an active session, decision 339) and F-12 (AC-18 over HTTP,
+     decision 320). Merged into `phase5-integration` at `21876ff` (`git merge --no-ff`, no
+     conflict).
+
+342. **System coverage counts AC-01 to AC-18; component coverage counts the architecture
+     components (audit F-07; SS, follow-up round 2).** The Cross-team Testing Interface counts,
+     for `coverage.system`, the "acceptance criteria from the shared pod specification the suite
+     evaluated out of all criteria in scope", using "the pod's criterion IDs and stated
+     evaluation rules", each once; and, for `coverage.component`, "how many pod-defined
+     components its tests covered". The tester counted seven criterion ids and six component
+     names that it had invented. Now:
+     - `coverage.system`: `total` is 18, AC-01 to AC-18 of the pod's REQ/AC document (Project
+       Requirements), all in scope; AC-16, whose method is manual-only, stays in the total. A
+       criterion counts as evaluated only if at least one test performs that criterion's own
+       Setup, Action and Expected through the target's public interface and ends `pass` or
+       `fail`; a probe that does not perform the criterion's action does not count it. No probe
+       does, so `covered` is 0 in every run. `basis` starts "Acceptance criteria listed in the
+       pod specification" and adds the scope note.
+     - `coverage.component`: `total` is 10, the components of the system architecture (Ingestion
+       API, Rules engine, Event service, Gap sweeper, Access control, Config service, Workflow
+       engine, Notification outbox, Reporting service, Audit ledger). A component counts as
+       exercised only if at least one test sends a request that passes through it and ends
+       `pass` or `fail` on that component's own observable behaviour. A run that passes
+       everything reports 1 of 10 cross-team and 7 of 10 same-team. `basis` is "Components of the
+       system architecture (README 17.2)". The repository has no architecture document naming
+       components, so README 17.2 lists them with the modules that implement each.
+     - Both: each item counts once; `error` and `skip` never count; 0 is a valid count. No probe
+       was added and `pod_spec.txt` is unchanged.
+     The registry's pod-specification link must point to a document that lists the criteria;
+     `pod_spec.txt` lists routes and REQs, not AC ids. On `phase5-part4-platform`: tests
+     `429377a`, fix `c8a32e3` (decision 326's Follow-up; README 17.2). Merged into
+     `phase5-integration` at `87b270f` (`git merge --no-ff`, no conflict).
+
+343. **Model update: stale diagram elements fixed, a Phase 5 deployment view, and images (SS,
+     docs round; report draft findings MF-1 to MF-10).** Each finding was checked against the
+     code and configuration, and each diagram follows the code; no code changed.
+     - Phase 5 context diagram (MF-6, MF-7, MF-8): redrawn in the Phase 4 notation as
+       `docs/models/context-diagram-phase5.mmd`, and the same diagram in `phase5_models.md`
+       8.1. PostgreSQL is its own store, not inside the Fly app (it is a separate Fly Postgres
+       app, `fly.toml` line 1); the web console, the partner team and the test endpoints are
+       back; the operator acts with the reviewer key (erasure is REVIEWER only); the chain-head
+       workflow pulls the export and `/healthz` itself and appends to `chain-heads`, which does
+       not exist yet (decisions 311, 312).
+     - Phase 4 files, kept as the Phase 4 record with their stale labels corrected and the
+       title saying so: the context diagram's "Report generation: Phase 5" and "report not
+       built yet" (MF-1), Model 1's "Not implemented (Phase 5): REPORT_READY, SUBMITTED ... then
+       501" (MF-2; now report statuses ASSEMBLED and SUBMITTED, then 200), and the deployment
+       view's "fly.toml on development-deploy" (MF-3; on main, decision 295).
+       `phase4_models.md` marks its "not built (Phase 5)" rows as superseded and names the
+       replaced 501 test (MF-5). The Model 3 note gains the A6 and A7 sentence (MF-10).
+     - Model 2 (MF-9): `report_submission.event_id` is a foreign key, `record_key` is linked
+       dashed (no foreign key), and, found while redrawing, a disposition has at most one
+       report (`uq_report_disposition`). MF-4 is not false and is unchanged: the full schema is
+       the Phase 4 file plus the Phase 5 one.
+     - New deployment view `docs/models/deployment-phase5.mmd` (MF-3b), in the notation of the
+       Phase 4 view: the Fly processes (the worker with the nightly verification and the alert
+       step), the separate Fly Postgres app, Vercel, the Compose stack of the CI `image` job,
+       and the chain-head workflow with its branch, marked as not yet scheduled or present.
+     - Images: every Phase 5 diagram (context, Model 1, Model 2, deployment) and the three
+       corrected Phase 4 diagrams have `.png` and `.svg` beside their `.mmd`, rendered with
+       mermaid-cli 11.4.2 (`-s 2 -b white`), the toolchain that reproduces the Phase 4 images; the
+       Phase 5 context and deployment views use a wider page (`-w 1800`, `-w 1300`) so their text
+       stays legible.
+       This replaces "no PNG or SVG export is added" in decision 331.

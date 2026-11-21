@@ -4,6 +4,10 @@ import calendar
 import uuid
 from datetime import UTC, datetime, timedelta
 
+# Phase 5 spec 5.4 (D10): no simulated time and no sample timestamp may reach this instant,
+# so that retain_until (detected_at plus six months) is always representable.
+TIME_LIMIT = datetime(9999, 7, 1, tzinfo=UTC)
+
 
 def new_id(prefix: str) -> str:
     """A new opaque id such as `evt-<32 hex digits>`."""

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""HTTP runner for tests/fixtures/phase4/model5_examples.json (Phase 4 spec 4.7; decision 144).
+"""HTTP runner for tests/fixtures/phase5/model5_examples.json (Phase 5 spec 8.6; Phase 4 spec
+4.7; decision 144). The Phase 4 file stays unchanged beside it (Phase 5 spec 10.2).
 
 Usage: python tools/run_model5.py [--base-url URL] [--example ex1 ...]
 
@@ -9,8 +10,9 @@ the same channel; defaults to WEBHOOK_SINK_URL).
 
 Each example runs in order. A step's "at" is an offset from the example's start (d0); the runner
 advances the test clock to it, then makes the call (if any) and checks the expectations. The
-first mismatch fails the example; the run exits 1 if any example failed, 0 if all passed. The
-fixture README describes the step format.
+first mismatch fails the example; the run exits 1 if any example failed, 0 if all passed. An
+example marked `in_process` (Ex-5, which edits a row as the owner role) is listed and skipped;
+its named pytest test runs it. The fixture README describes the step format.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import Any
 import httpx
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURE = ROOT / "tests" / "fixtures" / "phase4" / "model5_examples.json"
+FIXTURE = ROOT / "tests" / "fixtures" / "phase5" / "model5_examples.json"
 
 DEFAULT_KEYS = {
     "system": "test-ingest-key-sys-42-0d6f1c2e9b8a4f37",
@@ -314,8 +316,17 @@ def _check_response(
         for path, expr in (expect.get("relative") or {}).items():
             check_relative(payload, path, expr, variables)
         for name, path in (expect.get("save") or {}).items():
-            # "@NOW" saves this step's simulated now (whole seconds), e.g. a sample's timestamp.
-            variables[name] = variables["NOW"] if path == "@NOW" else str(json_path(payload, path))
+            # "@NOW" saves this step's simulated now (whole seconds), e.g. a sample's timestamp;
+            # "@header:<name>" a response header, e.g. the report's X-Report-Sha256.
+            if path == "@NOW":
+                variables[name] = variables["NOW"]
+            elif path.startswith("@header:"):
+                header = path.removeprefix("@header:")
+                if header not in response.headers:
+                    raise Mismatch(f"no {header} header")
+                variables[name] = response.headers[header]
+            else:
+                variables[name] = str(json_path(payload, path))
     except KeyError as missing:
         raise Mismatch(f"missing {missing} in {payload!r}") from None
 
@@ -390,6 +401,10 @@ def run_all(
     failed = []
     for example in data["examples"]:
         if selected and example["id"] not in selected:
+            continue
+        if "in_process" in example:
+            where = example["in_process"]
+            print(f"skipping {example['id']}: {example['title']} (in-process: {where})")
             continue
         print(f"running {example['id']}: {example['title']}")
         try:
