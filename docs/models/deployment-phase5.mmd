@@ -20,8 +20,8 @@ flowchart LR
         CIJ["ci.yml, job image<br/>docker compose up -d --build --wait;<br/>HTTP acceptance runner, Model 5 examples,<br/>Phase 4 demo, Phase 5 demo (AC-16 trace)"]
     end
     subgraph GHCH["GitHub Actions, chain head"]
-        CHW["chain-head.yml (cron 17 3 * * *, or by hand)<br/>tools/verify_ledger.py --anchor from main;<br/>scheduled only once on main"]
-        CHB[("branch chain-heads<br/>heads.jsonl; created at deploy time, not yet present")]
+        CHW["chain-head.yml (cron 17 3 * * *, or by hand)<br/>tools/verify_ledger.py --anchor from main;<br/>runs on main on its schedule once merged"]
+        CHB[("branch chain-heads<br/>heads.jsonl; created at deploy time by SS<br/>(docs/operations.md item 5)")]
     end
     CL["API clients<br/>(monitored system, partner team)"]
     RCV["Registered webhook receivers"]

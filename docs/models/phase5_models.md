@@ -27,7 +27,7 @@ flowchart TB
     PT["Partner team and CI runner<br/>(contract tests through test endpoints;<br/>their tester calls /system/test/*)"]
     VIEW["Viewer, e.g. auditor<br/>(VIEWER key): reads events, audit, report list,<br/>ledger export/verify/verifications, dashboard"]
     REV["Authorized reviewer, rev-1 (rev-2 when REVIEWER_2_KEY is set)<br/>(REVIEWER key; console or API directly):<br/>views events, confirms fields, records dispositions,<br/>downloads the report (JSON or PDF), records the submission"]
-    BR["GitHub branch chain-heads<br/>(heads.jsonl; created at deploy time, not yet present)"]
+    BR["GitHub branch chain-heads<br/>(heads.jsonl; created at deploy time by SS,<br/>docs/operations.md item 5)"]
     subgraph SYS[" "]
         SYSL["Compliance monitoring system (what we build)"]
         CORE["REST API + worker<br/>detects breaches and gaps; pre-fills Art. 3(49) fields;<br/>records dispositions and revisions; computes Art. 73 deadlines;<br/>plans and sends 50/80/100% reminders; hash-chained ledger;<br/>assembles and stores reports; records submissions; erases after retain_until;<br/>nightly ledger verification and alerts. Never assigns severity."]
@@ -241,6 +241,6 @@ the reminders continuing after the submission).
 [`deployment-phase4.mmd`](deployment-phase4.mmd): the Fly app (processes `api` and `worker`, the
 worker adding the nightly verification and the alert step; `prepare` as the release command), the
 separate Fly Postgres app, the console on Vercel, the Docker Compose stack started by the CI
-`image` job, and the chain-head workflow with its `chain-heads` branch. The workflow is on
-`phase5-integration`, so it is not scheduled until it is on main, and the branch does not exist
-yet (`docs/operations.md` item 5; decisions 311 and 312).
+`image` job, and the chain-head workflow with its `chain-heads` branch. The workflow runs on main
+on its schedule once merged, and the `chain-heads` branch is created at deploy time by SS
+(`docs/operations.md` item 5; decisions 311 and 312).
