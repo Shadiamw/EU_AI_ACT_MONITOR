@@ -3,7 +3,7 @@ config:
   state:
     nodeSpacing: 120
     rankSpacing: 120
-title: "Model 1 - Event state machine as built (Phase 4, main 9b2e587)"
+title: "Model 1 - Event state machine as built (Phase 4, main 9b2e587; report note updated in Phase 5)"
 ---
 stateDiagram-v2
     direction LR
@@ -59,7 +59,8 @@ stateDiagram-v2
         T7 serious tier: deadline from the first anchor; looser than the last serious tier needs a rationale
         T8 NOT_SERIOUS with a rationale again
         Phase 2 names: CLASSIFIED(tier) = DISPOSITIONED, CLOSED_NOT_SERIOUS = CLOSED.
-        Not implemented (Phase 5): REPORT_READY, SUBMITTED. GET .../report gives 409 NO_DISPOSITION, then 501.
+        Phase 5: REPORT_READY and SUBMITTED are report statuses (ASSEMBLED, SUBMITTED), not event states;
+           see model1-state-machine-phase5. GET .../report gives 409 NO_DISPOSITION, then 200.
         Responses, not states (nothing written): DENIED = 401 or 403 FORBIDDEN_ROLE;
         REJECTED = 400 RATIONALE_REQUIRED or MALFORMED_BODY, 409 HARM_FIELDS_UNCONFIRMED,
         409 DEADLINE_EXTENSION_REQUIRES_RATIONALE, 409 EVENT_NOT_REVIEWABLE (gap event).

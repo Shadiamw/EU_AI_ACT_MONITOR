@@ -1,10 +1,10 @@
 ---
-title: "Deployment view (Phase 4): Fly.io and Vercel, plus the Docker Compose stack used in CI"
+title: "Deployment view (Phase 4): Fly.io and Vercel, plus the Docker Compose stack used in CI (Phase 5: see deployment-phase5)"
 ---
 flowchart LR
     IMG["One Docker image (Dockerfile on main):<br/>python:3.12-slim, app, migrations, tools, tests"]
     VER["Vercel static site<br/>app/static copied to web/ by scripts/vercel-build.mjs,<br/>config.js carries API_BASE_URL"]
-    subgraph FLY["Fly.io app eu-ai-act-monitor-api (fly.toml on development-deploy)"]
+    subgraph FLY["Fly.io app eu-ai-act-monitor-api (fly.toml, now on main)"]
         API["process api<br/>python -m app.runtime api (uvicorn, port 8000)"]
         WRK["process worker<br/>python -m app.runtime worker<br/>gap sweep, fire_due reminders, deliver_due"]
         REL["release_command prepare<br/>(alembic upgrade, seed)"]

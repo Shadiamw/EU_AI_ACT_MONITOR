@@ -9,5 +9,6 @@ It still matches the implementation on main 9b2e587, so it was not redrawn:
 - A revision to a looser tier does not extend the deadline unless a rationale is recorded.
 - Each of the 50, 80 and 100 % reminders fires once; 49, 79 and 99 % never fire.
 - The console shows the "legal window may already be running" indicator from detected_at (app/static/app.js).
+- Phase 5 (decision 343): a submitted current report clears alerts A6 and A7 (`app/ops.py`), and does not stop the reminders, which keep firing after the submission (Model 5 Ex-1, `tests/fixtures/phase5/model5_examples.json`).
 
 The tests for each rule are listed in `phase4_models.md`, section 2.

@@ -2834,3 +2834,35 @@ November 2026**, D7 and D15 with the conditions written in them.
      `pod_spec.txt` lists routes and REQs, not AC ids. On `phase5-part4-platform`: tests
      `429377a`, fix `c8a32e3` (decision 326's Follow-up; README 17.2). Merged into
      `phase5-integration` at `87b270f` (`git merge --no-ff`, no conflict).
+
+343. **Model update: stale diagram elements fixed, a Phase 5 deployment view, and images (SS,
+     docs round; report draft findings MF-1 to MF-10).** Each finding was checked against the
+     code and configuration, and each diagram follows the code; no code changed.
+     - Phase 5 context diagram (MF-6, MF-7, MF-8): redrawn in the Phase 4 notation as
+       `docs/models/context-diagram-phase5.mmd`, and the same diagram in `phase5_models.md`
+       8.1. PostgreSQL is its own store, not inside the Fly app (it is a separate Fly Postgres
+       app, `fly.toml` line 1); the web console, the partner team and the test endpoints are
+       back; the operator acts with the reviewer key (erasure is REVIEWER only); the chain-head
+       workflow pulls the export and `/healthz` itself and appends to `chain-heads`, which does
+       not exist yet (decisions 311, 312).
+     - Phase 4 files, kept as the Phase 4 record with their stale labels corrected and the
+       title saying so: the context diagram's "Report generation: Phase 5" and "report not
+       built yet" (MF-1), Model 1's "Not implemented (Phase 5): REPORT_READY, SUBMITTED ... then
+       501" (MF-2; now report statuses ASSEMBLED and SUBMITTED, then 200), and the deployment
+       view's "fly.toml on development-deploy" (MF-3; on main, decision 295).
+       `phase4_models.md` marks its "not built (Phase 5)" rows as superseded and names the
+       replaced 501 test (MF-5). The Model 3 note gains the A6 and A7 sentence (MF-10).
+     - Model 2 (MF-9): `report_submission.event_id` is a foreign key, `record_key` is linked
+       dashed (no foreign key), and, found while redrawing, a disposition has at most one
+       report (`uq_report_disposition`). MF-4 is not false and is unchanged: the full schema is
+       the Phase 4 file plus the Phase 5 one.
+     - New deployment view `docs/models/deployment-phase5.mmd` (MF-3b), in the notation of the
+       Phase 4 view: the Fly processes (the worker with the nightly verification and the alert
+       step), the separate Fly Postgres app, Vercel, the Compose stack of the CI `image` job,
+       and the chain-head workflow with its branch, marked as not yet scheduled or present.
+     - Images: every Phase 5 diagram (context, Model 1, Model 2, deployment) and the three
+       corrected Phase 4 diagrams have `.png` and `.svg` beside their `.mmd`, rendered with
+       mermaid-cli 11.4.2 (`-s 2 -b white`), the toolchain that reproduces the Phase 4 images; the
+       Phase 5 context and deployment views use a wider page (`-w 1800`, `-w 1300`) so their text
+       stays legible.
+       This replaces "no PNG or SVG export is added" in decision 331.

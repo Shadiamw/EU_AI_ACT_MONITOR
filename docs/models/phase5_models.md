@@ -9,23 +9,58 @@ The design-requirement mapping used for the tester's `coverage.model` is
 
 ## 8.1 Context diagram
 
+Source and images: [`context-diagram-phase5.mmd`](context-diagram-phase5.mmd) (`.png`, `.svg`),
+in the notation of the Phase 4 context diagram. The block below is the same diagram without its
+title. Docs round (decision 343): PostgreSQL is drawn as its own store, not inside the Fly app
+(it is a separate Fly Postgres app); the web console, the partner team and the test endpoints
+are back; the operator acts with the reviewer key; the chain-head workflow pulls the export
+itself, and its `chain-heads` branch is created at deploy time.
+
 ```mermaid
-flowchart LR
-    subgraph boundary["EU AI Act Monitor (Fly app eu-ai-act-monitor-api)"]
-        api["API (FastAPI)"]
-        worker["Worker: gap sweep, reminders, delivery, nightly verify, alerts"]
-        db[("PostgreSQL 16: ledger, events, reports, record keys")]
-        api --- db
-        worker --- db
+flowchart TB
+    CO["Compliance officer<br/>(owner of a webhook registered for reminder)"]
+    MSA["Market surveillance authority"]
+    OP["Operator<br/>(sets environment configuration and seed data;<br/>with the REVIEWER key: erasure after retain_until,<br/>manual verification runs; reads dashboard and alert log lines)"]
+    MS["Monitored high-risk AI system<br/>(sends metric samples; computes its own metrics)"]
+    PEER["Partner team's system<br/>(target of our tester, /tester/test/*)"]
+    WH["Webhook receiver<br/>(any HTTPS URL registered with POST /v1/webhooks)"]
+    PT["Partner team and CI runner<br/>(contract tests through test endpoints;<br/>their tester calls /system/test/*)"]
+    VIEW["Viewer, e.g. auditor<br/>(VIEWER key): reads events, audit, report list,<br/>ledger export/verify/verifications, dashboard"]
+    REV["Authorized reviewer, rev-1 (rev-2 when REVIEWER_2_KEY is set)<br/>(REVIEWER key; console or API directly):<br/>views events, confirms fields, records dispositions,<br/>downloads the report (JSON or PDF), records the submission"]
+    BR["GitHub branch chain-heads<br/>(heads.jsonl; created at deploy time, not yet present)"]
+    subgraph SYS[" "]
+        SYSL["Compliance monitoring system (what we build)"]
+        CORE["REST API + worker<br/>detects breaches and gaps; pre-fills Art. 3(49) fields;<br/>records dispositions and revisions; computes Art. 73 deadlines;<br/>plans and sends 50/80/100% reminders; hash-chained ledger;<br/>assembles and stores reports; records submissions; erases after retain_until;<br/>nightly ledger verification and alerts. Never assigns severity."]
+        DB[("PostgreSQL 16<br/>ledger, events, dispositions, reports, record keys")]
+        UI["Web console (static, /ui/ or Vercel)<br/>incl. Report and submission, Ledger operations and health"]
+        GHA["Chain-head workflow<br/>(.github/workflows/chain-head.yml, daily 03:17 UTC;<br/>verifies the export against the last head)"]
     end
-    ai["Monitored AI system (sys-42)"] -- "POST /v1/metrics (system key)" --> api
-    reviewer["Reviewer (rev-1, rev-2)"] -- "reviews, dispositions; downloads report JSON/PDF; records submission" --> api
-    viewer["Viewer (viewer-1)"] -- "reads events, audit, export" --> api
-    operator["Operator (configuration only; reviewer key)"] -- "reads dashboard and alerts; triggers erasure" --> api
-    worker -- "flag and reminder webhooks" --> receiver["Webhook receivers"]
-    gh["Chain-head store (GitHub chain-heads branch, scheduled workflow)"]
-    api -- "daily export + head (viewer key)" --> gh
-    reviewer -. "submits report manually (outside system boundary)" .-> authority["Market surveillance authority"]
+
+    CORE -- "SQL" --> DB
+    OP -- "env variables, prepare/seed at deploy;<br/>erasure and verification runs (REVIEWER key)" --> CORE
+    UI <-- "HTTPS JSON with the user's key: events, fields, deadlines, reports, audit, ledger, dashboard" --> CORE
+    WH -- "delivers" --> CO
+    MS -- "POST /v1/metrics (SYSTEM key)" --> CORE
+    PT -- "reset, clock advance, contract calls, /system/test/*" --> CORE
+    CORE -- "our tester's probes (/tester/test/run)" --> PEER
+    CORE -- "flag_notification and reminder webhooks (retries)" --> WH
+    VIEW -- "uses (VIEWER key)" --> UI
+    REV -- "uses (REVIEWER key)" --> UI
+    REV -. "submits the downloaded report manually (outside the system)" .-> MSA
+    GHA -- "GET /v1/ledger/export (viewer key) and /healthz" --> CORE
+    GHA -- "appends heads.jsonl" --> BR
+    UI ~~~ SYSL
+
+    classDef person fill:#fff4cc,stroke:#8a6d00,color:#000
+    classDef ext fill:#eceff1,stroke:#455a64,color:#000
+    classDef sys fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef reg fill:#fde2e2,stroke:#b91c1c,color:#000
+    class REV,VIEW,CO,OP person
+    class MS,WH,PT,PEER,BR ext
+    class CORE,DB,UI,GHA sys
+    class MSA reg
+    classDef boundary fill:none,stroke:none,color:#1e3a8a,font-weight:bold
+    class SYSL boundary
 ```
 
 Unchanged from Phase 4: no identity provider, webhooks only, no Evidently. The Phase 4
@@ -36,6 +71,9 @@ records the manual submission in the system (Part 1, spec 3.7).
 
 The event states are still the four contract states (D1). Report records have their own
 statuses, as `GET /v1/events/{id}/reports` lists them (`app/reports.py`, `listing`).
+Source and images: [`model1-state-machine-phase5.mmd`](model1-state-machine-phase5.mmd)
+(`.png`, `.svg`); the gap, escalation and delivery sub-machines are unchanged in
+[`model1-state-machine-phase4.mmd`](model1-state-machine-phase4.mmd).
 
 ```mermaid
 stateDiagram-v2
@@ -80,12 +118,20 @@ Model 1's Phase 2 names map as before: REPORT_READY = ASSEMBLED.
 
 ## 8.3 Model 2 (data schema)
 
+Source and images: [`model2-data-schema-phase5.mmd`](model2-data-schema-phase5.mmd) (`.png`,
+`.svg`); the tables of migrations 0001 to 0007 are in
+[`model2-data-schema-phase4.mmd`](model2-data-schema-phase4.mmd). Docs round (decision 343):
+`report_submission.event_id` is drawn as the foreign key it is (`fk_report_submission_event`),
+`record_key` is linked dashed because `subject_id` has no foreign key (the Phase 4 convention),
+and a disposition has at most one report (`uq_report_disposition`).
+
 ```mermaid
 erDiagram
-    event ||--o{ report : "event_id"
-    disposition ||--o{ report : "disposition_id"
-    report ||--o| report_submission : "report_id (at most one)"
-    event ||--o| record_key : "subject_id = event_id"
+    event ||--o{ report : "FK event_id"
+    disposition ||--o| report : "FK disposition_id (unique)"
+    report ||--o| report_submission : "FK report_id (unique: at most one)"
+    event ||--o{ report_submission : "FK event_id"
+    event ||..o| record_key : "subject_id = event_id, no FK"
     event {
         text event_id PK
         timestamptz retain_until
@@ -108,7 +154,7 @@ erDiagram
     report_submission {
         text submission_id PK
         text report_id FK
-        text event_id
+        text event_id FK
         text submitted_by
         timestamptz submitted_at
         text submission_kind
@@ -168,8 +214,9 @@ INV-2, 3, 5, 6, 12 and 13 are unchanged, and their Phase 4 tests carry over.
 
 ## 8.5 Model 3 (timeline)
 
-Unchanged. Its note gains: "a submitted current report clears alerts A6 and A7, and does not
-stop reminders" (Model 5 Ex-1 shows the reminders continuing after the submission).
+Unchanged. Its note, [`model3-timeline-phase4.md`](model3-timeline-phase4.md), now says that a
+submitted current report clears alerts A6 and A7 and does not stop reminders (Model 5 Ex-1 shows
+the reminders continuing after the submission).
 
 ## 8.6 Model 5 (worked examples)
 
@@ -187,3 +234,13 @@ stop reminders" (Model 5 Ex-1 shows the reminders continuing after the submissio
 - **Ex-3:** still covered by the AC-02 tests.
 
 `tools/run_model5.py` runs Ex-1, Ex-2 and Ex-4 over HTTP in the CI image job.
+
+## 8.7 Deployment view
+
+[`deployment-phase5.mmd`](deployment-phase5.mmd) (`.png`, `.svg`), in the notation of
+[`deployment-phase4.mmd`](deployment-phase4.mmd): the Fly app (processes `api` and `worker`, the
+worker adding the nightly verification and the alert step; `prepare` as the release command), the
+separate Fly Postgres app, the console on Vercel, the Docker Compose stack started by the CI
+`image` job, and the chain-head workflow with its `chain-heads` branch. The workflow is on
+`phase5-integration`, so it is not scheduled until it is on main, and the branch does not exist
+yet (`docs/operations.md` item 5; decisions 311 and 312).

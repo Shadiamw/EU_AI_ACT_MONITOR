@@ -1,0 +1,47 @@
+---
+title: "Context diagram as built (Phase 5, phase5-integration)"
+---
+flowchart TB
+    CO["Compliance officer<br/>(owner of a webhook registered for reminder)"]
+    MSA["Market surveillance authority"]
+    OP["Operator<br/>(sets environment configuration and seed data;<br/>with the REVIEWER key: erasure after retain_until,<br/>manual verification runs; reads dashboard and alert log lines)"]
+    MS["Monitored high-risk AI system<br/>(sends metric samples; computes its own metrics)"]
+    PEER["Partner team's system<br/>(target of our tester, /tester/test/*)"]
+    WH["Webhook receiver<br/>(any HTTPS URL registered with POST /v1/webhooks)"]
+    PT["Partner team and CI runner<br/>(contract tests through test endpoints;<br/>their tester calls /system/test/*)"]
+    VIEW["Viewer, e.g. auditor<br/>(VIEWER key): reads events, audit, report list,<br/>ledger export/verify/verifications, dashboard"]
+    REV["Authorized reviewer, rev-1 (rev-2 when REVIEWER_2_KEY is set)<br/>(REVIEWER key; console or API directly):<br/>views events, confirms fields, records dispositions,<br/>downloads the report (JSON or PDF), records the submission"]
+    BR["GitHub branch chain-heads<br/>(heads.jsonl; created at deploy time, not yet present)"]
+    subgraph SYS[" "]
+        SYSL["Compliance monitoring system (what we build)"]
+        CORE["REST API + worker<br/>detects breaches and gaps; pre-fills Art. 3(49) fields;<br/>records dispositions and revisions; computes Art. 73 deadlines;<br/>plans and sends 50/80/100% reminders; hash-chained ledger;<br/>assembles and stores reports; records submissions; erases after retain_until;<br/>nightly ledger verification and alerts. Never assigns severity."]
+        DB[("PostgreSQL 16<br/>ledger, events, dispositions, reports, record keys")]
+        UI["Web console (static, /ui/ or Vercel)<br/>incl. Report and submission, Ledger operations and health"]
+        GHA["Chain-head workflow<br/>(.github/workflows/chain-head.yml, daily 03:17 UTC;<br/>verifies the export against the last head)"]
+    end
+
+    CORE -- "SQL" --> DB
+    OP -- "env variables, prepare/seed at deploy;<br/>erasure and verification runs (REVIEWER key)" --> CORE
+    UI <-- "HTTPS JSON with the user's key: events, fields, deadlines, reports, audit, ledger, dashboard" --> CORE
+    WH -- "delivers" --> CO
+    MS -- "POST /v1/metrics (SYSTEM key)" --> CORE
+    PT -- "reset, clock advance, contract calls, /system/test/*" --> CORE
+    CORE -- "our tester's probes (/tester/test/run)" --> PEER
+    CORE -- "flag_notification and reminder webhooks (retries)" --> WH
+    VIEW -- "uses (VIEWER key)" --> UI
+    REV -- "uses (REVIEWER key)" --> UI
+    REV -. "submits the downloaded report manually (outside the system)" .-> MSA
+    GHA -- "GET /v1/ledger/export (viewer key) and /healthz" --> CORE
+    GHA -- "appends heads.jsonl" --> BR
+    UI ~~~ SYSL
+
+    classDef person fill:#fff4cc,stroke:#8a6d00,color:#000
+    classDef ext fill:#eceff1,stroke:#455a64,color:#000
+    classDef sys fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef reg fill:#fde2e2,stroke:#b91c1c,color:#000
+    class REV,VIEW,CO,OP person
+    class MS,WH,PT,PEER,BR ext
+    class CORE,DB,UI,GHA sys
+    class MSA reg
+    classDef boundary fill:none,stroke:none,color:#1e3a8a,font-weight:bold
+    class SYSL boundary

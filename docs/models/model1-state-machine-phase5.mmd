@@ -1,0 +1,27 @@
+---
+title: "Model 1 - Event and report state machine as built (Phase 5, phase5-integration)"
+---
+stateDiagram-v2
+    direction LR
+    state "Event (unchanged, four contract states)" as Event {
+        [*] --> FLAGGED
+        FLAGGED --> UNDER_REVIEW: reviewer first view
+        UNDER_REVIEW --> DISPOSITIONED: serious tier
+        UNDER_REVIEW --> CLOSED: NOT_SERIOUS + rationale
+        FLAGGED --> DISPOSITIONED: serious tier
+        FLAGGED --> CLOSED: NOT_SERIOUS + rationale
+        DISPOSITIONED --> DISPOSITIONED: revision
+        DISPOSITIONED --> CLOSED: revision to NOT_SERIOUS
+        CLOSED --> DISPOSITIONED: reopen
+    }
+    state "Report record (one row per disposition row, on first GET)" as Report {
+        [*] --> ASSEMBLED: reviewer GET report (REPORT_ASSEMBLED)
+        ASSEMBLED --> SUBMITTED: POST submission, current, hash matches (REPORT_SUBMITTED)
+        ASSEMBLED --> SUPERSEDED: revision (DISPOSITION_REVISED)
+        SUBMITTED --> SUBMITTED_SUPERSEDED: revision
+    }
+    note right of Report
+        ERASED marker, not a state (spec 8.2): POST erasure after retain_until
+        marks the event and its reports in any state (RECORD_ERASED).
+        States are unchanged; report routes 410; evidence and rationale null.
+    end note
